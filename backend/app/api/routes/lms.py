@@ -111,16 +111,12 @@ def _generate_assessment_lms(*, request: Request, db: Session, payload: Generate
         title=payload.title,
         level="intermediate",
         kind=kind,
-        easy_count=int(payload.easy_count + payload.medium_count),
+        easy_count=int(payload.easy_count),
+        medium_count=int(payload.medium_count),
         hard_count=int(payload.hard_count),
         document_ids=[int(x) for x in payload.document_ids],
         topics=payload.topics,
     )
-    data["difficulty_plan"] = {
-        "easy": int(payload.easy_count),
-        "medium": int(payload.medium_count),
-        "hard": int(payload.hard_count),
-    }
     return {"request_id": request.state.request_id, "data": data, "error": None}
 
 
@@ -167,18 +163,14 @@ def lms_generate_final(request: Request, payload: GenerateLmsQuizIn, db: Session
         title=payload.title,
         level="intermediate",
         kind="diagnostic_post",
-        easy_count=int(payload.easy_count + payload.medium_count),
+        easy_count=int(payload.easy_count),
+        medium_count=int(payload.medium_count),
         hard_count=int(payload.hard_count),
         document_ids=[int(x) for x in payload.document_ids],
         topics=payload.topics,
         exclude_quiz_ids=placement_ids,
         similarity_threshold=0.75,
     )
-    data["difficulty_plan"] = {
-        "easy": int(payload.easy_count),
-        "medium": int(payload.medium_count),
-        "hard": int(payload.hard_count),
-    }
     data["excluded_from_count"] = len(placement_ids)
     return {"request_id": request.state.request_id, "data": data, "error": None}
 
