@@ -6,6 +6,7 @@ import Card from "../ui/Card";
 import Banner from "../ui/Banner";
 import Button from "../ui/Button";
 import PageHeader from "../ui/PageHeader";
+import ProgressComparison from "../components/ProgressComparison";
 
 function toArray(value) {
   return Array.isArray(value) ? value : [];
@@ -103,6 +104,7 @@ export default function Result() {
   const [data, setData] = useState(() => (state?.quizResult ? normalizeResultPayload(state.quizResult) : null));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [comparison, setComparison] = useState(null);
 
   const attemptId = state?.attemptId ?? searchParams.get("attemptId") ?? searchParams.get("attempt_id");
   const quizSetId = state?.quizSetId ?? searchParams.get("quizSetId") ?? searchParams.get("quiz_set_id");
@@ -139,6 +141,18 @@ export default function Result() {
 
     loadResult();
   }, [attemptId, quizSetId, resolvedUserId, state]);
+
+  useEffect(() => {
+    const cid = Number(localStorage.getItem("active_classroom_id"));
+    if (resolvedQuizType !== "final" || !resolvedUserId || !Number.isFinite(cid) || cid <= 0) {
+      setComparison(null);
+      return;
+    }
+
+    apiJson(`/v1/students/${Number(resolvedUserId)}/progress?classroomId=${cid}`)
+      .then((d) => setComparison(d || null))
+      .catch(() => setComparison(null));
+  }, [resolvedQuizType, resolvedUserId]);
 
   const difficultyStats = useMemo(() => {
     if (!data) return { easy: null, medium: null, hard: null };
@@ -198,6 +212,10 @@ export default function Result() {
             <StatCard label="Thời gian làm bài" value={formatDuration(data.durationSec)} />
             <StatCard label="Số câu đúng" value={`${data.correctCount}/${data.totalQuestions}`} />
           </div>
+
+          {resolvedQuizType === "final" && comparison ? (
+            <ProgressComparison comparison={comparison} showTopics />
+          ) : null}
 
           <Card style={{ padding: 16 }}>
             <h3 style={{ marginTop: 0 }}>Điểm theo từng topic</h3>

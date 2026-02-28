@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiJson } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
+import ProgressComparison from "../components/ProgressComparison";
 
 function MarkdownLite({ text }) {
   const blocks = useMemo(() => {
@@ -242,6 +243,7 @@ export default function LearningPath() {
   const [myPath, setMyPath] = useState(null);
   const [showOnlyMine, setShowOnlyMine] = useState(false);
   const [finalExam, setFinalExam] = useState(null);
+  const [comparison, setComparison] = useState(null);
 
   const currentDay = useMemo(() => {
     return (planDays || []).find((d) => Number(d.day_index) === Number(selectedDay)) || null;
@@ -364,6 +366,17 @@ export default function LearningPath() {
   }, [userId]);
 
   useEffect(() => {
+    const cid = Number(localStorage.getItem("active_classroom_id"));
+    if (!Number.isFinite(cid) || cid <= 0 || !userId) {
+      setComparison(null);
+      return;
+    }
+    apiJson(`/v1/students/${Number(userId)}/progress?classroomId=${cid}`)
+      .then((d) => setComparison(d || null))
+      .catch(() => setComparison(null));
+  }, [userId]);
+
+  useEffect(() => {
     const cidRaw = localStorage.getItem("active_classroom_id");
     const cid = Number(cidRaw);
     if (!Number.isFinite(cid) || cid <= 0) return;
@@ -447,6 +460,12 @@ export default function LearningPath() {
         .confetti-piece { position: absolute; width: 7px; height: 12px; opacity: .85; animation: fall 2.2s ease-out forwards; }
         @keyframes fall { 0% { transform: translateY(-20px) rotate(0deg); } 100% { transform: translateY(180px) rotate(360deg); opacity: 0; } }
       `}</style>
+
+      {comparison ? (
+        <div style={{ marginBottom: 12 }}>
+          <ProgressComparison comparison={comparison} showTopics={false} />
+        </div>
+      ) : null}
 
       <div style={{ ...card, marginBottom: 12, position: "relative", overflow: "hidden" }}>
         {allDone && (
