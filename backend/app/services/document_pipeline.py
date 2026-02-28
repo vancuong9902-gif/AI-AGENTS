@@ -9,6 +9,7 @@ from fastapi import UploadFile
 
 from app.core.config import settings
 from app.services.text_repair import repair_ocr_spacing_line, repair_ocr_spacing_text, fix_eth_d
+from app.services.vietnamese_font_fix import detect_broken_vn_font, fix_vietnamese_font_encoding
 
 
 # Postgres TEXT/VARCHAR cannot contain NUL (\x00) bytes.
@@ -122,6 +123,8 @@ def _clean_pdf_page_text(text: str) -> str:
             continue
         line = _fix_joined_variables(line)
         line = repair_ocr_spacing_line(line)
+        if detect_broken_vn_font(line):
+            line = fix_vietnamese_font_encoding(line)
         # Drop TOC leader-dot lines only in strong TOC contexts.
         # Keep normal prose lines containing "...".
         if strict_toc_lines and _DOTS_LEADER_RE.search(line) and len(line) < 140:
