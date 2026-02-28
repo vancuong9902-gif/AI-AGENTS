@@ -158,14 +158,10 @@ def _intent_aware_topic_suggestions(
 
 
 def _build_off_topic_message(*, scope: str, approved_topics: List[str], suggestions: List[str]) -> str:
-    approved_text = ", ".join(approved_topics[:8]) if approved_topics else scope
-    sug = "\n".join([f"- {x}" for x in suggestions[:3]]) if suggestions else "- " + scope
     return (
-        f"Câu hỏi này có vẻ nằm ngoài nội dung **{scope}** chúng ta đang học.\n"
-        f"Tôi chỉ có thể giúp bạn về: **{approved_text}**.\n"
-        "Bạn muốn hỏi về topic nào trong số này?\n\n"
-        "**Gợi ý gần nhất với ý bạn đang hỏi:**\n"
-        f"{sug}"
+        f"Câu hỏi này nằm ngoài phạm vi chủ đề [{scope}] của khóa học. "
+        f"Tôi chỉ hỗ trợ các nội dung liên quan đến tài liệu học. "
+        f"Bạn có muốn hỏi về [{scope}] không?"
     )
 
 
@@ -481,7 +477,7 @@ def tutor_chat(
     if (not chunks) or has_low_relevance:
         reason = "no_retrieved_chunks" if not chunks else f"low_relevance:{best_rel:.3f}"
         _log_tutor_flagged_question(db, user_id=int(user_id), question=q, topic=topic, reason=reason, suggested_topics=intent_suggestions)
-        return TutorChatData(answer_md=_build_off_topic_message(scope=_topic_scope(topic), approved_topics=suggested_topics, suggestions=intent_suggestions), was_answered=False, off_topic_reason=reason, suggested_topics=intent_suggestions, follow_up_questions=[], quick_check_mcq=[], sources=[], retrieval={**corr, "note": "POSTCHECK_OFF_TOPIC"}).model_dump()
+        return TutorChatData(answer_md="Tôi không tìm thấy thông tin này trong tài liệu học. Vui lòng hỏi giáo viên.", was_answered=False, off_topic_reason=reason, suggested_topics=intent_suggestions, follow_up_questions=[], quick_check_mcq=[], sources=[], retrieval={**corr, "note": "POSTCHECK_OFF_TOPIC"}).model_dump()
 
     good, bad = filter_chunks_by_quality(chunks, min_score=float(settings.OCR_MIN_QUALITY_SCORE))
     bad_ratio = float(len(bad)) / float(max(1, len(chunks)))
@@ -511,8 +507,17 @@ def tutor_chat(
 
     if llm_available():
         packed = pack_chunks(chunks, max_chunks=min(4, len(chunks)), max_chars_per_chunk=750, max_total_chars=2800)
+        scope = _topic_scope(topic)
         sys = (
-            "Bạn là Virtual AI Tutor. Chỉ dựa trên evidence_chunks. Không bịa. "
+            f"You are an AI Tutor for the course topic: [{scope}]. "
+            "You ONLY answer questions directly related to this topic and the uploaded course materials. "
+            f"If a student asks about something unrelated to [{scope}] or outside the course document, "
+            f"you MUST politely decline with: \"Câu hỏi này nằm ngoài phạm vi chủ đề [{scope}] của khóa học. "
+            f"Tôi chỉ hỗ trợ các nội dung liên quan đến tài liệu học. Bạn có muốn hỏi về [{scope}] không?\" "
+            "Do NOT answer general knowledge questions, coding questions unrelated to the material, or personal questions. "
+            "Your answer must cite the specific chunk from the document in the format [chunk_id:<id>]. "
+            "If you cannot find relevant evidence in the retrieved chunks, say: "
+            '\"Tôi không tìm thấy thông tin này trong tài liệu học. Vui lòng hỏi giáo viên.\" '
             "Nếu chủ đề đã giải thích trong session_history.explained_topics thì tránh lặp lại định nghĩa dài, chỉ nhắc nhanh và đi vào phần mới."
         )
         user = {"question": q, "topic": (topic or "").strip() or None, "session_history": {"recent_questions": recent_questions[-5:], "explained_topics": explained_topics[-8:]}, "evidence_chunks": packed, "output_format": {"answer_md": "markdown", "follow_up_questions": ["string"], "quick_check_mcq": []}}
