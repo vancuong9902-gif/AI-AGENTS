@@ -127,6 +127,8 @@ class FinalExamSubmitRequest(EntryTestSubmitRequest):
 
 class FinalExamSubmitOut(EntryTestSubmitOut):
     analytics: Dict[str, Any] = Field(default_factory=dict)
+    student_final_report: Dict[str, Any] = Field(default_factory=dict)
+    emitted_event: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ------------------------------
