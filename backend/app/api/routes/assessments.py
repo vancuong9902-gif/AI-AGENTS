@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_teacher, require_user
 from app.db.session import get_db
 from app.models.classroom import Classroom, ClassroomMember
 from app.models.classroom_assessment import ClassroomAssessment
+from app.models.attempt import Attempt
+from app.models.class_report import ClassReport
+from app.models.quiz_set import QuizSet
 from app.models.user import User
+from app.infra.queue import enqueue
+from app.tasks.report_tasks import task_generate_class_final_report
 from app.schemas.assessment import (
     AssessmentGenerateRequest,
     AssessmentSubmitRequest,
@@ -27,6 +33,58 @@ from app.services.assessment_service import (
 
 router = APIRouter(tags=["assessments"])
 teacher_router = APIRouter(tags=["teacher"])
+
+
+def _check_and_trigger_class_report(db: Session, *, assessment_id: int, user_id: int) -> None:
+    _ = user_id
+    mapping = (
+        db.query(ClassroomAssessment, QuizSet)
+        .join(QuizSet, QuizSet.id == ClassroomAssessment.assessment_id)
+        .filter(ClassroomAssessment.assessment_id == int(assessment_id))
+        .first()
+    )
+    if not mapping:
+        return
+
+    classroom_assessment, quiz_set = mapping
+    if (quiz_set.kind or "").strip().lower() != "final_exam":
+        return
+
+    classroom_id = int(classroom_assessment.classroom_id)
+    total_members = (
+        db.query(func.count(ClassroomMember.id))
+        .filter(ClassroomMember.classroom_id == classroom_id)
+        .scalar()
+    )
+    total_members = int(total_members or 0)
+    if total_members <= 0:
+        return
+
+    submitted = (
+        db.query(func.count(func.distinct(Attempt.user_id)))
+        .join(ClassroomMember, ClassroomMember.user_id == Attempt.user_id)
+        .filter(ClassroomMember.classroom_id == classroom_id, Attempt.quiz_set_id == int(assessment_id))
+        .scalar()
+    )
+    submitted = int(submitted or 0)
+    threshold_reached = (submitted / max(1, total_members)) >= 0.8
+    if not threshold_reached:
+        return
+
+    exists = (
+        db.query(ClassReport.id)
+        .filter(ClassReport.classroom_id == classroom_id, ClassReport.assessment_id == int(assessment_id))
+        .first()
+    )
+    if exists:
+        return
+
+    enqueue(
+        task_generate_class_final_report,
+        classroom_id,
+        int(assessment_id),
+        queue_name="default",
+    )
 
 
 def _student_can_access_assessment(db: Session, *, student_id: int, assessment_id: int) -> bool:
@@ -129,6 +187,7 @@ def assessments_submit(
             duration_sec=payload.duration_sec,
             answers=[a.model_dump() for a in (payload.answers or [])],
         )
+        _check_and_trigger_class_report(db, assessment_id=assessment_id, user_id=int(user.id))
         return {"request_id": request.state.request_id, "data": data, "error": None}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

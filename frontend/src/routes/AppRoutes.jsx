@@ -23,6 +23,7 @@ import StudentAnalyticsDashboard from "../pages/StudentAnalyticsDashboard";
 
 import TeacherClassrooms from "../pages/TeacherClassrooms";
 import TeacherClassroomDashboard from "../pages/TeacherClassroomDashboard";
+import TeacherClassReportDetail from "../pages/TeacherClassReportDetail";
 import TeacherCreateEntryTest from "../pages/TeacherCreateEntryTest";
 import StudentClassrooms from "../pages/StudentClassrooms";
 import StudentDashboard from "../pages/StudentDashboard";
@@ -191,6 +192,10 @@ export default function AppRoutes() {
       />
 
       <Route
+        path="/teacher/classrooms/:id/reports/:reportId"
+        element={
+          <ProtectedRoute allow={["teacher"]}>
+            <TeacherClassReportDetail />
         path="/teacher/classrooms/:id/entry-test"
         element={
           <ProtectedRoute allow={["teacher"]}>

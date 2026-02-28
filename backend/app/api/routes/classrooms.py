@@ -4,6 +4,8 @@ import random
 import string
 from typing import Dict, List, Optional, Tuple
 
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from sqlalchemy import func
@@ -12,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db, require_teacher, require_user
 from app.models.attempt import Attempt
 from app.models.classroom import Classroom, ClassroomMember
+from app.models.class_report import ClassReport
 from app.models.classroom_assessment import ClassroomAssessment
 from app.models.document_topic import DocumentTopic
 from app.models.learning_plan import LearningPlan, LearningPlanHomeworkSubmission, LearningPlanTaskCompletion
@@ -391,6 +394,43 @@ def assign_learning_plan_to_classroom(
     return {"request_id": request.state.request_id, "data": {"created": created}, "error": None}
 
 
+@router.get("/classrooms/{classroom_id}/reports/latest")
+def get_latest_class_report(
+    request: Request,
+    classroom_id: int,
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    c = db.query(Classroom).filter(Classroom.id == int(classroom_id)).first()
+    if not c or int(c.teacher_id) != int(teacher.id):
+        raise HTTPException(status_code=404, detail="Classroom not found")
+
+    row = (
+        db.query(ClassReport)
+        .filter(ClassReport.classroom_id == int(classroom_id))
+        .order_by(ClassReport.created_at.desc())
+        .first()
+    )
+    if not row:
+        return {"request_id": request.state.request_id, "data": None, "error": None}
+
+    payload = {
+        "id": int(row.id),
+        "classroom_id": int(row.classroom_id),
+        "assessment_id": int(row.assessment_id),
+        "narrative": row.narrative or "",
+        "stats": row.stats_json or {},
+        "improvement": row.improvement_json or {},
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+    return {"request_id": request.state.request_id, "data": payload, "error": None}
+
+
+@router.get("/classrooms/{classroom_id}/reports/{report_id}")
+def get_class_report_detail(
+    request: Request,
+    classroom_id: int,
+    report_id: int,
 @router.get("/classrooms/{classroom_id}/reports/latest/export")
 def export_latest_classroom_report(
     classroom_id: int,
@@ -434,6 +474,57 @@ def create_classroom_entry_test(
     if not c or int(c.teacher_id) != int(teacher.id):
         raise HTTPException(status_code=404, detail="Classroom not found")
 
+    row = (
+        db.query(ClassReport)
+        .filter(ClassReport.id == int(report_id), ClassReport.classroom_id == int(classroom_id))
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    payload = {
+        "id": int(row.id),
+        "classroom_id": int(row.classroom_id),
+        "assessment_id": int(row.assessment_id),
+        "narrative": row.narrative or "",
+        "stats": row.stats_json or {},
+        "improvement": row.improvement_json or {},
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+    return {"request_id": request.state.request_id, "data": payload, "error": None}
+
+
+@router.get("/classrooms/{classroom_id}/reports/{report_id}/export/excel")
+def export_class_report_excel(
+    classroom_id: int,
+    report_id: int,
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    c = db.query(Classroom).filter(Classroom.id == int(classroom_id)).first()
+    if not c or int(c.teacher_id) != int(teacher.id):
+        raise HTTPException(status_code=404, detail="Classroom not found")
+
+    row = (
+        db.query(ClassReport)
+        .filter(ClassReport.id == int(report_id), ClassReport.classroom_id == int(classroom_id))
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    import csv
+    import io
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["student_id", "entry_score", "final_score", "delta"])
+    for r in (row.improvement_json or {}).get("students", []):
+        writer.writerow([r.get("student_id"), r.get("entry_score"), r.get("final_score"), r.get("delta")])
+
+    mem = io.BytesIO(output.getvalue().encode("utf-8-sig"))
+    headers = {"Content-Disposition": f"attachment; filename=class_report_{report_id}.csv"}
+    return StreamingResponse(mem, media_type="text/csv", headers=headers)
     if int(payload.teacher_id) != int(teacher.id):
         raise HTTPException(status_code=400, detail="teacher_id mismatch")
 
