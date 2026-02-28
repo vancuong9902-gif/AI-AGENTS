@@ -54,16 +54,52 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[\.\?!\n])\s+")
 
 
 _TOPIC_IN_STEM_RE = re.compile(r"'([^']+)'|\"([^\"]+)\"|“([^”]+)”")
+_STEM_PUNCT_RE = re.compile(r"[^\w\sÀ-ỹ]", re.UNICODE)
 
 
-def _is_dup(stem: str, excluded_stems: set[str] | None = None, similarity_threshold: float = 0.75) -> bool:
+def _normalize_stem_for_dedup(stem: str, *, max_len: int = 120) -> str:
+    s = str(stem or "").strip().lower()
+    if not s:
+        return ""
+    s = _STEM_PUNCT_RE.sub(" ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s[: int(max_len)].strip()
+
+
+def _is_dup(stem: str, excluded_stems: set[str] | None = None, similarity_threshold: float = 0.72) -> bool:
     """Return True when stem is too similar to any excluded stem."""
     if not excluded_stems or not stem:
         return False
-    s = stem.lower().strip()
+    s = _normalize_stem_for_dedup(stem)
     if not s:
         return False
-    return any(SequenceMatcher(None, s, ex).ratio() >= float(similarity_threshold) for ex in excluded_stems if ex)
+    return any(
+        SequenceMatcher(None, s, _normalize_stem_for_dedup(ex)).ratio() >= float(similarity_threshold)
+        for ex in excluded_stems
+        if ex
+    )
+
+
+def get_used_question_stems(db: Session, *, user_id: int, kinds: list[str]) -> set[str]:
+    """Load tất cả question stems từ các bài đã làm trước đó."""
+    kind_vals = [str(k or "").strip().lower() for k in (kinds or []) if str(k or "").strip()]
+    if not kind_vals:
+        return set()
+
+    rows = (
+        db.query(Question.stem)
+        .join(QuizSet, QuizSet.id == Question.quiz_set_id)
+        .join(Attempt, Attempt.quiz_set_id == QuizSet.id)
+        .filter(Attempt.user_id == int(user_id), QuizSet.kind.in_(kind_vals))
+        .all()
+    )
+    out: set[str] = set()
+    for r in rows:
+        raw = r[0] if isinstance(r, (tuple, list)) else r
+        norm = _normalize_stem_for_dedup(str(raw or ""), max_len=120)
+        if norm:
+            out.add(norm)
+    return out
 
 
 _TOK_RE = re.compile(r"[\wÀ-ỹ]+", re.UNICODE)
@@ -314,14 +350,14 @@ def _infer_topic_from_stem(stem: str, fallback: str = "tài liệu") -> str:
 
 def _is_assessment_kind(kind: str) -> bool:
     # Legacy note: previously had kind="assessment" (treated as "midterm")
-    return (kind or "").strip().lower() in ("midterm", "diagnostic_pre", "diagnostic_post", "assessment", "entry_test")
+    return (kind or "").strip().lower() in ("midterm", "diagnostic_pre", "diagnostic_post", "assessment", "entry_test", "final_exam")
 
 
 def _normalize_assessment_kind(kind: str | None) -> str:
     k = (kind or "").strip().lower()
     if k == "assessment":
         return "midterm"
-    if k in ("midterm", "diagnostic_pre", "diagnostic_post", "entry_test"):
+    if k in ("midterm", "diagnostic_pre", "diagnostic_post", "entry_test", "final_exam"):
         return k
     # Default: treat unknown as "midterm" (in-course)
     return "midterm"
@@ -1699,8 +1735,9 @@ def generate_assessment(
     kind: str = "midterm",
     exclude_quiz_ids: List[int] | None = None,
     excluded_question_ids: List[int] | None = None,
-    similarity_threshold: float = 0.75,
+    similarity_threshold: float = 0.72,
     time_limit_minutes: int | None = None,
+    dedup_user_id: int | None = None,
 ) -> Dict[str, Any]:
     total_q = int(easy_count) + int(medium_count) + int(hard_count)
 
@@ -1711,15 +1748,35 @@ def generate_assessment(
     ensure_user_exists(db, int(teacher_id), role="teacher")
 
     _excluded_stems: set[str] = set()
+    entry_topics: list[str] = []
     _excluded_question_ids = {int(x) for x in (excluded_question_ids or []) if x is not None}
     if exclude_quiz_ids:
         rows = db.query(Question.stem).filter(
             Question.quiz_set_id.in_([int(x) for x in exclude_quiz_ids])
         ).all()
-        _excluded_stems.update({str(r[0] or "").lower().strip() for r in rows if r[0]})
+        _excluded_stems.update({_normalize_stem_for_dedup(str(r[0] or "")) for r in rows if r and r[0]})
     if _excluded_question_ids:
         qrows = db.query(Question.stem).filter(Question.id.in_(list(_excluded_question_ids))).all()
-        _excluded_stems.update({str(r[0] or "").lower().strip() for r in qrows if r[0]})
+        _excluded_stems.update({_normalize_stem_for_dedup(str(r[0] or "")) for r in qrows if r and r[0]})
+
+    if kind == "final_exam":
+        dedup_uid = int(dedup_user_id) if dedup_user_id is not None else int(teacher_id)
+        entry_stems = get_used_question_stems(db, user_id=dedup_uid, kinds=["diagnostic_pre"])
+        _excluded_stems.update(entry_stems)
+        topic_rows = (
+            db.query(QuizSet.topic)
+            .join(Attempt, Attempt.quiz_set_id == QuizSet.id)
+            .filter(Attempt.user_id == dedup_uid, QuizSet.kind.in_(["diagnostic_pre"]))
+            .all()
+        )
+        entry_topics = sorted({str(r[0] or "").strip() for r in topic_rows if r and str(r[0] or "").strip()})
+        if len(entry_stems) > 20:
+            logging.getLogger(__name__).warning(
+                "Final exam dedup excludes %s stems from diagnostic_pre; generation may be under-supplied",
+                len(entry_stems),
+            )
+
+    _excluded_stems = {x for x in _excluded_stems if x}
 
     def _is_dup_local(stem: str) -> bool:
         return _is_dup(stem, _excluded_stems, similarity_threshold)
@@ -1799,7 +1856,7 @@ def generate_assessment(
     # Easy/Medium MCQ
     # Prefer LLM-based MCQs when available (more natural, less "chọn câu trích" style).
     gen_mode = (settings.QUIZ_GEN_MODE or "auto").strip().lower()
-    def _generate_mcq_bucket(*, count: int, bucket_name: str, target_blooms: list[str]) -> List[Dict[str, Any]]:
+    def _generate_mcq_bucket(*, count: int, bucket_name: str, target_blooms: list[str], excluded_stems: set[str] | None = None) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
         if int(count) <= 0:
             return out
@@ -1844,9 +1901,14 @@ def generate_assessment(
 
         if llm_mcqs:
             random.shuffle(llm_mcqs)
-            for i, q in enumerate(llm_mcqs[: int(count)]):
+            for i, q in enumerate(llm_mcqs):
+                stem = str((q or {}).get("stem") or (q or {}).get("question", ""))
+                if _is_dup(stem, excluded_stems, similarity_threshold):
+                    continue
                 out.append(_normalize_question_bloom(q, allowed, target_blooms, i))
-            return out
+                if len(out) >= int(count):
+                    break
+            return out[: int(count)]
 
         offline_mcqs: List[Dict[str, Any]] = []
         topic_list = topics_cycle
@@ -1862,8 +1924,13 @@ def generate_assessment(
                 continue
 
         random.shuffle(offline_mcqs)
-        for i, q in enumerate(offline_mcqs[: int(count)]):
+        for i, q in enumerate(offline_mcqs):
+            stem = str((q or {}).get("stem") or (q or {}).get("question", ""))
+            if _is_dup(stem, excluded_stems, similarity_threshold):
+                continue
             out.append(_normalize_question_bloom(q, allowed, target_blooms, i))
+            if len(out) >= int(count):
+                break
 
         if len(out) < int(count):
             for i in range(len(out), int(count)):
@@ -1883,11 +1950,15 @@ def generate_assessment(
                     distractors=distractors,
                     source=correct["source"],
                 )
+                stem = str((q or {}).get("stem") or (q or {}).get("question", ""))
+                if _is_dup(stem, excluded_stems, similarity_threshold):
+                    continue
                 out.append(_normalize_question_bloom(q, allowed, target_blooms, i))
         return out[: int(count)]
 
-    easy_mcqs = _generate_mcq_bucket(count=int(easy_count), bucket_name="easy", target_blooms=["remember", "understand"])
-    medium_mcqs = _generate_mcq_bucket(count=int(medium_count), bucket_name="medium", target_blooms=["apply", "analyze"])
+    bucket_excluded_stems = _excluded_stems if kind == "final_exam" else None
+    easy_mcqs = _generate_mcq_bucket(count=int(easy_count), bucket_name="easy", target_blooms=["remember", "understand"], excluded_stems=bucket_excluded_stems)
+    medium_mcqs = _generate_mcq_bucket(count=int(medium_count), bucket_name="medium", target_blooms=["apply", "analyze"], excluded_stems=bucket_excluded_stems)
     generated.extend(easy_mcqs)
     generated.extend(medium_mcqs)
 
@@ -1976,6 +2047,7 @@ def generate_assessment(
                 count=desired["easy"] - current["easy"],
                 bucket_name="easy",
                 target_blooms=["remember", "understand"],
+                excluded_stems=bucket_excluded_stems,
             )
         )
     current = _bucket_counts(generated)
@@ -1985,6 +2057,7 @@ def generate_assessment(
                 count=desired["medium"] - current["medium"],
                 bucket_name="medium",
                 target_blooms=["apply", "analyze"],
+                excluded_stems=bucket_excluded_stems,
             )
         )
     current = _bucket_counts(generated)
@@ -2205,6 +2278,10 @@ def generate_assessment(
         "filtered_duplicates": int(filtered_count),
         "semantic_filtered_duplicates": int(semantic_filtered),
         "semantic_filter_mode": semantic_mode,
+        "deduplication_info": {
+            "excluded_count": len(_excluded_stems),
+            "topics_from_entry": entry_topics,
+        },
     }
 
 
