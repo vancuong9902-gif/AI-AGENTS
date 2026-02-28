@@ -1,5 +1,11 @@
 from app.services.document_pipeline import _candidate_page_coverage, _normalize_pipeline_text
-from app.services.lms_service import classify_student_level, score_breakdown, build_recommendations
+from app.services.lms_service import (
+    analyze_topic_weak_points,
+    build_recommendations,
+    classify_student_level,
+    generate_class_narrative,
+    score_breakdown,
+)
 
 
 def test_candidate_page_coverage_uses_total_pages_ratio():
@@ -33,3 +39,30 @@ def test_score_breakdown_and_classification_and_recommendation():
     recs = build_recommendations(breakdown=scored, document_topics=["hàm", "vòng lặp"])
     assert recs
     assert any("hàm" in r["topic"] or "vòng lặp" in r["topic"] for r in recs)
+
+
+
+def test_generate_class_narrative_no_llm(monkeypatch):
+    """Fallback khi LLM không available."""
+
+    monkeypatch.setattr("app.services.lms_service.llm_available", lambda: False)
+    result = generate_class_narrative(
+        total_students=20,
+        level_distribution={"gioi": 5, "kha": 8, "trung_binh": 5, "yeu": 2},
+        weak_topics=[{"topic": "Đạo hàm"}, {"topic": "Tích phân"}],
+        avg_improvement=12.5,
+    )
+    assert len(result) > 50
+    assert "Đạo hàm" in result or "12" in result
+
+
+def test_analyze_topic_weak_points():
+    """Phân tích đúng topic yếu nhất."""
+
+    breakdowns = [
+        {"by_topic": {"Đạo hàm": {"percent": 40.0}, "Tích phân": {"percent": 75.0}}},
+        {"by_topic": {"Đạo hàm": {"percent": 35.0}, "Tích phân": {"percent": 80.0}}},
+    ]
+    result = analyze_topic_weak_points(breakdowns)
+    assert result[0]["topic"] == "Đạo hàm"
+    assert result[0]["avg_score_pct"] == 37.5

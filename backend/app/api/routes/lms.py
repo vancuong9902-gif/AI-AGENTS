@@ -14,7 +14,13 @@ from app.models.document_topic import DocumentTopic
 from app.models.quiz_set import QuizSet
 from app.models.session import Session as UserSession
 from app.services.assessment_service import generate_assessment, submit_assessment
-from app.services.lms_service import build_recommendations, classify_student_level, score_breakdown
+from app.services.lms_service import (
+    analyze_topic_weak_points,
+    build_recommendations,
+    classify_student_level,
+    generate_class_narrative,
+    score_breakdown,
+)
 
 router = APIRouter(tags=["lms"])
 
@@ -309,27 +315,87 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
         .all()
     ]
     if not assessment_ids:
-        return {"request_id": request.state.request_id, "data": {"rows": [], "summary": {}}, "error": None}
+        return {
+            "request_id": request.state.request_id,
+            "data": {
+                "rows": [],
+                "summary": {"level_counts": {}, "total": 0},
+                "ai_narrative": "",
+                "weak_topics": [],
+                "progress_chart_data": [],
+                "avg_improvement": 0.0,
+            },
+            "error": None,
+        }
 
     attempts = db.query(Attempt).filter(Attempt.quiz_set_id.in_(assessment_ids)).all()
     by_student: dict[int, list[float]] = defaultdict(list)
     by_level: dict[str, int] = defaultdict(int)
 
+    progress_chart_data: list[dict] = []
+    pre_scores: dict[int, float] = {}
+    post_scores: dict[int, float] = {}
+    all_breakdowns: list[dict] = []
+
+    quiz_kind_map = {
+        int(qid): str(kind or "")
+        for qid, kind in db.query(QuizSet.id, QuizSet.kind).filter(QuizSet.id.in_(assessment_ids)).all()
+    }
+
     for at in attempts:
         br = score_breakdown(at.breakdown_json or [])
+        all_breakdowns.append(br)
         pct = float(br["overall"]["percent"])
-        by_student[int(at.user_id)].append(pct)
+        uid = int(at.user_id)
+        by_student[uid].append(pct)
         by_level[classify_student_level(int(round(pct)))] += 1
+
+        kind = quiz_kind_map.get(int(at.quiz_set_id), "")
+        if kind == "diagnostic_pre":
+            pre_scores[uid] = pct
+        elif kind == "diagnostic_post":
+            post_scores[uid] = pct
 
     rows = []
     for uid, vals in sorted(by_student.items()):
         avg = round(sum(vals) / max(1, len(vals)), 2)
         rows.append({"student_id": uid, "attempts": len(vals), "avg_percent": avg, "level": classify_student_level(int(round(avg)))})
 
-    summary = {
-        "students": len(rows),
-        "attempts": len(attempts),
-        "avg_percent": round(sum((r["avg_percent"] for r in rows), 0.0) / max(1, len(rows)), 2),
-        "level_distribution": by_level,
+    all_uids = sorted(set(pre_scores.keys()) | set(post_scores.keys()))
+    for uid in all_uids:
+        pre_score = round(float(pre_scores.get(uid, 0.0)), 1)
+        post_score = round(float(post_scores.get(uid, 0.0)), 1)
+        progress_chart_data.append(
+            {
+                "student_id": uid,
+                "pre_score": pre_score,
+                "post_score": post_score,
+                "improvement": round(post_score - pre_score, 1),
+            }
+        )
+
+    weak_topics = analyze_topic_weak_points(all_breakdowns)
+    level_distribution = dict(by_level)
+
+    improvements = [d["improvement"] for d in progress_chart_data if d["pre_score"] > 0]
+    avg_improvement = sum(improvements) / max(1, len(improvements))
+
+    narrative = generate_class_narrative(
+        total_students=len(rows),
+        level_distribution=level_distribution,
+        weak_topics=weak_topics[:3],
+        avg_improvement=avg_improvement,
+    )
+
+    return {
+        "request_id": request.state.request_id,
+        "data": {
+            "rows": rows,
+            "summary": {"level_counts": dict(by_level), "total": len(rows)},
+            "ai_narrative": narrative,
+            "weak_topics": weak_topics[:5],
+            "progress_chart_data": progress_chart_data,
+            "avg_improvement": round(avg_improvement, 1),
+        },
+        "error": None,
     }
-    return {"request_id": request.state.request_id, "data": {"rows": rows, "summary": summary}, "error": None}
