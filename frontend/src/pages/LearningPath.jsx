@@ -13,7 +13,7 @@ function MarkdownLite({ text }) {
     let i = 0;
 
     const isUl = (l) => /^-\s+/.test(l);
-    const isOl = (l) => /^\d+[\.|\)]\s+/.test(l);
+    const isOl = (l) => /^\d+[.)]\s+/.test(l);
     const isH1 = (l) => /^#\s+/.test(l);
     const isH2 = (l) => /^##\s+/.test(l);
     const isH3 = (l) => /^###\s+/.test(l);
@@ -54,14 +54,13 @@ function MarkdownLite({ text }) {
       if (isOl(line)) {
         const items = [];
         while (i < lines.length && isOl(lines[i] || "")) {
-          items.push(String(lines[i]).replace(/^\d+[\.|\)]\s+/, "").trim());
+          items.push(String(lines[i]).replace(/^\d+[.)]\s+/, "").trim());
           i += 1;
         }
         out.push({ type: "ol", items });
         continue;
       }
 
-      // paragraph block
       const para = [];
       while (
         i < lines.length &&
@@ -143,52 +142,19 @@ function ScorePill({ score, max }) {
   );
 }
 
-function TaskRow({ task, checked, onToggle, assigned }) {
-  const t = task || {};
-  const title = t.title || "(Không có tiêu đề)";
+function levelMeta(levelRaw) {
+  const level = String(levelRaw || "").toLowerCase();
+  if (level.includes("yếu") || level.includes("yeu")) return { label: "Yếu", color: "#cf1322", bg: "#fff1f0" };
+  if (level.includes("trung")) return { label: "Trung bình", color: "#d46b08", bg: "#fff7e6" };
+  if (level.includes("giỏi") || level.includes("gioi")) return { label: "Giỏi", color: "#389e0d", bg: "#f6ffed" };
+  return { label: levelRaw || "Khá", color: "#0958d9", bg: "#e6f4ff" };
+}
 
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "flex-start",
-        gap: 10,
-        padding: "10px 12px",
-        border: "1px solid #eee",
-        borderRadius: 10,
-        marginBottom: 8,
-        background: checked ? "#f6fffb" : "#fff",
-      }}
-    >
-      <input type="checkbox" checked={!!checked} onChange={(e) => onToggle(!!e.target.checked)} style={{ marginTop: 4 }} />
-      <div style={{ flex: 1 }}>
-        <div style={{ fontWeight: 700 }}>
-          {title}
-          {assigned && (
-            <span
-              style={{
-                background: "#1D4ED8",
-                color: "#fff",
-                fontSize: 11,
-                padding: "2px 9px",
-                borderRadius: 12,
-                marginLeft: 8,
-              }}
-            >
-              ⭐ Phù hợp với bạn
-            </span>
-          )}
-        </div>
-        {t.instructions && <div style={{ color: "#555", marginTop: 4 }}>{t.instructions}</div>}
-        {t.type === "quiz" && (
-          <div style={{ marginTop: 6, color: "#666" }}>
-            ✅ Quiz đã được tích hợp vào <strong>Bài tập về nhà</strong>.
-          </div>
-        )}
-      </div>
-      <div style={{ color: "#777", fontSize: 12, minWidth: 86, textAlign: "right" }}>{t.estimated_minutes ? `${t.estimated_minutes} phút` : ""}</div>
-    </div>
-  );
+function formatVNDate(dateLike) {
+  if (!dateLike) return "chưa rõ ngày";
+  const d = new Date(dateLike);
+  if (Number.isNaN(d.getTime())) return "chưa rõ ngày";
+  return d.toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
 export default function LearningPath() {
@@ -203,20 +169,34 @@ export default function LearningPath() {
   const [planDays, setPlanDays] = useState([]);
   const [selectedDay, setSelectedDay] = useState(1);
 
-  // { "day-task": true/false }
   const [taskCompletion, setTaskCompletion] = useState({});
-
-  // drafts[day] = { essay: string, mcq: { [questionId]: chosenIndex } }
   const [homeworkDrafts, setHomeworkDrafts] = useState({});
   const [homeworkGrades, setHomeworkGrades] = useState({});
 
   const [showGenerated, setShowGenerated] = useState(false);
   const [myPath, setMyPath] = useState(null);
   const [showOnlyMine, setShowOnlyMine] = useState(false);
+  const [finalExam, setFinalExam] = useState(null);
 
   const currentDay = useMemo(() => {
     return (planDays || []).find((d) => Number(d.day_index) === Number(selectedDay)) || null;
   }, [planDays, selectedDay]);
+
+  const timelineTasks = useMemo(
+    () =>
+      (planDays || []).flatMap((d) =>
+        (d.tasks || []).map((task, idx) => ({ dayIndex: Number(d.day_index), taskIndex: idx, dayTitle: d.title, task }))
+      ),
+    [planDays]
+  );
+
+  const completedCount = useMemo(
+    () => timelineTasks.filter((t) => taskCompletion[`${t.dayIndex}-${t.taskIndex}`]).length,
+    [timelineTasks, taskCompletion]
+  );
+
+  const allDone = timelineTasks.length > 0 && completedCount === timelineTasks.length;
+  const activeLevel = levelMeta(myPath?.student_level || plan?.student_level || "Khá");
 
   async function loadPersisted() {
     setLoading(true);
@@ -248,9 +228,7 @@ export default function LearningPath() {
       const grades = {};
       Object.entries(lp.homework_submissions || {}).forEach(([day, obj]) => {
         const di = Number(day);
-        const essay = obj?.answer_text || "";
-        const mcq = obj?.answer_json?.mcq_answers || {};
-        drafts[di] = { essay, mcq };
+        drafts[di] = { essay: obj?.answer_text || "", mcq: obj?.answer_json?.mcq_answers || {} };
         grades[di] = obj?.grade || null;
       });
       setHomeworkDrafts(drafts);
@@ -296,7 +274,6 @@ export default function LearningPath() {
     setError(null);
     setShowGenerated(false);
     try {
-      // Save for the current student.
       await apiJson(`/profile/${userId}/learning-path?save_plan=1&with_plan=1`);
       setShowGenerated(true);
       await loadPersisted();
@@ -321,36 +298,40 @@ export default function LearningPath() {
       .catch(() => {});
   }, [userId]);
 
+  useEffect(() => {
+    const cidRaw = localStorage.getItem("active_classroom_id");
+    const cid = Number(cidRaw);
+    if (!Number.isFinite(cid) || cid <= 0) return;
+    apiJson(`/classrooms/${cid}/assessments?kind=final_exam`)
+      .then((d) => {
+        const first = Array.isArray(d) ? d[0] : d?.items?.[0] || d?.data?.[0] || null;
+        setFinalExam(first);
+      })
+      .catch(() => setFinalExam(null));
+  }, [userId]);
+
   async function toggleTask(dayIndex, taskIndex, completed) {
     const key = `${dayIndex}-${taskIndex}`;
     setTaskCompletion((m) => ({ ...m, [key]: !!completed }));
-
-    if (!planId) return; // not persisted
+    if (!planId) return;
     try {
       await apiJson(`/learning-plans/${planId}/tasks/complete`, {
         method: "POST",
         body: JSON.stringify({ user_id: userId, day_index: dayIndex, task_index: taskIndex, completed: !!completed }),
       });
     } catch (e) {
-      // keep optimistic UI; show error only
       setError(String(e?.message || e));
     }
   }
 
   function setEssayDraft(dayIndex, value) {
-    setHomeworkDrafts((prev) => {
-      const day = { ...(prev[dayIndex] || { essay: "", mcq: {} }) };
-      day.essay = value;
-      return { ...prev, [dayIndex]: day };
-    });
+    setHomeworkDrafts((prev) => ({ ...prev, [dayIndex]: { ...(prev[dayIndex] || { essay: "", mcq: {} }), essay: value } }));
   }
 
   function setMcqDraft(dayIndex, questionId, chosenIndex) {
     setHomeworkDrafts((prev) => {
       const day = { ...(prev[dayIndex] || { essay: "", mcq: {} }) };
-      const mcq = { ...(day.mcq || {}) };
-      mcq[String(questionId)] = Number(chosenIndex);
-      day.mcq = mcq;
+      day.mcq = { ...(day.mcq || {}), [String(questionId)]: Number(chosenIndex) };
       return { ...prev, [dayIndex]: day };
     });
   }
@@ -362,11 +343,8 @@ export default function LearningPath() {
     }
 
     const draft = homeworkDrafts?.[dayIndex] || { essay: "", mcq: {} };
-    const essay = String(draft.essay || "");
-    const mcqAnswers = draft.mcq || {};
-
-    const hasMcq = Object.keys(mcqAnswers || {}).length > 0;
-    const hasEssay = essay.trim().length > 0;
+    const hasMcq = Object.keys(draft.mcq || {}).length > 0;
+    const hasEssay = String(draft.essay || "").trim().length > 0;
     if (!hasMcq && !hasEssay) {
       setError("Bạn chưa làm bài. Hãy chọn đáp án trắc nghiệm hoặc viết phần tự luận rồi nộp.");
       return;
@@ -375,25 +353,15 @@ export default function LearningPath() {
     setLoading(true);
     setError(null);
     try {
-      const payload = {
-        user_id: userId,
-        day_index: dayIndex,
-        answer_text: essay,
-        mcq_answers: mcqAnswers,
-      };
       const data = await apiJson(`/learning-plans/${planId}/homework/grade`, {
         method: "POST",
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ user_id: userId, day_index: dayIndex, answer_text: draft.essay || "", mcq_answers: draft.mcq || {} }),
       });
-
       setHomeworkGrades((g) => ({ ...g, [dayIndex]: data || null }));
 
-      // Auto-mark the "homework" task as done (if present)
       const dayObj = (planDays || []).find((d) => Number(d.day_index) === Number(dayIndex));
       const hwTaskIndex = (dayObj?.tasks || []).findIndex((t) => (t?.type || "").toLowerCase() === "homework");
-      if (hwTaskIndex >= 0) {
-        await toggleTask(dayIndex, hwTaskIndex, true);
-      }
+      if (hwTaskIndex >= 0) await toggleTask(dayIndex, hwTaskIndex, true);
     } catch (e) {
       setError(String(e?.message || e));
     } finally {
@@ -401,292 +369,143 @@ export default function LearningPath() {
     }
   }
 
-
   const assignedTopicIds = new Set((myPath?.assigned_tasks || []).map((t) => Number(t?.topic_id)).filter((v) => Number.isFinite(v)));
-  const isAssigned = (task) => assignedTopicIds.has(Number(task?.topic_id));
-
-  const filteredTaskEntries = (currentDay?.tasks || [])
-    .map((task, idx) => ({ task, idx }))
-    .filter(({ task }) => !showOnlyMine || isAssigned(task));
-
-  const pageWrap = { maxWidth: 980, margin: "0 auto", padding: 16 };
+  const pageWrap = { maxWidth: 1020, margin: "0 auto", padding: 16 };
   const card = { border: "1px solid #eee", borderRadius: 14, padding: 16, background: "#fff" };
 
   return (
     <div style={pageWrap}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
-        <div>
-          <h2 style={{ margin: 0 }}>📌 Learning Path (mỗi ngày 1 bài + 1 bài tập)</h2>
-          <div style={{ color: "#666", marginTop: 4 }}>
-            Học sinh đọc <strong>1 bài như sách giáo khoa</strong> mỗi ngày, rồi làm <strong>Bài tập về nhà</strong> (trắc nghiệm + tự luận) để nhận điểm.
-            {myPath?.student_level && <span> • Level hiện tại: <strong>{myPath.student_level}</strong></span>}
+      <style>{`
+        .timeline-item { transition: all .35s ease; }
+        .timeline-item.done { transform: translateX(16px); background: #f6ffed; }
+        .confetti-wrap { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+        .confetti-piece { position: absolute; width: 7px; height: 12px; opacity: .85; animation: fall 2.2s ease-out forwards; }
+        @keyframes fall { 0% { transform: translateY(-20px) rotate(0deg); } 100% { transform: translateY(180px) rotate(360deg); opacity: 0; } }
+      `}</style>
+
+      <div style={{ ...card, marginBottom: 12, position: "relative", overflow: "hidden" }}>
+        {allDone && (
+          <div className="confetti-wrap">
+            {Array.from({ length: 24 }).map((_, i) => (
+              <span
+                key={i}
+                className="confetti-piece"
+                style={{ left: `${(i * 4.2) % 100}%`, animationDelay: `${(i % 8) * 0.1}s`, background: ["#0958d9", "#52c41a", "#faad14", "#f5222d"][i % 4] }}
+              />
+            ))}
           </div>
-        </div>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
-          <button onClick={generateAndSavePlan} disabled={loading}>
-            Tạo mới & lưu plan
-          </button>
-          <button
-            onClick={() => setShowOnlyMine((v) => !v)}
-            disabled={loading}
-            style={{ background: "#1D4ED8", color: "#fff", border: "none", padding: "6px 14px", borderRadius: 8, cursor: "pointer" }}
-          >
-            {showOnlyMine ? "Xem tất cả" : "⭐ Chỉ xem bài của tôi"}
-          </button>
-          <button onClick={() => loadPersisted()} disabled={loading}>
-            Tải lại
-          </button>
+        )}
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <h2 style={{ margin: 0 }}>🎯 Lộ trình học tập cá nhân</h2>
+            <div style={{ marginTop: 6, color: "#333" }}>
+              Trình độ của bạn: <strong>{activeLevel.label}</strong> — Dựa trên bài kiểm tra đầu vào {formatVNDate(myPath?.assessment_date || plan?.created_at)}
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <span style={{ padding: "4px 10px", borderRadius: 999, color: activeLevel.color, background: activeLevel.bg, fontWeight: 700, border: `1px solid ${activeLevel.color}22` }}>
+                {activeLevel.label}
+              </span>
+            </div>
+            <div style={{ marginTop: 10, color: "#555" }}>Đã hoàn thành {completedCount}/{timelineTasks.length || 0} nhiệm vụ</div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, alignItems: "flex-start", flexWrap: "wrap" }}>
+            <button onClick={generateAndSavePlan} disabled={loading}>Tạo mới & lưu plan</button>
+            <button onClick={() => setShowOnlyMine((v) => !v)} style={{ background: "#1D4ED8", color: "#fff", border: "none", padding: "6px 14px", borderRadius: 8, cursor: "pointer" }}>
+              {showOnlyMine ? "Xem tất cả" : "⭐ Chỉ xem bài của tôi"}
+            </button>
+            <button onClick={() => loadPersisted()} disabled={loading}>Tải lại</button>
+          </div>
         </div>
       </div>
 
-      {showGenerated && (
-        <div style={{ marginBottom: 12, padding: 10, border: "1px solid #b7eb8f", background: "#f6ffed", borderRadius: 10 }}>
-          ✅ Đã tạo và lưu plan mới.
+      {finalExam && (
+        <div style={{ ...card, marginBottom: 12, borderColor: "#91caff", background: "#e6f4ff" }}>
+          📝 Bài kiểm tra cuối kỳ: <strong>{formatVNDate(finalExam?.scheduled_at || finalExam?.exam_date || finalExam?.start_at)}</strong> — Bạn đã hoàn thành {completedCount}/{timelineTasks.length || 0} nhiệm vụ.
+          {(new Date(finalExam?.scheduled_at || finalExam?.exam_date || finalExam?.start_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24) <= 10 && (
+            <button onClick={() => nav("/quiz")} style={{ marginLeft: 10 }}>Bắt đầu ôn thi</button>
+          )}
         </div>
       )}
 
-      {error && (
-        <div style={{ marginBottom: 12, padding: 10, border: "1px solid #ffa39e", background: "#fff1f0", borderRadius: 10 }}>
-          {error}
-        </div>
-      )}
-
+      {showGenerated && <div style={{ marginBottom: 12, padding: 10, border: "1px solid #b7eb8f", background: "#f6ffed", borderRadius: 10 }}>✅ Đã tạo và lưu plan mới.</div>}
+      {error && <div style={{ marginBottom: 12, padding: 10, border: "1px solid #ffa39e", background: "#fff1f0", borderRadius: 10 }}>{error}</div>}
       {loading && <div style={{ color: "#666", marginBottom: 12 }}>Đang tải…</div>}
 
       {!planDays?.length ? (
-        <div style={{ ...card, color: "#666" }}>
-          Chưa có learning plan. Bấm <strong>Tạo mới & lưu plan</strong> để tạo lộ trình theo tài liệu.
-        </div>
+        <div style={{ ...card, color: "#666" }}>Chưa có learning plan. Bấm <strong>Tạo mới & lưu plan</strong> để tạo lộ trình theo tài liệu.</div>
       ) : (
         <>
           <div style={{ ...card, marginBottom: 12 }}>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {(planDays || []).map((d) => (
-                <button
-                  key={d.day_index}
-                  onClick={() => setSelectedDay(d.day_index)}
-                  style={{
-                    padding: "8px 10px",
-                    borderRadius: 999,
-                    border: selectedDay === d.day_index ? "1px solid #1677ff" : "1px solid #ddd",
-                    background: selectedDay === d.day_index ? "#e6f4ff" : "#fff",
-                    cursor: "pointer",
-                  }}
-                >
-                  Bài {d.day_index}
-                </button>
-              ))}
+            <h3 style={{ marginTop: 0 }}>📍 Timeline nhiệm vụ</h3>
+            <div style={{ position: "relative", paddingLeft: 18 }}>
+              <div style={{ position: "absolute", left: 6, top: 0, bottom: 0, width: 2, background: "#e5e7eb" }} />
+              {timelineTasks
+                .filter(({ task }) => !showOnlyMine || assignedTopicIds.has(Number(task?.topic_id)))
+                .map(({ dayIndex, taskIndex, dayTitle, task }) => {
+                  const key = `${dayIndex}-${taskIndex}`;
+                  const done = !!taskCompletion?.[key];
+                  const inProgress = !done && dayIndex === Number(selectedDay);
+                  const statusIcon = done ? "✅" : inProgress ? "📖" : "⏳";
+                  const statusText = done ? "Hoàn thành" : inProgress ? "Đang học" : "Chưa bắt đầu";
+                  return (
+                    <div key={key} className={`timeline-item ${done ? "done" : ""}`} style={{ marginBottom: 12, padding: 12, border: "1px solid #eee", borderRadius: 12, marginLeft: 12 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                        <div>
+                          <div style={{ fontSize: 13, color: "#666" }}>Bài {dayIndex} • {dayTitle}</div>
+                          <div style={{ fontWeight: 700, marginTop: 2 }}>{statusIcon} {task?.title || "(Không có tiêu đề)"}</div>
+                          <div style={{ marginTop: 4, color: "#555" }}>{task?.instructions || "Nhiệm vụ học tập trong lộ trình cá nhân của bạn."}</div>
+                          <div style={{ marginTop: 6, fontSize: 13, color: "#666" }}>Trạng thái: {statusText} • ⏱ ~{task?.estimated_minutes || 15} phút</div>
+                        </div>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-start" }}>
+                          <button onClick={() => nav(`/topics/${task?.topic_id || ""}`)} disabled={!task?.topic_id}>📚 Học bài</button>
+                          <button onClick={() => nav(`/quiz/practice/${task?.topic_id || ""}`)} disabled={!task?.topic_id}>✏️ Làm bài tập</button>
+                          <button onClick={() => { setSelectedDay(dayIndex); toggleTask(dayIndex, taskIndex, true); }}>✅ Đánh dấu hoàn thành</button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
             </div>
-            {plan?.summary && (
-              <div style={{ marginTop: 12, color: "#555", whiteSpace: "pre-wrap" }}>
-                <strong>Tóm tắt lộ trình:</strong> {plan.summary}
-              </div>
-            )}
           </div>
 
           {currentDay && (
             <div style={card}>
-              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
-                <div>
-                  <h3 style={{ marginTop: 0, marginBottom: 6 }}>{currentDay.title}</h3>
-                  {!!(currentDay.objectives || []).length && (
-                    <ul style={{ margin: "0 0 0 20px", color: "#555" }}>
-                      {(currentDay.objectives || []).map((o, idx) => (
-                        <li key={idx}>{o}</li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-
-                {/* Score summary */}
-                {homeworkGrades?.[currentDay.day_index] && (
-                  <div style={{ marginTop: 2 }}>
-                    <ScorePill
-                      score={Number(homeworkGrades[currentDay.day_index]?.score_points || 0)}
-                      max={Number(homeworkGrades[currentDay.day_index]?.max_points || 0)}
-                    />
-                  </div>
-                )}
+              <h3 style={{ marginTop: 0 }}>{currentDay.title}</h3>
+              <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+                <MarkdownLite text={currentDay.lesson_md || "(Chưa có nội dung bài học)"} />
               </div>
 
-              {/* Lesson */}
-              <div style={{ marginTop: 14, padding: 14, border: "1px solid #f0f0f0", borderRadius: 12, background: "#fcfcff" }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
-                  <h4 style={{ margin: 0 }}>📘 Bài học hôm nay</h4>
-                  <button
-                    onClick={() => {
-                      const taskIndex = (currentDay.tasks || []).findIndex((t) => (t?.type || "").toLowerCase() === "read");
-                      if (taskIndex >= 0) toggleTask(currentDay.day_index, taskIndex, true);
-                    }}
-                    style={{ fontSize: 13 }}
-                  >
-                    ✅ Đánh dấu đã đọc
-                  </button>
-                </div>
-                <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 12, padding: 14 }}>
-                  <MarkdownLite text={currentDay.lesson_md || "(Chưa có nội dung bài học)"} />
-                </div>
-              </div>
-
-              {/* Tasks */}
-              <div style={{ marginTop: 14 }}>
-                <h4 style={{ margin: "0 0 10px 0" }}>📋 Nhiệm vụ hôm nay</h4>
-                {filteredTaskEntries.length ? (
-                  filteredTaskEntries.map(({ task: t, idx }) => {
-                    const key = `${currentDay.day_index}-${idx}`;
-                    return (
-                      <TaskRow
-                        key={key}
-                        task={t}
-                        checked={!!taskCompletion?.[key]}
-                        onToggle={(val) => toggleTask(currentDay.day_index, idx, val)}
-                        assigned={isAssigned(t)}
-                      />
-                    );
-                  })
-                ) : (
-                  <div style={{ color: "#666" }}>Không có nhiệm vụ.</div>
-                )}
-              </div>
-
-              {/* Homework */}
-              <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px dashed #eee" }}>
-                <h4 style={{ margin: "0 0 10px 0" }}>🏠 Bài tập về nhà</h4>
-
+              <div style={{ marginTop: 12, paddingTop: 16, borderTop: "1px dashed #eee" }}>
+                <h4 style={{ margin: "0 0 10px 0" }}>🏠 Bài tập tự luận</h4>
                 {!currentDay.homework ? (
                   <div style={{ color: "#666" }}>Hôm nay chưa có bài tập.</div>
                 ) : (
                   <>
-                    {/* MCQ */}
                     {!!(currentDay.homework?.mcq_questions || []).length && (
                       <div style={{ marginBottom: 14 }}>
                         <div style={{ fontWeight: 700, marginBottom: 8 }}>Phần A — Trắc nghiệm</div>
                         {(currentDay.homework.mcq_questions || []).map((q, qi) => {
                           const qid = q.question_id || `mcq_${qi + 1}`;
                           const chosen = homeworkDrafts?.[currentDay.day_index]?.mcq?.[qid];
-
-                          // If graded, find breakdown for this q
-                          const g = homeworkGrades?.[currentDay.day_index];
-                          const gb = (g?.mcq_breakdown || []).find((x) => String(x?.question_id) === String(qid));
-                          const correctIndex = gb?.correct_index;
-
                           return (
-                            <div
-                              key={qid}
-                              style={{
-                                border: "1px solid #eee",
-                                borderRadius: 12,
-                                padding: 12,
-                                marginBottom: 10,
-                                background: "#fff",
-                              }}
-                            >
-                              <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                                <div style={{ fontWeight: 700 }}>
-                                  Câu {qi + 1} ({q.max_points || 1}đ)
-                                </div>
-                                {gb && (
-                                  <div style={{ color: gb.is_correct ? "#1f7a1f" : "#a8071a", fontWeight: 700 }}>
-                                    {gb.score_points}/{gb.max_points}đ
-                                  </div>
-                                )}
-                              </div>
+                            <div key={qid} style={{ border: "1px solid #eee", borderRadius: 12, padding: 12, marginBottom: 10, background: "#fff" }}>
+                              <div style={{ fontWeight: 700 }}>Câu {qi + 1}</div>
                               <div style={{ marginTop: 6 }}>{q.stem}</div>
-
                               <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
-                                {(q.options || []).map((opt, oi) => {
-                                  const isChosen = Number(chosen) === Number(oi);
-                                  const isCorrect = Number(correctIndex) === Number(oi);
-
-                                  return (
-                                    <label
-                                      key={oi}
-                                      style={{
-                                        display: "flex",
-                                        alignItems: "flex-start",
-                                        gap: 8,
-                                        padding: "8px 10px",
-                                        borderRadius: 10,
-                                        border: "1px solid #eee",
-                                        background: gb
-                                          ? isCorrect
-                                            ? "#f6ffed"
-                                            : isChosen
-                                              ? "#fff1f0"
-                                              : "#fff"
-                                          : isChosen
-                                            ? "#f0f7ff"
-                                            : "#fff",
-                                      }}
-                                    >
-                                      <input
-                                        type="radio"
-                                        name={`d${currentDay.day_index}-${qid}`}
-                                        checked={isChosen}
-                                        onChange={() => setMcqDraft(currentDay.day_index, qid, oi)}
-                                        disabled={!!gb}
-                                        style={{ marginTop: 3 }}
-                                      />
-                                      <span>
-                                        {String.fromCharCode(65 + oi)}. {opt}
-                                        {gb && isCorrect && <span style={{ marginLeft: 8, color: "#1f7a1f", fontWeight: 700 }}>✓ Đúng</span>}
-                                        {gb && isChosen && !isCorrect && <span style={{ marginLeft: 8, color: "#a8071a", fontWeight: 700 }}>✗ Bạn chọn</span>}
-                                      </span>
-                                    </label>
-                                  );
-                                })}
+                                {(q.options || []).map((opt, oi) => (
+                                  <label key={oi} style={{ display: "flex", gap: 8 }}>
+                                    <input type="radio" name={`d${currentDay.day_index}-${qid}`} checked={Number(chosen) === Number(oi)} onChange={() => setMcqDraft(currentDay.day_index, qid, oi)} disabled={!!homeworkGrades?.[currentDay.day_index]} />
+                                    <span>{String.fromCharCode(65 + oi)}. {opt}</span>
+                                  </label>
+                                ))}
                               </div>
-
-                              {/* Instant detailed answer after student chooses (practice-friendly) */}
-                              {!gb && chosen != null && chosen !== "" && Number.isFinite(Number(q.correct_index)) && (
-                                (() => {
-                                  const chosenI = Number(chosen);
-                                  const correctI = Number(q.correct_index);
-                                  const isCorrectNow = chosenI === correctI;
-                                  const chosenText = (q.options || [])[chosenI] || "";
-                                  const correctText = (q.options || [])[correctI] || "";
-                                  return (
-                                    <div
-                                      style={{
-                                        marginTop: 10,
-                                        background: isCorrectNow ? "#f6ffed" : "#fff1f0",
-                                        border: isCorrectNow ? "1px solid #b7eb8f" : "1px solid #ffccc7",
-                                        borderRadius: 12,
-                                        padding: 10,
-                                        color: "#333",
-                                      }}
-                                    >
-                                      <div style={{ fontWeight: 900 }}>{isCorrectNow ? "✅ Đúng" : "❌ Sai"}</div>
-                                      {!isCorrectNow && (
-                                        <div style={{ marginTop: 6 }}>
-                                          Bạn chọn: <b>{chosenText || `(${chosenI})`}</b>
-                                        </div>
-                                      )}
-                                      <div style={{ marginTop: 6 }}>
-                                        Đáp án đúng: <b>{correctText || `(${correctI})`}</b>
-                                      </div>
-                                      {q.explanation ? (
-                                        <div style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>
-                                          <b>Giải thích:</b> {q.explanation}
-                                        </div>
-                                      ) : null}
-                                    </div>
-                                  );
-                                })()
-                              )}
-
-                              {gb?.explanation && (
-                                <div style={{ marginTop: 10, color: "#555" }}>
-                                  <strong>Giải thích:</strong> {gb.explanation}
-                                </div>
-                              )}
                             </div>
                           );
                         })}
                       </div>
                     )}
 
-                    {/* Essay */}
                     <div style={{ marginBottom: 10 }}>
                       <div style={{ fontWeight: 700, marginBottom: 8 }}>Phần B — Tự luận</div>
                       <div style={{ color: "#333" }}>{currentDay.homework.stem}</div>
@@ -699,62 +518,18 @@ export default function LearningPath() {
                         disabled={!!homeworkGrades?.[currentDay.day_index]}
                       />
                       <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                        <button onClick={() => gradeHomework(currentDay.day_index)} disabled={loading}>
-                          Nộp bài & chấm điểm
-                        </button>
-                        {!!homeworkGrades?.[currentDay.day_index] && (
-                          <button
-                            onClick={() => {
-                              // allow re-submit by clearing grade
-                              setHomeworkGrades((g) => ({ ...g, [currentDay.day_index]: null }));
-                            }}
-                            style={{ background: "#fff", border: "1px solid #ddd" }}
-                          >
-                            Làm lại (xoá kết quả)
-                          </button>
-                        )}
+                        <button onClick={() => gradeHomework(currentDay.day_index)} disabled={loading}>Nộp bài</button>
+                        {!!homeworkGrades?.[currentDay.day_index] && <button onClick={() => setHomeworkGrades((g) => ({ ...g, [currentDay.day_index]: null }))} style={{ background: "#fff", border: "1px solid #ddd" }}>Làm lại (xoá kết quả)</button>}
                       </div>
                     </div>
 
-                    {/* Grading details */}
                     {!!homeworkGrades?.[currentDay.day_index] && (
                       <div style={{ marginTop: 12, padding: 12, border: "1px solid #eee", borderRadius: 12, background: "#fafafa" }}>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
                           <div style={{ fontWeight: 800 }}>📌 Kết quả chấm</div>
-                          <ScorePill
-                            score={Number(homeworkGrades[currentDay.day_index]?.score_points || 0)}
-                            max={Number(homeworkGrades[currentDay.day_index]?.max_points || 0)}
-                          />
+                          <ScorePill score={Number(homeworkGrades[currentDay.day_index]?.score_points || 0)} max={Number(homeworkGrades[currentDay.day_index]?.max_points || 0)} />
                         </div>
-
-                        {homeworkGrades[currentDay.day_index]?.comment && (
-                          <div style={{ marginTop: 10, whiteSpace: "pre-wrap" }}>
-                            <strong>Nhận xét:</strong> {homeworkGrades[currentDay.day_index]?.comment}
-                          </div>
-                        )}
-
-                        {!!(homeworkGrades[currentDay.day_index]?.rubric_breakdown || []).length && (
-                          <div style={{ marginTop: 12 }}>
-                            <div style={{ fontWeight: 700, marginBottom: 6 }}>Rubric (tự luận)</div>
-                            <div style={{ display: "grid", gap: 8 }}>
-                              {(homeworkGrades[currentDay.day_index]?.rubric_breakdown || []).map((r, idx) => (
-                                <div key={idx} style={{ padding: 10, borderRadius: 10, border: "1px solid #e6e6e6", background: "#fff" }}>
-                                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                                    <strong>{r.criterion}</strong>
-                                    <span style={{ fontWeight: 700 }}>
-                                      {r.score}/{r.max}
-                                    </span>
-                                  </div>
-                                  {r.feedback && <div style={{ color: "#555", marginTop: 6 }}>{r.feedback}</div>}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        <div style={{ marginTop: 12, color: "#666" }}>
-                          Muốn hỏi lại/hiểu sâu hơn? Bạn có thể qua <button onClick={() => nav("/tutor")} style={{ padding: "2px 8px" }}>Tutor</button> và dán câu hỏi kèm đoạn bạn chưa hiểu.
-                        </div>
+                        {homeworkGrades[currentDay.day_index]?.comment && <div style={{ marginTop: 10, whiteSpace: "pre-wrap" }}><strong>Nhận xét:</strong> {homeworkGrades[currentDay.day_index]?.comment}</div>}
                       </div>
                     )}
                   </>
