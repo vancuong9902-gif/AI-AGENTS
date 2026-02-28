@@ -153,6 +153,38 @@ function levelFromRaw(levelRaw) {
 }
 
 
+
+function StudentLevelBadge({ level }) {
+  const meta = levelMeta(level);
+  return (
+    <span
+      style={{
+        padding: "4px 10px",
+        borderRadius: 999,
+        color: meta.color,
+        background: meta.bg,
+        fontWeight: 700,
+        border: `1px solid ${meta.color}22`,
+      }}
+    >
+      {meta.label}
+    </span>
+  );
+}
+
+function itemTypeIcon(type) {
+  if (type === "homework") return "✏️";
+  if (type === "quiz") return "📝";
+  return "📖";
+}
+
+function difficultyBadgeStyle(difficulty) {
+  const d = String(difficulty || "medium").toLowerCase();
+  if (d === "hard") return { color: "#cf1322", bg: "#fff1f0" };
+  if (d === "easy") return { color: "#389e0d", bg: "#f6ffed" };
+  return { color: "#0958d9", bg: "#e6f4ff" };
+}
+
 const PRACTICE_LEVELS = [
   { key: "easy", label: "Dễ", bloom: "Remember / Understand" },
   { key: "medium", label: "Trung bình", bloom: "Apply / Analyze" },
@@ -245,6 +277,8 @@ export default function LearningPath() {
   const [levelDetails, setLevelDetails] = useState(null);
   const [showOnlyMine, setShowOnlyMine] = useState(false);
   const [finalExam, setFinalExam] = useState(null);
+  const [currentPlan, setCurrentPlan] = useState(null);
+  const [planView, setPlanView] = useState("sections");
   const [comparison, setComparison] = useState(null);
 
   const currentDay = useMemo(() => {
@@ -265,6 +299,22 @@ export default function LearningPath() {
   );
 
   const allDone = timelineTasks.length > 0 && completedCount === timelineTasks.length;
+  const activeLevel = levelMeta(myPath?.student_level || plan?.student_level || "Khá");
+  const adaptiveItems = useMemo(() => (Array.isArray(currentPlan?.items) ? currentPlan.items : []), [currentPlan]);
+  const groupedAdaptive = useMemo(() => ({
+    study_material: adaptiveItems.filter((x) => x?.type === "study_material"),
+    homework: adaptiveItems.filter((x) => x?.type === "homework"),
+    quiz: adaptiveItems.filter((x) => x?.type === "quiz"),
+  }), [adaptiveItems]);
+  const adaptiveByDay = useMemo(() => {
+    const map = {};
+    adaptiveItems.forEach((it) => {
+      const day = Number(it?.day || 1);
+      if (!map[day]) map[day] = [];
+      map[day].push(it);
+    });
+    return Object.entries(map).sort((a, b) => Number(a[0]) - Number(b[0]));
+  }, [adaptiveItems]);
   const activeLevel = levelDetails || levelFromRaw(myPath?.student_level || plan?.student_level || "Khá");
   const planStats = useMemo(() => {
     const tasks = timelineTasks.map((x) => x.task || {});
@@ -319,6 +369,18 @@ export default function LearningPath() {
     }
   }
 
+  async function loadCurrentPlan() {
+    try {
+      const cidRaw = localStorage.getItem("active_classroom_id");
+      const cid = cidRaw && String(cidRaw).trim() ? Number(cidRaw) : null;
+      const q = Number.isFinite(cid) && cid > 0 ? `?classroom_id=${cid}` : "";
+      const data = await apiJson(`/learning-plans/${userId}/current${q}`);
+      setCurrentPlan(data || null);
+    } catch {
+      setCurrentPlan(null);
+    }
+  }
+
   async function loadEphemeral() {
     setLoading(true);
     setError(null);
@@ -353,6 +415,7 @@ export default function LearningPath() {
       await apiJson(`/profile/${userId}/learning-path?save_plan=1&with_plan=1`);
       setShowGenerated(true);
       await loadPersisted();
+      await loadCurrentPlan();
     } catch (e) {
       setError(String(e?.message || e));
     } finally {
@@ -364,6 +427,7 @@ export default function LearningPath() {
     (async () => {
       const ok = await loadPersisted();
       if (!ok) await loadEphemeral();
+      await loadCurrentPlan();
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
@@ -500,6 +564,12 @@ export default function LearningPath() {
             <div style={{ marginTop: 8, maxWidth: 620 }}>
               <StudentLevelBadge level={activeLevel} size="lg" />
             </div>
+            <div style={{ marginTop: 8 }}>
+              <StudentLevelBadge level={currentPlan?.student_level || activeLevel.label} />
+            </div>
+            <div style={{ marginTop: 10, color: "#555" }}>
+              Đã hoàn thành {currentPlan?.completed_items ?? completedCount}/{currentPlan?.total_items ?? (timelineTasks.length || 0)} bài
+            </div>
             <div style={{ marginTop: 10, color: "#555" }}>
               Lộ trình AI tạo cho trình độ <strong>{String(activeLevel?.label || "Khá").toUpperCase()}</strong>: {planStats.materials} tài liệu | {planStats.exercises} bài tập | {planStats.tests} bài kiểm tra
             </div>
@@ -515,6 +585,72 @@ export default function LearningPath() {
           </div>
         </div>
       </div>
+
+      {currentPlan && (
+        <div style={{ ...card, marginBottom: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+            <div>
+              <h3 style={{ margin: 0 }}>🧠 Adaptive learning plan</h3>
+              <div style={{ marginTop: 6, color: "#555" }}>{currentPlan.ai_explanation}</div>
+              <div style={{ marginTop: 8, fontSize: 13, color: "#666" }}>
+                Dự kiến hoàn thành: {currentPlan.estimated_completion_days} ngày
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setPlanView("sections")} style={{ background: planView === "sections" ? "#1d4ed8" : "#fff", color: planView === "sections" ? "#fff" : "#1d4ed8", border: "1px solid #bfdbfe" }}>Theo loại</button>
+              <button onClick={() => setPlanView("timeline")} style={{ background: planView === "timeline" ? "#1d4ed8" : "#fff", color: planView === "timeline" ? "#fff" : "#1d4ed8", border: "1px solid #bfdbfe" }}>Theo ngày</button>
+            </div>
+          </div>
+
+          {!!currentPlan?.weak_topics?.length && <div style={{ marginTop: 8, color: "#cf1322" }}>Cần ưu tiên: {currentPlan.weak_topics.join(", ")}</div>}
+          {!!currentPlan?.strong_topics?.length && <div style={{ marginTop: 6, color: "#389e0d" }}>Thế mạnh: {currentPlan.strong_topics.join(", ")}</div>}
+
+          {planView === "sections" ? (
+            <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+              {[
+                { key: "study_material", title: "📚 Tài liệu học" },
+                { key: "homework", title: "✏️ Bài tập" },
+                { key: "quiz", title: "📝 Mini Quiz" },
+              ].map((sec) => (
+                <div key={sec.key} style={{ border: "1px solid #eee", borderRadius: 10, padding: 10 }}>
+                  <div style={{ fontWeight: 700, marginBottom: 8 }}>{sec.title}</div>
+                  {(groupedAdaptive[sec.key] || []).map((it) => {
+                    const diff = difficultyBadgeStyle(it?.difficulty);
+                    const status = it?.status === "hoan_thanh" ? "Hoàn thành ✅" : it?.status === "dang_lam" ? "Đang làm" : "Chưa làm";
+                    const action = it?.status === "hoan_thanh" ? "Xem lại" : it?.status === "dang_lam" ? "Tiếp tục" : "Bắt đầu";
+                    return (
+                      <div key={`${sec.key}-${it.order}-${it.topic_id}`} style={{ display: "flex", justifyContent: "space-between", gap: 10, borderTop: "1px dashed #eee", padding: "8px 0" }}>
+                        <div>
+                          <div style={{ fontWeight: 600 }}>{itemTypeIcon(it?.type)} {it?.topic_title}</div>
+                          <div style={{ marginTop: 4, fontSize: 13, color: "#666" }}>Trạng thái: {status} • ⏱ {it?.estimated_minutes || 15} phút</div>
+                          <div style={{ marginTop: 4, fontSize: 13 }} title={it?.reason || ""}>❓ Tại sao? {it?.reason}</div>
+                        </div>
+                        <div style={{ textAlign: "right" }}>
+                          <span style={{ fontSize: 12, padding: "3px 8px", borderRadius: 999, background: diff.bg, color: diff.color }}>{it?.difficulty || "medium"}</span>
+                          <div style={{ marginTop: 8 }}><button>{action}</button></div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
+              {adaptiveByDay.map(([day, dayItems]) => (
+                <div key={day} style={{ border: "1px solid #eee", borderRadius: 10, padding: 10 }}>
+                  <div style={{ fontWeight: 700, marginBottom: 6 }}>Day {day}</div>
+                  {(dayItems || []).map((it) => (
+                    <div key={`day-${day}-${it.order}`} style={{ fontSize: 14, color: "#444", marginBottom: 4 }}>
+                      {itemTypeIcon(it?.type)} {it?.topic_title} · {it?.difficulty}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {finalExam && (
         <div style={{ ...card, marginBottom: 12, borderColor: "#91caff", background: "#e6f4ff" }}>

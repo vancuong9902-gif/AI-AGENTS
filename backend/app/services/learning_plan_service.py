@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from math import ceil
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import or_
@@ -20,6 +21,221 @@ from app.schemas.profile import (
     TeacherLearningPlan,
 )
 from app.services.llm_service import chat_json, llm_available, pack_chunks
+
+
+ADAPTIVE_LEVEL_CONFIG: Dict[str, Dict[str, Any]] = {
+    "gioi": {
+        "label": "Giỏi",
+        "difficulty_mix": {"hard": 0.6, "medium": 0.3, "easy": 0.1},
+        "material_style": "Ưu tiên section nâng cao + external references",
+        "reason_prefix": "Tăng cường tư duy bậc cao (Bloom: evaluate/create)",
+    },
+    "kha": {
+        "label": "Khá",
+        "difficulty_mix": {"hard": 0.3, "medium": 0.5, "easy": 0.2},
+        "material_style": "Cân bằng kiến thức mới và phần ôn tập theo chủ đề yếu",
+        "reason_prefix": "Cân bằng học mới + củng cố weak topics",
+    },
+    "trung_binh": {
+        "label": "Trung bình",
+        "difficulty_mix": {"hard": 0.1, "medium": 0.4, "easy": 0.5},
+        "material_style": "Bắt đầu từ nền tảng, nhiều ví dụ minh hoạ",
+        "reason_prefix": "Ưu tiên kiến thức cốt lõi và ví dụ thực hành",
+    },
+    "yeu": {
+        "label": "Yếu",
+        "difficulty_mix": {"hard": 0.0, "medium": 0.2, "easy": 0.8},
+        "material_style": "Video/text explanation ưu tiên, học lại nền tảng",
+        "reason_prefix": "Cần củng cố nền tảng trước khi tăng độ khó",
+    },
+}
+
+
+def _level_from_score(score: int | float | None) -> str:
+    s = float(score or 0)
+    if s >= 85:
+        return "gioi"
+    if s >= 70:
+        return "kha"
+    if s >= 50:
+        return "trung_binh"
+    return "yeu"
+
+
+def _pick_difficulty_sequence(total: int, mix: Dict[str, float]) -> List[str]:
+    n = max(0, int(total or 0))
+    if n <= 0:
+        return []
+
+    raw = {k: max(0.0, float(v or 0.0)) for k, v in (mix or {}).items()}
+    if sum(raw.values()) <= 0:
+        raw = {"hard": 0.2, "medium": 0.5, "easy": 0.3}
+
+    counts = {k: int(n * v) for k, v in raw.items()}
+    remain = n - sum(counts.values())
+    priority = sorted(raw.items(), key=lambda x: x[1], reverse=True)
+    i = 0
+    while remain > 0 and priority:
+        counts[priority[i % len(priority)][0]] = counts.get(priority[i % len(priority)][0], 0) + 1
+        remain -= 1
+        i += 1
+
+    seq: List[str] = []
+    for k in ["easy", "medium", "hard"]:
+        seq.extend([k] * int(counts.get(k, 0)))
+    return seq[:n]
+
+
+def generate_learning_plan_items(
+    *,
+    user_id: int,
+    classroom_id: int,
+    level: str,
+    weak_topics: List[Dict[str, Any]] | List[str],
+    all_topics: List[Dict[str, Any]] | List[str],
+) -> Dict[str, Any]:
+    """Sinh danh sách item adaptive theo level, weak topics và toàn bộ topics."""
+
+    lvl = (level or "").strip().lower() or "trung_binh"
+    if lvl not in ADAPTIVE_LEVEL_CONFIG:
+        lvl = "trung_binh"
+    cfg = ADAPTIVE_LEVEL_CONFIG[lvl]
+
+    def _normalize_topic(tp: Any, fallback_id: int) -> Dict[str, Any]:
+        if isinstance(tp, dict):
+            title = str(tp.get("title") or tp.get("topic") or f"Topic {fallback_id}").strip()
+            tid = int(tp.get("id") or tp.get("topic_id") or fallback_id)
+        else:
+            title = str(tp or f"Topic {fallback_id}").strip()
+            tid = int(fallback_id)
+        return {"id": tid, "title": title}
+
+    weak_norm = [_normalize_topic(t, idx + 1) for idx, t in enumerate(weak_topics or [])]
+    all_norm = [_normalize_topic(t, idx + 100) for idx, t in enumerate(all_topics or [])]
+
+    prioritized = weak_norm + [t for t in all_norm if t["title"] not in {w["title"] for w in weak_norm}]
+    prioritized = [t for t in prioritized if t.get("title")]
+    if not prioritized:
+        prioritized = [{"id": 1, "title": "Tổng quan kiến thức"}]
+
+    order = 1
+    items: List[Dict[str, Any]] = []
+    homework_difficulties = _pick_difficulty_sequence(len(prioritized), cfg["difficulty_mix"])
+
+    for idx, topic in enumerate(prioritized):
+        topic_id = int(topic["id"])
+        topic_title = str(topic["title"])
+        is_weak = topic_title in {w["title"] for w in weak_norm}
+
+        items.append(
+            {
+                "type": "study_material",
+                "topic_id": topic_id,
+                "topic_title": topic_title,
+                "content_ref": f"doc_section:{topic_id}:advanced" if lvl == "gioi" else f"doc_section:{topic_id}:core",
+                "difficulty": "hard" if lvl == "gioi" else ("easy" if lvl == "yeu" else "medium"),
+                "estimated_minutes": 20 if lvl in {"gioi", "kha"} else 25,
+                "order": order,
+                "reason": (
+                    f"{cfg['reason_prefix']}. Tài liệu: {cfg['material_style']}."
+                    + (" Chủ đề này đang yếu nên cần ưu tiên ôn lại." if is_weak else "")
+                ),
+            }
+        )
+        order += 1
+
+        if lvl == "gioi":
+            items.append(
+                {
+                    "type": "homework",
+                    "topic_id": topic_id,
+                    "topic_title": topic_title,
+                    "content_ref": f"challenge_problem:{topic_id}",
+                    "difficulty": "hard",
+                    "estimated_minutes": 25,
+                    "order": order,
+                    "reason": "Challenge problems giúp mở rộng tư duy phản biện và bài toán mở.",
+                }
+            )
+        else:
+            diff = homework_difficulties[idx] if idx < len(homework_difficulties) else "medium"
+            items.append(
+                {
+                    "type": "homework",
+                    "topic_id": topic_id,
+                    "topic_title": topic_title,
+                    "content_ref": f"practice_set:{topic_id}:{diff}",
+                    "difficulty": diff,
+                    "estimated_minutes": 20,
+                    "order": order,
+                    "reason": f"Phân phối độ khó theo level {cfg['label']} để tối ưu tiến độ học.",
+                }
+            )
+
+        order += 1
+        items.append(
+            {
+                "type": "quiz",
+                "topic_id": topic_id,
+                "topic_title": topic_title,
+                "content_ref": f"quiz:{topic_id}:adaptive",
+                "difficulty": "medium" if lvl != "gioi" else "hard",
+                "estimated_minutes": 10,
+                "order": order,
+                "reason": "Mini quiz giúp đo mức hiểu bài ngay sau khi học.",
+            }
+        )
+        order += 1
+
+    if lvl == "yeu":
+        items.append(
+            {
+                "type": "study_material",
+                "topic_id": int(prioritized[0]["id"]),
+                "topic_title": "Tutor AI session",
+                "content_ref": "tutor_ai:foundation_boost",
+                "difficulty": "easy",
+                "estimated_minutes": 15,
+                "order": order,
+                "reason": "Khuyến nghị mạnh Tutor AI sessions để kèm nền tảng theo từng bước.",
+            }
+        )
+
+    return {
+        "user_id": int(user_id),
+        "classroom_id": int(classroom_id or 0),
+        "student_level": lvl,
+        "items": items,
+        "total_items": len(items),
+    }
+
+
+def create_learning_plan(
+    *,
+    user_id: int,
+    classroom_id: int,
+    diagnostic_result: Dict[str, Any] | None,
+    all_topics: List[Dict[str, Any]] | List[str],
+) -> Dict[str, Any]:
+    """Tạo learning plan adaptive theo điểm đầu vào và chủ đề yếu."""
+
+    dr = diagnostic_result or {}
+    score = float(dr.get("score") or dr.get("overall_score") or 0)
+    level = _level_from_score(score)
+    weak_topics = dr.get("weak_topics") or []
+
+    plan = generate_learning_plan_items(
+        user_id=int(user_id),
+        classroom_id=int(classroom_id or 0),
+        level=level,
+        weak_topics=weak_topics,
+        all_topics=all_topics,
+    )
+
+    est_days = max(1, ceil((sum(int(i.get("estimated_minutes") or 15) for i in plan["items"]) / 45)))
+    plan["estimated_completion_days"] = int(est_days)
+    plan["diagnostic_score"] = score
+    return plan
 
 
 def build_personalized_content_plan(
@@ -690,9 +906,6 @@ def _generate_day_mcq_questions(
                     hint=_compact(str(q.get("hint") or "")) or None,
                     related_concept=_compact(str(q.get("related_concept") or q.get("topic") or "")) or None,
                     bloom_level=str(q.get("bloom_level") or "remember"),
-                    explanation=_compact(str(q.get("explanation") or "")),
-                    hint=_compact(str(q.get("hint") or "")),
-                    related_concept=_compact(str(q.get("related_concept") or "")),
                     max_points=1,
                     sources=(q.get("sources") or []),
                 )
