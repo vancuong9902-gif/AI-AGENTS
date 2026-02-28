@@ -612,8 +612,17 @@ def _pick_best_pdf_extraction(
 
     eligible.sort(key=lambda x: (x["completeness_weighted_score"], x["quality_score"], x["char_len"]), reverse=True)
     chosen = eligible[0]
+    selection_reason = (
+        "Ưu tiên độ đầy đủ (page coverage), sau đó quality và độ dài văn bản; "
+        f"ứng viên '{chosen['name']}' có coverage={round(float(chosen['page_coverage']),4)} "
+        f"và weighted_score={round(float(chosen['completeness_weighted_score']),4)} cao nhất."
+    )
     report = {
         "chosen_extractor": chosen["name"],
+        "extractor_chosen": chosen["name"],
+        "selection_reason": selection_reason,
+        "page_coverage": round(float(chosen["page_coverage"]), 4),
+        "chunk_count": int(chosen["chunk_count"]),
         "candidates": [
             {
                 "name": x["name"],
@@ -688,10 +697,14 @@ def _extract_text_pdf_with_report(data: bytes) -> Tuple[str, List[Dict[str, Any]
         if ocr_text.strip():
             return ocr_text, ocr_chunks, {
                 "chosen_extractor": "ocr",
+                "extractor_chosen": "ocr",
+                "selection_reason": "Không có text-layer đủ tốt; dùng OCR fallback.",
+                "page_coverage": round(float(_candidate_page_coverage(ocr_chunks, total_pages=total_pages)), 4),
+                "chunk_count": len(ocr_chunks),
                 "ocr_used": True,
                 "candidates": [{"name": "ocr", "quality_score": None, "char_len": len(ocr_text), "page_coverage": _candidate_page_coverage(ocr_chunks, total_pages=total_pages), "chunk_count": len(ocr_chunks)}],
             }
-        return "", [], {"chosen_extractor": None, "ocr_used": False, "candidates": []}
+        return "", [], {"chosen_extractor": None, "extractor_chosen": None, "selection_reason": "Không extract được text.", "page_coverage": 0.0, "chunk_count": 0, "ocr_used": False, "candidates": []}
 
     best_text, best_chunks, report = picked
 

@@ -26,3 +26,18 @@ def test_dynamic_topic_target_scales_for_long_document():
     assert short_target >= 12
     assert long_target > short_target
     assert long_target >= 25
+
+
+from app.services.topic_service import _extract_by_chapters
+
+
+def test_topic_split_stability_non_empty():
+    chapter1 = "Chương 1: Hàm số\n" + "Hàm số biểu diễn mối quan hệ giữa biến đầu vào và đầu ra. " * 40
+    chapter2 = "Chương 2: Vòng lặp\n" + "Vòng lặp for/while giúp lặp thao tác với dữ liệu có quy luật. " * 40
+    chapter3 = "Chương 3: Danh sách\n" + "Danh sách cho phép lưu tập phần tử và thao tác bằng slicing, append. " * 40
+    text = f"{chapter1}\n\n{chapter2}\n\n{chapter3}"
+    chunks = [{"text": x, "meta": {}} for x in text.split("\n\n") if x.strip()]
+    topics = _extract_by_chapters(text)
+    assert topics
+    assert len(topics) >= 2
+    assert all(str(t.get("title") or "").strip() for t in topics)
