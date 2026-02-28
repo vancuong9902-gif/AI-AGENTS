@@ -24,7 +24,6 @@ from app.services.lms_service import (
     generate_class_narrative,
     score_breakdown,
 )
-from app.services.lms_service import assign_learning_path, build_recommendations, classify_student_level, score_breakdown
 
 
 router = APIRouter(tags=["lms"])
@@ -485,11 +484,10 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
             "request_id": request.state.request_id,
             "data": {
                 "rows": [],
-                "summary": {"level_counts": {}, "total": 0},
+                "summary": {"students": 0, "avg_percent": 0.0, "level_distribution": {}, "avg_improvement": 0.0},
                 "ai_narrative": "",
                 "weak_topics": [],
-                "progress_chart_data": [],
-                "avg_improvement": 0.0,
+                "progress_chart": [],
             },
             "error": None,
         }
@@ -499,7 +497,7 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
     by_student: dict[int, list[float]] = defaultdict(list)
     by_level: dict[str, int] = defaultdict(int)
 
-    progress_chart_data: list[dict] = []
+    progress_chart: list[dict] = []
     pre_scores: dict[int, float] = {}
     post_scores: dict[int, float] = {}
     all_breakdowns: list[dict] = []
@@ -533,25 +531,24 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
     for uid in all_uids:
         pre_score = round(float(pre_scores.get(uid, 0.0)), 1)
         post_score = round(float(post_scores.get(uid, 0.0)), 1)
-        progress_chart_data.append(
+        progress_chart.append(
             {
                 "student_id": uid,
                 "pre_score": pre_score,
                 "post_score": post_score,
-                "improvement": round(post_score - pre_score, 1),
+                "delta": round(post_score - pre_score, 1),
             }
         )
 
     weak_topics = analyze_topic_weak_points(all_breakdowns)
     level_distribution = dict(by_level)
 
-    improvements = [d["improvement"]
-                    for d in progress_chart_data if d["pre_score"] > 0]
-    avg_improvement = sum(improvements) / max(1, len(improvements))
+    deltas = [d["delta"] for d in progress_chart if pre_scores.get(d["student_id"], 0) > 0]
+    avg_improvement = sum(deltas) / max(1, len(deltas))
 
     narrative = generate_class_narrative(
         total_students=len(rows),
-        level_distribution=level_distribution,
+        level_dist=level_distribution,
         weak_topics=weak_topics[:3],
         avg_improvement=avg_improvement,
     )
@@ -560,11 +557,10 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
         "request_id": request.state.request_id,
         "data": {
             "rows": rows,
-            "summary": {"level_counts": dict(by_level), "total": len(rows)},
+            "summary": {"students": len(rows), "avg_percent": round(sum((r["avg_percent"] for r in rows), 0.0) / max(1, len(rows)), 1), "level_distribution": dict(by_level), "avg_improvement": round(avg_improvement, 1)},
             "ai_narrative": narrative,
             "weak_topics": weak_topics[:5],
-            "progress_chart_data": progress_chart_data,
-            "avg_improvement": round(avg_improvement, 1),
+            "progress_chart": progress_chart,
         },
         "error": None,
     }

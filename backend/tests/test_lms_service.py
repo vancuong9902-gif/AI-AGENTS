@@ -48,7 +48,7 @@ def test_generate_class_narrative_no_llm(monkeypatch):
     monkeypatch.setattr("app.services.lms_service.llm_available", lambda: False)
     result = generate_class_narrative(
         total_students=20,
-        level_distribution={"gioi": 5, "kha": 8, "trung_binh": 5, "yeu": 2},
+        level_dist={"gioi": 5, "kha": 8, "trung_binh": 5, "yeu": 2},
         weak_topics=[{"topic": "Đạo hàm"}, {"topic": "Tích phân"}],
         avg_improvement=12.5,
     )
@@ -65,4 +65,4 @@ def test_analyze_topic_weak_points():
     ]
     result = analyze_topic_weak_points(breakdowns)
     assert result[0]["topic"] == "Đạo hàm"
-    assert result[0]["avg_score_pct"] == 37.5
+    assert result[0]["avg_pct"] == 37.5

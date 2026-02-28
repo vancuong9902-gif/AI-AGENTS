@@ -72,7 +72,7 @@ function AINarrativeCard({ narrative }) {
 }
 
 function ProgressChart({ data }) {
-  if (!data || data.length === 0) return null;
+  if (!data?.length) return null;
   const categories = data.map((item) => ({
     key: String(item.student_id),
     label: `#${item.student_id}`,
@@ -81,7 +81,7 @@ function ProgressChart({ data }) {
   }));
   return (
     <GroupedBarChart
-      title="📈 Tiến bộ học sinh (Đầu vào vs Cuối kỳ)"
+      title="📈 Tiến bộ: Điểm đầu vào vs Cuối kỳ"
       subtitle="So sánh điểm pre-test và post-test theo từng học sinh"
       categories={categories}
       series={[
@@ -98,10 +98,10 @@ function WeakTopicsTable({ topics }) {
   if (!topics || topics.length === 0) return null;
   return (
     <div style={{ background: "#fff", borderRadius: 12, padding: 16, marginBottom: 20, boxShadow: "0 2px 16px rgba(0,0,0,0.06)" }}>
-      <h3 style={{ marginTop: 0, color: "#C62828" }}>⚠️ Phần học sinh đang yếu nhất</h3>
+      <h3 style={{ marginTop: 0, color: "#C62828" }}>⚠️ Các phần học sinh đang yếu nhất</h3>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
-          <tr style={{ background: "#FFCDD2" }}>
+          <tr style={{ background: "#FEE2E2" }}>
             <th style={{ padding: "8px 12px", textAlign: "left" }}>Chủ đề</th>
             <th style={{ padding: "8px 12px", textAlign: "center" }}>Điểm TB</th>
             <th style={{ padding: "8px 12px", textAlign: "center" }}>Học sinh yếu</th>
@@ -110,11 +110,11 @@ function WeakTopicsTable({ topics }) {
         </thead>
         <tbody>
           {topics.slice(0, 5).map((t, i) => (
-            <tr key={`${t.topic}-${i}`} style={{ borderBottom: "1px solid #eee", background: i % 2 === 0 ? "#fff" : "#FFF9C4" }}>
+            <tr key={`${t.topic}-${i}`} style={{ borderBottom: "1px solid #eee", background: i % 2 === 0 ? "#fff" : "#FFF7ED" }}>
               <td style={{ padding: "8px 12px", fontWeight: 600 }}>{t.topic}</td>
-              <td style={{ padding: "8px 12px", textAlign: "center", color: t.avg_score_pct < 50 ? "#C62828" : "#F57F17" }}>{t.avg_score_pct}%</td>
+              <td style={{ padding: "8px 12px", textAlign: "center", color: t.avg_pct < 50 ? "#DC2626" : "#D97706" }}>{t.avg_pct}%</td>
               <td style={{ padding: "8px 12px", textAlign: "center" }}>
-                {t.weak_student_count}/{t.total_student_count}
+                {t.weak_count}/{t.total}
               </td>
               <td style={{ padding: "8px 12px", color: "#555", fontSize: 12 }}>{t.suggestion}</td>
             </tr>
@@ -445,7 +445,7 @@ export default function TeacherClassroomDashboard() {
       {report ? (
         <div style={{ marginTop: 14 }}>
           <AINarrativeCard narrative={report.ai_narrative} />
-          <ProgressChart data={report.progress_chart_data} />
+          <ProgressChart data={report.progress_chart} />
           <WeakTopicsTable topics={report.weak_topics} />
         </div>
       ) : null}
