@@ -1836,6 +1836,20 @@ def generate_assessment(
 
     # Auto-scope to teacher documents if UI did not pass document_ids
     doc_ids = list(document_ids or [])
+
+    approved_rows = (
+        db.query(func.coalesce(DocumentTopic.teacher_edited_title, DocumentTopic.title))
+        .filter(DocumentTopic.status == "approved")
+    )
+    if doc_ids:
+        approved_rows = approved_rows.filter(DocumentTopic.document_id.in_([int(x) for x in doc_ids]))
+    approved_topics = {str(r[0]).strip().lower(): str(r[0]).strip() for r in approved_rows.all() if r and str(r[0] or "").strip()}
+    if topics:
+        raw_topics = [str(t).strip() for t in topics if str(t).strip()]
+        topics = [t for t in raw_topics if t.lower() in approved_topics]
+        if raw_topics and not topics:
+            raise ValueError("Only approved topics can be used for assessment generation")
+
     if not doc_ids:
         q = (" ".join([t for t in (topics or []) if (t or "").strip()]) or title or "tổng hợp").strip()
         auto = auto_document_ids_for_query(db, q, preferred_user_id=int(teacher_id), max_docs=5)
@@ -2510,8 +2524,9 @@ def generate_final_exam(
     topics = [
         str(r[0]).strip()
         for r in (
-            db.query(DocumentTopic.title)
+            db.query(func.coalesce(DocumentTopic.teacher_edited_title, DocumentTopic.title))
             .filter(DocumentTopic.id.in_([int(t) for t in (topic_ids or [])]))
+            .filter(DocumentTopic.status == "approved")
             .all()
         )
         if r and str(r[0] or "").strip()

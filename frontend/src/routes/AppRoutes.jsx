@@ -26,6 +26,7 @@ import TeacherClassroomDashboard from "../pages/TeacherClassroomDashboard";
 import TeacherClassReportDetail from "../pages/TeacherClassReportDetail";
 import TeacherCreateEntryTest from "../pages/TeacherCreateEntryTest";
 import TeacherStudentReport from "../pages/TeacherStudentReport";
+import TeacherTopicReview from "../pages/TeacherTopicReview";
 import StudentClassrooms from "../pages/StudentClassrooms";
 import StudentDashboard from "../pages/StudentDashboard";
 import AgentFlow from "../pages/AgentFlow";
@@ -279,6 +280,16 @@ export default function AppRoutes() {
         element={
           <ProtectedRoute allow={["teacher"]}>
             <FileLibrary />
+          </ProtectedRoute>
+        }
+      />
+
+
+      <Route
+        path="/teacher/documents/:docId/topic-review"
+        element={
+          <ProtectedRoute allow={["teacher"]}>
+            <TeacherTopicReview />
           </ProtectedRoute>
         }
       />
