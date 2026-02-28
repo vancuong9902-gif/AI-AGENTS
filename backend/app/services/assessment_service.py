@@ -314,14 +314,14 @@ def _infer_topic_from_stem(stem: str, fallback: str = "tài liệu") -> str:
 
 def _is_assessment_kind(kind: str) -> bool:
     # Legacy note: previously had kind="assessment" (treated as "midterm")
-    return (kind or "").strip().lower() in ("midterm", "diagnostic_pre", "diagnostic_post", "assessment")
+    return (kind or "").strip().lower() in ("midterm", "diagnostic_pre", "diagnostic_post", "assessment", "entry_test")
 
 
 def _normalize_assessment_kind(kind: str | None) -> str:
     k = (kind or "").strip().lower()
     if k == "assessment":
         return "midterm"
-    if k in ("midterm", "diagnostic_pre", "diagnostic_post"):
+    if k in ("midterm", "diagnostic_pre", "diagnostic_post", "entry_test"):
         return k
     # Default: treat unknown as "midterm" (in-course)
     return "midterm"
@@ -1642,6 +1642,7 @@ def generate_assessment(
     exclude_quiz_ids: List[int] | None = None,
     excluded_question_ids: List[int] | None = None,
     similarity_threshold: float = 0.75,
+    time_limit_minutes: int | None = None,
 ) -> Dict[str, Any]:
     total_q = int(easy_count) + int(medium_count) + int(hard_count)
 
@@ -2050,12 +2051,42 @@ def generate_assessment(
     quiz_set = QuizSet(user_id=teacher_id, kind=kind, topic=title, level=level, source_query_id=None, excluded_from_quiz_ids=[int(x) for x in (exclude_quiz_ids or [])], generation_seed=None)
     seed_payload = {"teacher_id": int(teacher_id), "title": str(title), "topics": [str(t).strip().lower() for t in (topics or []) if str(t).strip()], "kind": kind, "doc_ids": [int(x) for x in (doc_ids or [])], "excluded_question_ids": sorted(list(_excluded_question_ids))}
     quiz_set.generation_seed = __import__("hashlib").sha256(json.dumps(seed_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    topics_covered = [t.strip() for t in (topics or []) if (t or "").strip()]
+    quiz_metadata: Dict[str, Any] = {}
+    if kind == "entry_test":
+        quiz_metadata["topics_covered"] = topics_covered
+
+    computed_total_minutes = 0
+    try:
+        computed_total_minutes = sum(int((q.get("estimated_minutes") or 0)) for q in (generated or []) if isinstance(q, dict))
+    except Exception:
+        computed_total_minutes = 0
+
+    requested_minutes = int(time_limit_minutes) if time_limit_minutes is not None else int(computed_total_minutes)
+    requested_minutes = max(1, requested_minutes)
+
+    quiz_set = QuizSet(
+        user_id=teacher_id,
+        kind=kind,
+        topic=title,
+        level=level,
+        duration_seconds=int(requested_minutes * 60),
+        metadata_json=quiz_metadata,
+        source_query_id=None,
+    )
     db.add(quiz_set)
     db.commit()
     db.refresh(quiz_set)
 
     # Link this assessment to a classroom (so each class has its own tests)
-    db.add(ClassroomAssessment(classroom_id=int(classroom_id), assessment_id=int(quiz_set.id)))
+    db.add(
+        ClassroomAssessment(
+            classroom_id=int(classroom_id),
+            assessment_id=int(quiz_set.id),
+            kind=kind,
+            visible_to_students=True,
+        )
+    )
     db.flush()
 
     questions_out = []
@@ -2091,11 +2122,7 @@ def generate_assessment(
 
     db.commit()
 
-    total_minutes = 0
-    try:
-        total_minutes = sum(int((q.get("estimated_minutes") or 0)) for q in (questions_out or []) if isinstance(q, dict))
-    except Exception:
-        total_minutes = 0
+    total_minutes = int(requested_minutes)
 
     difficulty_plan = {"easy": 0, "medium": 0, "hard": 0}
     for q in (questions_out or []):
@@ -2113,6 +2140,7 @@ def generate_assessment(
         "title": quiz_set.topic,
         "level": quiz_set.level,
         "time_limit_minutes": int(total_minutes),
+        "metadata": quiz_metadata,
         "questions": questions_out,
         "difficulty_plan": difficulty_plan,
         "excluded_stems_count": len(_excluded_stems),
@@ -2134,11 +2162,7 @@ def get_assessment(db: Session, *, assessment_id: int) -> Dict[str, Any]:
         .all()
     )
 
-    total_minutes = 0
-    try:
-        total_minutes = sum(int(getattr(q, "estimated_minutes", 0) or 0) for q in (questions or []))
-    except Exception:
-        total_minutes = 0
+    total_minutes = max(0, int((getattr(quiz_set, "duration_seconds", 0) or 0) // 60))
 
     # Backfill for older assessments that were created before we stored estimated_minutes.
     if total_minutes <= 0 and questions:
@@ -2178,6 +2202,7 @@ def get_assessment(db: Session, *, assessment_id: int) -> Dict[str, Any]:
         "title": quiz_set.topic,
         "level": quiz_set.level,
         "kind": quiz_set.kind,
+        "metadata": getattr(quiz_set, "metadata_json", {}) or {},
         "time_limit_minutes": int(total_minutes),
         "questions": [
             {
@@ -2323,7 +2348,7 @@ def list_assessments_for_teacher(db: Session, *, teacher_id: int, classroom_id: 
         db.query(QuizSet, ClassroomAssessment.classroom_id)
         .join(ClassroomAssessment, ClassroomAssessment.assessment_id == QuizSet.id)
         .filter(QuizSet.user_id == int(teacher_id))
-        .filter(QuizSet.kind.in_(["midterm", "diagnostic_pre", "diagnostic_post", "assessment"]))
+        .filter(QuizSet.kind.in_(["midterm", "diagnostic_pre", "diagnostic_post", "assessment", "entry_test"]))
     )
     if classroom_id is not None:
         q = q.filter(ClassroomAssessment.classroom_id == int(classroom_id))
@@ -2351,7 +2376,8 @@ def list_assessments_for_user(db: Session, *, user_id: int, classroom_id: int | 
         .join(ClassroomAssessment, ClassroomAssessment.assessment_id == QuizSet.id)
         .join(ClassroomMember, ClassroomMember.classroom_id == ClassroomAssessment.classroom_id)
         .filter(ClassroomMember.user_id == int(user_id))
-        .filter(QuizSet.kind.in_(["midterm", "diagnostic_pre", "diagnostic_post", "assessment"]))
+        .filter(ClassroomAssessment.visible_to_students.is_(True))
+        .filter(QuizSet.kind.in_(["midterm", "diagnostic_pre", "diagnostic_post", "assessment", "entry_test"]))
     )
     if classroom_id is not None:
         q = q.filter(ClassroomAssessment.classroom_id == int(classroom_id))

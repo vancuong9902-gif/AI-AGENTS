@@ -23,9 +23,11 @@ import StudentAnalyticsDashboard from "../pages/StudentAnalyticsDashboard";
 
 import TeacherClassrooms from "../pages/TeacherClassrooms";
 import TeacherClassroomDashboard from "../pages/TeacherClassroomDashboard";
+import TeacherCreateEntryTest from "../pages/TeacherCreateEntryTest";
 import StudentClassrooms from "../pages/StudentClassrooms";
 import StudentDashboard from "../pages/StudentDashboard";
 import AgentFlow from "../pages/AgentFlow";
+import TopicDetail from "../pages/TopicDetail";
 
 export default function AppRoutes() {
   return (
@@ -57,6 +59,15 @@ export default function AppRoutes() {
         element={
           <ProtectedRoute allow={["student"]}>
             <LearningPath />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/topics/:topicId"
+        element={
+          <ProtectedRoute allow={["student"]}>
+            <TopicDetail />
           </ProtectedRoute>
         }
       />
@@ -175,6 +186,15 @@ export default function AppRoutes() {
         element={
           <ProtectedRoute allow={["teacher"]}>
             <TeacherClassroomDashboard />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/teacher/classrooms/:id/entry-test"
+        element={
+          <ProtectedRoute allow={["teacher"]}>
+            <TeacherCreateEntryTest />
           </ProtectedRoute>
         }
       />
