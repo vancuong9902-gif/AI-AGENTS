@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiJson } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 
@@ -11,6 +11,10 @@ export default function Tutor() {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const questionInputRef = useRef(null);
+
+  const selectedDoc = (docs || []).find((d) => String(d.document_id) === String(docId));
+  const currentTopic = (topic || "").trim() || selectedDoc?.title || "tài liệu hiện tại";
 
   // Load teacher documents so the student can scope Tutor to the right materials.
   useEffect(() => {
@@ -52,8 +56,9 @@ export default function Tutor() {
         }),
       });
 
-      const answer = data?.answer_md || "(Không có câu trả lời)";
-      setMessages((prev) => [...prev, { role: "assistant", text: answer, meta: data }]);
+      const answer = data?.answer || data?.answer_md || "(Không có câu trả lời)";
+      const isOffTopic = data?.off_topic === true;
+      setMessages((prev) => [...prev, { role: "assistant", text: answer, meta: data, offTopic: isOffTopic }]);
     } catch (e) {
       const msg = e?.message || "Tutor lỗi";
       const sug = e?.details?.suggestion || e?.details?.details?.suggestion || null;
@@ -98,6 +103,7 @@ export default function Tutor() {
           style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", flex: "0 0 220px" }}
         />
         <input
+          ref={questionInputRef}
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
           onKeyDown={(e) => {
@@ -113,6 +119,7 @@ export default function Tutor() {
           {loading ? "Đang hỏi…" : "Gửi"}
         </button>
       </div>
+      <div style={{ marginTop: 8, color: "#6c757d", fontSize: 14 }}>💡 Chỉ hỏi về nội dung trong tài liệu: {currentTopic}</div>
 
       {error && (
         <div style={{ marginTop: 12, background: "#fff3f3", border: "1px solid #ffd0d0", padding: 12, borderRadius: 12 }}>
@@ -121,16 +128,50 @@ export default function Tutor() {
       )}
 
       <div style={{ marginTop: 16, display: "grid", gap: 12 }}>
-        {messages.map((m, idx) => (
-          <div
-            key={idx}
-            style={{
-              background: m.role === "user" ? "#f7f7ff" : "#fff",
-              borderRadius: 12,
-              padding: 12,
-              boxShadow: "0 2px 10px rgba(0,0,0,0.06)",
-            }}
-          >
+        {messages.map((m, idx) => {
+          if (m.role === "assistant" && m.offTopic) {
+            const topicScope = m.meta?.topic_scope || currentTopic;
+            const redirectHint = m.meta?.redirect_hint || `Mình muốn hỏi về ${topicScope}`;
+
+            return (
+              <div
+                key={idx}
+                style={{
+                  background: "#fff3cd",
+                  borderLeft: "4px solid #ffc107",
+                  padding: 12,
+                  borderRadius: 8,
+                  margin: "8px 0",
+                }}
+              >
+                <div style={{ fontWeight: 900, marginBottom: 6 }}>⚠️ Câu hỏi ngoài phạm vi</div>
+                <div style={{ whiteSpace: "pre-wrap" }}>{m.text}</div>
+                <div style={{ marginTop: 10 }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuestion(redirectHint);
+                      questionInputRef.current?.focus();
+                    }}
+                    style={{ padding: "8px 12px", borderRadius: 8, border: "1px solid #e0b000", background: "#fff" }}
+                  >
+                    Hỏi về {topicScope}
+                  </button>
+                </div>
+              </div>
+            );
+          }
+
+          return (
+            <div
+              key={idx}
+              style={{
+                background: m.role === "user" ? "#f7f7ff" : "#fff",
+                borderRadius: 12,
+                padding: 12,
+                boxShadow: "0 2px 10px rgba(0,0,0,0.06)",
+              }}
+            >
             <div style={{ fontWeight: 900, marginBottom: 6 }}>{m.role === "user" ? "Bạn" : "Tutor"}</div>
             <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontFamily: "inherit" }}>{m.text}</pre>
 
@@ -180,8 +221,9 @@ export default function Tutor() {
                 ))}
               </div>
             )}
-          </div>
-        ))}
+            </div>
+          );
+        })}
 
         {messages.length === 0 && <div style={{ color: "#666" }}>Chưa có hội thoại. Hãy hỏi 1 câu.</div>}
       </div>
