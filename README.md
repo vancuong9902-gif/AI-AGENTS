@@ -290,3 +290,16 @@ docker compose -f flowise/docker/docker-compose.flowise.yml up -d
 ```
 
 Mở Flowise: http://localhost:3000
+
+
+## 7) LMS End-to-End API nhanh (Placement/Final + Classification)
+
+Sau khi chạy backend, dùng thêm các endpoint LMS mới:
+
+- `POST /api/lms/teacher/select-topics`
+- `POST /api/lms/placement/generate`
+- `POST /api/lms/final/generate`
+- `POST /api/lms/attempts/{assessment_id}/submit`
+- `GET /api/lms/teacher/report/{classroom_id}`
+
+Xem bản audit + mapping requirement đầy đủ tại `docs/lms_audit_upgrade.md`.

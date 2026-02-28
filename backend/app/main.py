@@ -27,6 +27,8 @@ from app.api.routes.evaluation import router as evaluation_router
 from app.api.routes.assessments import router as assessments_router, teacher_router as teacher_assessments_router
 from app.api.routes.llm import router as llm_router
 from app.api.routes.classrooms import router as classrooms_router
+from app.api.routes.exams import router as exams_router
+from app.api.routes.lms import router as lms_router
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.services import vector_store
@@ -188,6 +190,8 @@ app.include_router(analytics_router, prefix="/api")
 app.include_router(jobs_router, prefix="/api")
 app.include_router(llm_router, prefix="/api")
 app.include_router(classrooms_router, prefix="/api")
+app.include_router(exams_router, prefix="/api")
+app.include_router(lms_router, prefix="/api")
 app.include_router(profile_router, prefix="/api")
 app.include_router(homework_router, prefix="/api")
 app.include_router(learning_plans_router, prefix="/api")
