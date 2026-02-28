@@ -1099,6 +1099,10 @@ def _llm_rewrite_title(body: str, *, old_title: str) -> str | None:
         "hoặc các ký tự Latin-1 không phải tiếng Việt chuẩn thì xem như lỗi font. "
         "Trong trường hợp đó: BỎ QUA hoàn toàn old_title và tạo tiêu đề mới 100% dựa trên body. "
         "Tiêu đề phải là tiếng Việt chuẩn Unicode NFC. "
+        "FONT ENCODING NOTICE: Nếu old_title chứa bất kỳ ký tự nào trong {¸ \u00AD ¬ × ® ¦ § © ¹ º » ¼ ½ ¾ ¿} "
+        "thì ĐÓ LÀ LỖI FONT TCVN3/VnTime. Trong trường hợp đó: TUYỆT ĐỐI BỎ QUA old_title hoàn toàn. "
+        "Tạo tiêu đề mới 100% từ nội dung excerpt và outline_hint cung cấp bên dưới. "
+        "Tiêu đề kết quả phải là tiếng Việt Unicode chuẩn NFC, không ký tự lạ. "
         "Chỉ trả JSON hợp lệ: {\"title\": \"...\"}."
     )
 
@@ -1657,6 +1661,26 @@ def _is_bad_heading_candidate(line: str) -> bool:
     s = _clean_line(line)
     if not s:
         return True
+
+    def _has_encoding_noise(s: str, threshold: float = 0.20) -> bool:
+        """True nếu > threshold ký tự lạ (dấu hiệu lỗi font VN cũ)."""
+        if not s or len(s) < 4:
+            return False
+        valid = sum(
+            1
+            for ch in s
+            if (
+                0x20 <= ord(ch) <= 0x7E
+                or 0x00C0 <= ord(ch) <= 0x024F
+                or 0x1E00 <= ord(ch) <= 0x1EFF
+                or ch in " \t\n\r"
+            )
+        )
+        return (valid / len(s)) < (1.0 - threshold)
+
+    if _has_encoding_noise(s):
+        return True  # Heading lỗi encoding → bỏ qua
+
     sl = s.lower()
 
     # Never promote question blocks / MCQ answer choices into standalone topics.
@@ -1696,27 +1720,37 @@ def _is_bad_heading_candidate(line: str) -> bool:
     if len(s) < 6 or len(s) > 140:
         return True
 
-    # Reject heading có tỷ lệ ký tự lạ (font encoding cũ) > 20%
-    def _has_encoding_artifacts(x: str) -> bool:
-        if not x:
-            return False
-        valid = sum(
-            1
-            for ch in x
-            if (
-                0x20 <= ord(ch) <= 0x7E
-                or 0x00C0 <= ord(ch) <= 0x024F
-                or 0x1E00 <= ord(ch) <= 0x1EFF
-                or ch in " \t\n"
-            )
-        )
-        ratio = valid / max(1, len(x))
-        return ratio < 0.80
-
-    if _has_encoding_artifacts(s):
-        return True  # Bỏ qua heading bị lỗi encoding
-
     return False
+
+
+def validate_and_repair_topics(topics: list[dict]) -> list[dict]:
+    """
+    Post-process: kiểm tra title/body lỗi font, tự repair hoặc drop.
+    Gọi trong extract_topics() ngay trước dòng return cuối.
+    """
+    try:
+        from app.services.vietnamese_font_fix import detect_broken_vn_font
+    except ImportError:
+        return topics  # Graceful fallback
+
+    out = []
+    for t in topics:
+        title = str(t.get('title') or '')
+        body = str(t.get('body') or '')
+        title_bad = len(title) > 4 and detect_broken_vn_font(title)
+        body_bad = len(body) > 60 and detect_broken_vn_font(body)
+
+        if title_bad and body_bad:
+            continue  # Cả 2 đều lỗi → drop topic này
+
+        if title_bad and not body_bad:
+            # Rewrite title từ body content
+            new_title = _llm_rewrite_title(body, old_title=title)
+            if new_title:
+                t = {**t, 'title': new_title, '_title_was_repaired': True}
+
+        out.append(t)
+    return out
 
 
 def validate_topic_quality(topics: list[dict]) -> list[dict]:
@@ -1725,27 +1759,7 @@ def validate_topic_quality(topics: list[dict]) -> list[dict]:
     Nếu title lỗi nhưng body OK → dùng LLM rewrite title từ body.
     Nếu cả title lẫn body đều lỗi → drop topic đó.
     """
-    try:
-        from app.services.vietnamese_font_fix import detect_broken_vn_font
-    except Exception:
-        return topics
-
-    out: list[dict] = []
-    for t in topics:
-        title = str(t.get('title') or '')
-        body = str(t.get('body') or '')
-        title_broken = detect_broken_vn_font(title)
-        body_broken = detect_broken_vn_font(body) if len(body) > 50 else False
-
-        if title_broken and not body_broken:
-            new_title = _llm_rewrite_title(body, old_title=title)
-            if new_title:
-                t['title'] = new_title
-                t['title_was_repaired'] = True
-        elif title_broken and body_broken:
-            continue
-        out.append(t)
-    return out
+    return validate_and_repair_topics(topics)
 
 
 def _maybe_title_from_quiz_ready(cleaned_lines: List[str], i: int) -> tuple[int, str] | None:
@@ -3225,7 +3239,7 @@ def extract_topics(
 
         out.append(item)
 
-    out = validate_topic_quality(out)
+    out = validate_and_repair_topics(out)
 
     if not out:
         # Only hard-block when quality is low AND we also failed to extract topics.
