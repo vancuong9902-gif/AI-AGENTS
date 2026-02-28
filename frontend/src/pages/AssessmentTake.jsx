@@ -321,6 +321,19 @@ export default function AssessmentTake() {
         setPathAssigned(Boolean(r?.learning_plan_created));
       }
 
+      const resultType = isEntryTest
+        ? "entry"
+        : (String(r?.assessment_kind || data?.kind || "").toLowerCase() === "final_exam" ? "final" : "assessment");
+      navigate("/result", {
+        state: {
+          type: resultType,
+          result: {
+            ...r,
+            timed_out: auto || Boolean(r?.timed_out),
+          },
+        },
+      });
+
       if (auto) {
         setError("Hết giờ ⏱️ — hệ thống đã tự nộp bài.");
       }

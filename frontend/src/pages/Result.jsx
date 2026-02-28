@@ -1,347 +1,297 @@
-
-import { Link, useLocation } from "react-router-dom";
-import { useEffect, useMemo, useState } from "react";
-import { Link, useLocation, useSearchParams } from "react-router-dom";
-import { apiJson } from "../lib/api";
-import { useAuth } from "../context/AuthContext";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import Card from "../ui/Card";
 import Banner from "../ui/Banner";
 import Button from "../ui/Button";
 import PageHeader from "../ui/PageHeader";
-import StudentLevelBadge from "../components/StudentLevelBadge";
 
-function toArray(value) {
-  return Array.isArray(value) ? value : [];
-}
+const DIFFICULTIES = ["easy", "medium", "hard"];
+
+const TYPE_META = {
+  entry: { title: "Kết quả bài kiểm tra đầu vào", subtitle: "Tổng hợp năng lực hiện tại của bạn." },
+  final: { title: "Kết quả bài kiểm tra cuối kỳ", subtitle: "Đánh giá tổng thể sau quá trình học." },
+  assessment: { title: "Kết quả bài assessment", subtitle: "Xem điểm số và các phần cần cải thiện." },
+  homework: { title: "Kết quả bài tập", subtitle: "Phân tích nhanh theo độ khó và chủ đề." },
+};
+
+const LEVEL_META = {
+  gioi: { label: "Giỏi", tone: "#15803d", bg: "#dcfce7" },
+  kha: { label: "Khá", tone: "#1d4ed8", bg: "#dbeafe" },
+  trung_binh: { label: "Trung bình", tone: "#b45309", bg: "#fef3c7" },
+  yeu: { label: "Yếu", tone: "#b91c1c", bg: "#fee2e2" },
+};
 
 function toNumber(value, fallback = 0) {
   const num = Number(value);
   return Number.isFinite(num) ? num : fallback;
 }
 
-function formatDuration(sec) {
-  const total = Math.max(0, Math.floor(toNumber(sec, 0)));
-  const hh = Math.floor(total / 3600);
-  const mm = Math.floor((total % 3600) / 60);
-  const ss = total % 60;
-  if (hh > 0) return `${hh}h ${String(mm).padStart(2, "0")}m ${String(ss).padStart(2, "0")}s`;
-  return `${mm}m ${String(ss).padStart(2, "0")}s`;
+function clampPercent(value) {
+  return Math.max(0, Math.min(100, Math.round(toNumber(value, 0))));
 }
 
-function levelFromScore(scorePercent) {
-  const score = Math.max(0, Math.min(100, Math.round(toNumber(scorePercent, 0))));
-  if (score >= 85) return { label: "Giỏi", color: "green", emoji: "🌟", description: "Nắm vững kiến thức, sẵn sàng học nội dung nâng cao", learning_approach: "Tập trung vào bài tập khó và bài tập mở rộng" };
-  if (score >= 70) return { label: "Khá", color: "blue", emoji: "⭐", description: "Hiểu cơ bản, cần củng cố một số điểm", learning_approach: "Kết hợp ôn tập kiến thức yếu và học mới" };
-  if (score >= 50) return { label: "Trung Bình", color: "orange", emoji: "📚", description: "Cần ôn tập thêm trước khi học nội dung mới", learning_approach: "Tập trung vào kiến thức nền tảng" };
-  return { label: "Yếu", color: "red", emoji: "💪", description: "Cần hỗ trợ thêm – AI sẽ hướng dẫn từng bước", learning_approach: "Học lại từ đầu với hỗ trợ AI intensive" };
+function mapType(rawType) {
+  const value = String(rawType || "").toLowerCase();
+  if (["entry", "diagnostic", "diagnostic_pre"].includes(value)) return "entry";
+  if (["final", "final_exam"].includes(value)) return "final";
+  if (value === "homework") return "homework";
+  return "assessment";
 }
 
-function normalizeQuestionRow(item, index) {
-  const selected = item?.student_answer ?? item?.selected_answer ?? item?.user_answer ?? item?.answer ?? item?.answer_text ?? null;
-  const correct = item?.correct_answer ?? item?.correct_option ?? item?.expected_answer ?? null;
-  const isCorrect = typeof item?.is_correct === "boolean" ? item.is_correct : (selected != null && correct != null ? String(selected) === String(correct) : false);
-  const unanswered = selected == null || selected === "" || selected === -1;
-  const status = unanswered ? "unanswered" : (isCorrect ? "correct" : "wrong");
+function deriveClassification(scorePercent, classificationRaw) {
+  const normalized = String(classificationRaw || "").toLowerCase();
+  if (["gioi", "excellent", "high"].includes(normalized)) return "gioi";
+  if (["kha", "good", "medium_high"].includes(normalized)) return "kha";
+  if (["trung_binh", "average", "medium"].includes(normalized)) return "trung_binh";
+  if (["yeu", "weak", "low"].includes(normalized)) return "yeu";
+
+  const score = clampPercent(scorePercent);
+  if (score >= 85) return "gioi";
+  if (score >= 70) return "kha";
+  if (score >= 50) return "trung_binh";
+  return "yeu";
+}
+
+function normalizeDifficultyBucket(raw) {
+  const total = toNumber(raw?.total ?? raw?.count ?? 0, 0);
+  const correct = toNumber(raw?.correct ?? raw?.correct_count ?? 0, 0);
+  const pctFromCorrect = total > 0 ? (correct / total) * 100 : 0;
+  const pct = clampPercent(raw?.percentage ?? raw?.percent ?? raw?.score_percent ?? pctFromCorrect);
+  return { total, correct, percentage: pct };
+}
+
+function aggregateFromBreakdown(breakdown) {
+  const byDifficulty = {
+    easy: { total: 0, correct: 0 },
+    medium: { total: 0, correct: 0 },
+    hard: { total: 0, correct: 0 },
+  };
+  const byTopic = {};
+
+  (Array.isArray(breakdown) ? breakdown : []).forEach((row) => {
+    const difficulty = String(row?.difficulty || "medium").toLowerCase();
+    const key = DIFFICULTIES.includes(difficulty) ? difficulty : "medium";
+    const isCorrect = Boolean(row?.is_correct);
+
+    byDifficulty[key].total += 1;
+    if (isCorrect) byDifficulty[key].correct += 1;
+
+    const topic = String(row?.topic || row?.topic_name || "Chưa phân loại").trim() || "Chưa phân loại";
+    if (!byTopic[topic]) byTopic[topic] = { total: 0, correct: 0, wrong: 0 };
+    byTopic[topic].total += 1;
+    if (isCorrect) byTopic[topic].correct += 1;
+    else byTopic[topic].wrong += 1;
+  });
+
+  return { byDifficulty, byTopic };
+}
+
+function normalizeResult(result) {
+  const scorePercent = clampPercent(result?.total_score_percent ?? result?.score_percent ?? 0);
+  const derived = aggregateFromBreakdown(result?.breakdown);
+  const apiDiff = result?.score_breakdown?.by_difficulty || result?.breakdown_by_difficulty || {};
+  const apiTopic = result?.score_breakdown?.by_topic || result?.breakdown_by_topic || {};
+
+  const byDifficulty = {};
+  DIFFICULTIES.forEach((difficulty) => {
+    byDifficulty[difficulty] = normalizeDifficultyBucket(apiDiff[difficulty] || derived.byDifficulty[difficulty]);
+  });
+
+  const topicEntries = Object.entries(
+    Array.isArray(apiTopic)
+      ? apiTopic.reduce((acc, item) => {
+          const name = String(item?.topic || item?.topic_name || item?.name || "Chưa phân loại").trim() || "Chưa phân loại";
+          acc[name] = item;
+          return acc;
+        }, {})
+      : apiTopic,
+  ).map(([topic, value]) => {
+    const total = toNumber(value?.total ?? value?.count ?? derived.byTopic[topic]?.total ?? 0, 0);
+    const correct = toNumber(value?.correct ?? value?.correct_count ?? derived.byTopic[topic]?.correct ?? 0, 0);
+    const wrong = toNumber(value?.wrong ?? value?.incorrect ?? Math.max(0, total - correct), 0);
+    const percentage = clampPercent(
+      value?.percentage ?? value?.percent ?? value?.score_percent ?? (total > 0 ? (correct / total) * 100 : 0),
+    );
+    return { topic, total, correct, wrong, percentage };
+  });
+
+  const fallbackTopicEntries = Object.entries(derived.byTopic).map(([topic, stats]) => ({
+    topic,
+    total: stats.total,
+    correct: stats.correct,
+    wrong: stats.wrong,
+    percentage: clampPercent(stats.total > 0 ? (stats.correct / stats.total) * 100 : 0),
+  }));
+
+  const topics = (topicEntries.length ? topicEntries : fallbackTopicEntries)
+    .sort((a, b) => a.percentage - b.percentage)
+    .slice(0, 8);
+
+  const recommendations = Array.isArray(result?.recommendations)
+    ? result.recommendations
+    : Array.isArray(result?.recommendations?.items)
+      ? result.recommendations.items
+      : result?.ai_recommendation
+        ? [result.ai_recommendation]
+        : [];
 
   return {
-    id: item?.question_id ?? item?.id ?? `q-${index + 1}`,
-    question: item?.question ?? item?.question_text ?? item?.content ?? `Câu ${index + 1}`,
-    selected,
-    correct,
-    isCorrect,
-    unanswered,
-    status,
-    difficulty: String(item?.difficulty || "").toLowerCase(),
-    topic: item?.topic ?? item?.topic_name ?? "",
+    scorePercent,
+    mcqScorePercent: result?.mcq_score_percent,
+    essayScorePercent: result?.essay_score_percent,
+    classification: deriveClassification(scorePercent, result?.classification),
+    timedOut: Boolean(result?.timed_out || result?.autoSubmitted),
+    byDifficulty,
+    weakTopics: topics,
+    recommendations,
   };
-import ProgressComparison from "../components/ProgressComparison";
-
-function formatDuration(seconds) {
-  const total = Math.max(0, Math.floor(Number(seconds || 0)));
-  const minutes = Math.floor(total / 60);
-  const sec = total % 60;
-  return `${minutes} phút ${sec} giây`;
 }
 
-function percent(value) {
-  const num = Number(value || 0);
-  return Number.isFinite(num) ? Math.max(0, Math.min(100, num)) : 0;
-}
-
-const CLASS_THEME = {
-  gioi: {
-    hero: "linear-gradient(135deg, #15803d, #22c55e)",
-    stars: "⭐⭐⭐",
-  },
-  kha: {
-    hero: "linear-gradient(135deg, #1d4ed8, #38bdf8)",
-    stars: "⭐⭐",
-  },
-  trung_binh: {
-    hero: "linear-gradient(135deg, #d97706, #fb923c)",
-    stars: "⭐",
-  },
-  yeu: {
-    hero: "linear-gradient(135deg, #ef4444, #fda4af)",
-    stars: "⭐",
-  },
-};
-
-function DifficultyCard({ label, item }) {
-  const p = percent(item?.percentage);
+function ProgressRing({ score }) {
+  const radius = 42;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (clampPercent(score) / 100) * circumference;
   return (
-    <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "#fff" }}>
-      <div style={{ fontWeight: 700 }}>{label}</div>
-      <div style={{ marginTop: 6, fontSize: 22, fontWeight: 800 }}>{item?.correct || 0}/{item?.total || 0}</div>
-      <div style={{ marginTop: 8, height: 8, background: "#e5e7eb", borderRadius: 999, overflow: "hidden" }}>
-        <div style={{ width: `${p}%`, height: "100%", background: "#4f46e5" }} />
-      </div>
-      <div style={{ marginTop: 6, fontSize: 13, color: "#475569" }}>{p}%</div>
-    </div>
+    <svg width="120" height="120" viewBox="0 0 120 120">
+      <circle cx="60" cy="60" r={radius} stroke="#e2e8f0" strokeWidth="10" fill="none" />
+      <circle
+        cx="60"
+        cy="60"
+        r={radius}
+        stroke="#4f46e5"
+        strokeWidth="10"
+        fill="none"
+        strokeDasharray={circumference}
+        strokeDashoffset={offset}
+        strokeLinecap="round"
+        transform="rotate(-90 60 60)"
+      />
+      <text x="60" y="66" textAnchor="middle" fontSize="20" fontWeight="700" fill="#0f172a">
+        {clampPercent(score)}%
+      </text>
+    </svg>
   );
 }
 
-export default function Result({ result: propResult, quizType: propQuizType = "diagnostic", diagnosticScore: propDiagnosticScore }) {
-  const { state } = useLocation();
-  const result = propResult || state?.quizResult || null;
-  const quizType = propQuizType || state?.quizType || "diagnostic";
-  const diagnosticScore = Number(propDiagnosticScore ?? state?.diagnosticScore ?? 0);
-  const [searchParams] = useSearchParams();
-  const { userId } = useAuth();
+export default function Result() {
+  const location = useLocation();
+  const navigate = useNavigate();
 
-  const [data, setData] = useState(() => (state?.quizResult ? normalizeResultPayload(state.quizResult) : null));
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [comparison, setComparison] = useState(null);
+  const state = location.state || {};
+  const resultRaw = state?.result || state?.quizResult || null;
+  const resolvedType = mapType(state?.type || state?.quizType);
+  const header = TYPE_META[resolvedType] || TYPE_META.assessment;
 
-  if (!result) {
-    return <div style={{ maxWidth: 980, margin: "0 auto", padding: 16 }}>Không có dữ liệu kết quả.</div>;
+  if (!resultRaw) {
+    return (
+      <div style={{ maxWidth: 980, margin: "0 auto", padding: 16, display: "grid", gap: 12 }}>
+        <PageHeader title="Kết quả" subtitle="Không tìm thấy dữ liệu kết quả trong phiên hiện tại." />
+        <Banner tone="warning">Bạn vừa refresh trang hoặc truy cập trực tiếp nên state kết quả đã mất.</Banner>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Link to="/quiz"><Button>Làm quiz</Button></Link>
+          <Link to="/assessments"><Button>Bài assessments</Button></Link>
+          <Link to="/learning-path"><Button variant="primary">Đến lộ trình học</Button></Link>
+        </div>
+      </div>
+    );
   }
 
-  const classification = String(result.classification || "trung_binh").toLowerCase();
-  const theme = CLASS_THEME[classification] || CLASS_THEME.trung_binh;
-  const scorePct = percent(result.percentage);
-  const byDiff = result.breakdown_by_difficulty || {};
-  const topics = Array.isArray(result.breakdown_by_topic) ? result.breakdown_by_topic : [];
-  const finalImprovement = Number(result.improvement_vs_diagnostic || 0);
+  const normalized = normalizeResult(resultRaw);
+  const level = LEVEL_META[normalized.classification] || LEVEL_META.trung_binh;
+  const weakestTopicName = normalized.weakTopics[0]?.topic || "Nền tảng";
+
+  const gotoTutor = () => {
+    localStorage.setItem("tutor_topic_prefill", weakestTopicName);
+    navigate("/tutor");
+  };
 
   return (
     <div style={{ maxWidth: 980, margin: "0 auto", padding: 16, display: "grid", gap: 16 }}>
-      <section style={{ background: theme.hero, color: "white", borderRadius: 16, padding: 20 }}>
-        <div style={{ fontSize: 34, fontWeight: 900 }}>🎯 {result.score} / {result.max_score}</div>
-        <div style={{ marginTop: 12, height: 12, background: "rgba(255,255,255,0.4)", borderRadius: 999, overflow: "hidden" }}>
-          <div style={{ width: `${scorePct}%`, height: "100%", background: "#fff" }} />
-        </div>
-        <div style={{ marginTop: 8, fontWeight: 700 }}>{scorePct}%</div>
-        <div style={{ marginTop: 8, fontSize: 18, fontWeight: 700 }}>
-          Phân loại: {String(result.classification_label || "").toUpperCase()} {theme.stars}
-        </div>
-        <div style={{ marginTop: 6, opacity: 0.95 }}>Thời gian: {formatDuration(result.time_taken_seconds)}</div>
-      </section>
+      <PageHeader title={header.title} subtitle={header.subtitle} breadcrumbs={["Học sinh", "Kết quả"]} />
 
-      <section>
-        <h3>Độ khó</h3>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 }}>
-          <DifficultyCard label="Dễ" item={byDiff.easy} />
-          <DifficultyCard label="Trung bình" item={byDiff.medium} />
-          <DifficultyCard label="Khó" item={byDiff.hard} />
-        </div>
-      </section>
+      {normalized.timedOut && <Banner tone="warning">⏱ Hết thời gian làm bài. Hệ thống đã tự nộp bài.</Banner>}
 
-      <section>
-        <h3>Theo topic</h3>
-        <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, overflow: "hidden", background: "#fff" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead style={{ background: "#f8fafc" }}>
-              <tr>
-                <th style={{ textAlign: "left", padding: 10 }}>Topic</th>
-                <th style={{ textAlign: "left", padding: 10 }}>Điểm</th>
-                <th style={{ textAlign: "left", padding: 10 }}>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {topics.map((t) => {
-                const p = percent(t.percentage);
-                const weak = p < 50 || t.weak;
-                const strong = p >= 80;
-  useEffect(() => {
-    if (state?.quizResult) {
-      setData(normalizeResultPayload(state.quizResult));
-      return;
-    }
-
-    const loadResult = async () => {
-      setLoading(true);
-      setError("");
-
-      try {
-        let resultPayload = null;
-        if (attemptId) {
-          resultPayload = await apiJson(`/assessments/${attemptId}/result`);
-        } else if (quizSetId && resolvedUserId) {
-          resultPayload = await apiJson(`/quizzes/${quizSetId}/result?user_id=${resolvedUserId}`);
-        } else {
-          throw new Error("Thiếu dữ liệu kết quả. Vui lòng mở trang từ luồng nộp bài hoặc truyền attemptId/quizSetId.");
-        }
-
-        setData(normalizeResultPayload(resultPayload));
-      } catch (e) {
-        setError(e?.message || "Không tải được kết quả.");
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadResult();
-  }, [attemptId, quizSetId, resolvedUserId, state]);
-
-  useEffect(() => {
-    const cid = Number(localStorage.getItem("active_classroom_id"));
-    if (resolvedQuizType !== "final" || !resolvedUserId || !Number.isFinite(cid) || cid <= 0) {
-      setComparison(null);
-      return;
-    }
-
-    apiJson(`/v1/students/${Number(resolvedUserId)}/progress?classroomId=${cid}`)
-      .then((d) => setComparison(d || null))
-      .catch(() => setComparison(null));
-  }, [resolvedQuizType, resolvedUserId]);
-
-  const difficultyStats = useMemo(() => {
-    if (!data) return { easy: null, medium: null, hard: null };
-
-    const fromApi = data.difficultyBreakdown;
-    if (fromApi && typeof fromApi === "object") {
-      return {
-        easy: fromApi.easy ?? fromApi.EASY ?? null,
-        medium: fromApi.medium ?? fromApi.MEDIUM ?? null,
-        hard: fromApi.hard ?? fromApi.HARD ?? null,
-      };
-    }
-
-    const buckets = {
-      easy: { total: 0, correct: 0 },
-      medium: { total: 0, correct: 0 },
-      hard: { total: 0, correct: 0 },
-    };
-
-    data.questionRows.forEach((row) => {
-      const key = ["easy", "medium", "hard"].includes(row.difficulty) ? row.difficulty : "medium";
-      buckets[key].total += 1;
-      if (row.isCorrect) buckets[key].correct += 1;
-    });
-
-    return buckets;
-  }, [data]);
-
-  const studentLevel = useMemo(() => levelFromScore(data?.scorePercent || 0), [data?.scorePercent]);
-
-  const ctaConfig = useMemo(() => {
-    if (resolvedQuizType === "diagnostic_pre") {
-      return { label: "Bắt đầu học theo lộ trình cá nhân hoá", to: "/learning-path" };
-    }
-    if (resolvedQuizType === "final") {
-      return { label: "Xem báo cáo tổng kết", to: "/progress" };
-    }
-    return { label: "Tiếp tục bài học", to: "/learning-path" };
-  }, [resolvedQuizType]);
-
-  const scoreText = `${Math.round(data?.scorePercent || 0)}/${data?.totalScore || 100}`;
-
-  return (
-    <div style={{ maxWidth: 1100, margin: "0 auto", padding: 16, display: "grid", gap: 16 }}>
-      <PageHeader
-        title="Kết quả bài làm"
-        subtitle="Hiển thị kết quả ngay sau khi nộp bài"
-        breadcrumbs={["Học sinh", "Kết quả"]}
-      />
-
-      {loading && <Banner tone="info">Đang tải kết quả...</Banner>}
-      {error && <Banner tone="error">{error}</Banner>}
-
-      {data && (
-        <>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
-            <StatCard label="Điểm số" value={scoreText} />
-            <Card style={{ padding: 16 }}>
-              <div style={{ fontSize: 13, color: "#64748b", marginBottom: 8 }}>Phân loại</div>
-              <StudentLevelBadge level={studentLevel} size="md" />
-            </Card>
-            <StatCard label="Thời gian làm bài" value={formatDuration(data.durationSec)} />
-            <StatCard label="Số câu đúng" value={`${data.correctCount}/${data.totalQuestions}`} />
+      <Card className="stack" style={{ padding: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
+          <div>
+            <div style={{ fontSize: 14, color: "#64748b" }}>Điểm tổng</div>
+            <div style={{ fontSize: 34, fontWeight: 800 }}>{normalized.scorePercent}%</div>
+            <div style={{ marginTop: 8, width: 220, height: 10, borderRadius: 999, background: "#e2e8f0", overflow: "hidden" }}>
+              <div style={{ width: `${normalized.scorePercent}%`, background: "#4f46e5", height: "100%" }} />
+            </div>
           </div>
-
-          {resolvedQuizType === "final" && comparison ? (
-            <ProgressComparison comparison={comparison} showTopics />
-          ) : null}
-
-          <Card style={{ padding: 16 }}>
-            <h3 style={{ marginTop: 0 }}>Điểm theo từng topic</h3>
-            {data.topicBreakdown.length ? (
-              <div style={{ display: "grid", gap: 8 }}>
-                {data.topicBreakdown.map((topic, idx) => (
-                  <div key={`${topic?.topic || topic?.name || idx}`} style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px solid #e2e8f0", paddingBottom: 6 }}>
-                    <strong>{topic?.topic || topic?.name || `Topic ${idx + 1}`}</strong>
-                    <span>{Math.round(toNumber(topic?.score_percent ?? topic?.score ?? 0))}%</span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p style={{ color: "#64748b", marginBottom: 0 }}>Không có dữ liệu breakdown theo topic.</p>
-            )}
-          </Card>
-
-          <Card style={{ padding: 16 }}>
-            <h3 style={{ marginTop: 0 }}>Điểm theo độ khó</h3>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8 }}>
-              {["easy", "medium", "hard"].map((level) => {
-                const value = difficultyStats[level];
-                const text = value && typeof value === "object"
-                  ? `${toNumber(value.correct, 0)}/${toNumber(value.total, 0)} đúng`
-                  : `${Math.round(toNumber(value, 0))}%`;
-                return (
-                  <tr key={t.topic} style={{ background: weak ? "#fef2f2" : "#fff", borderTop: "1px solid #f1f5f9" }}>
-                    <td style={{ padding: 10 }}>{t.topic}</td>
-                    <td style={{ padding: 10 }}>{t.correct}/{t.total} ({p}%)</td>
-                    <td style={{ padding: 10 }}>
-                      {weak && <span style={{ background: "#fee2e2", color: "#b91c1c", borderRadius: 999, padding: "3px 10px", fontSize: 12 }}>Cần ôn thêm</span>}
-                      {strong && <span style={{ background: "#dcfce7", color: "#15803d", borderRadius: 999, padding: "3px 10px", fontSize: 12 }}>Đã nắm vững</span>}
-                      {!weak && !strong && <span style={{ color: "#64748b" }}>Đang tiến bộ</span>}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <ProgressRing score={normalized.scorePercent} />
         </div>
-      </section>
+        {(normalized.mcqScorePercent != null || normalized.essayScorePercent != null) && (
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+            {normalized.mcqScorePercent != null && <span>MCQ: <b>{clampPercent(normalized.mcqScorePercent)}%</b></span>}
+            {normalized.essayScorePercent != null && <span>Essay: <b>{clampPercent(normalized.essayScorePercent)}%</b></span>}
+          </div>
+        )}
+      </Card>
 
-      {quizType === "final" && (
-        <section style={{ border: "1px solid #bfdbfe", background: "#eff6ff", borderRadius: 14, padding: 16 }}>
-          <div style={{ fontWeight: 800, marginBottom: 6 }}>📈 Tiến bộ của bạn</div>
-          <div>Đầu vào: {diagnosticScore}% → Cuối kỳ: {scorePct}%</div>
-          <div style={{ marginTop: 4, fontWeight: 700 }}>Cải thiện: {finalImprovement >= 0 ? "+" : ""}{finalImprovement}% 🚀</div>
-        </section>
+      <Card style={{ padding: 16 }}>
+        <span style={{ padding: "4px 12px", borderRadius: 999, background: level.bg, color: level.tone, fontWeight: 700 }}>
+          Phân loại: {level.label}
+        </span>
+      </Card>
+
+      <Card style={{ padding: 16 }}>
+        <h3 style={{ marginTop: 0 }}>Breakdown theo độ khó</h3>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ textAlign: "left", borderBottom: "1px solid #e2e8f0" }}>
+              <th style={{ padding: "8px 4px" }}>Độ khó</th>
+              <th style={{ padding: "8px 4px" }}>Đúng/Tổng</th>
+              <th style={{ padding: "8px 4px" }}>Tỷ lệ</th>
+            </tr>
+          </thead>
+          <tbody>
+            {DIFFICULTIES.map((difficulty) => {
+              const row = normalized.byDifficulty[difficulty];
+              const label = difficulty === "easy" ? "Dễ" : difficulty === "medium" ? "Trung bình" : "Khó";
+              return (
+                <tr key={difficulty} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                  <td style={{ padding: "10px 4px" }}>{label}</td>
+                  <td style={{ padding: "10px 4px" }}>{row.correct}/{row.total}</td>
+                  <td style={{ padding: "10px 4px" }}>{row.percentage}%</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </Card>
+
+      <Card style={{ padding: 16 }}>
+        <h3 style={{ marginTop: 0 }}>Topic yếu nhất (top 8)</h3>
+        {normalized.weakTopics.length ? (
+          <div style={{ display: "grid", gap: 8 }}>
+            {normalized.weakTopics.map((topic) => (
+              <div key={topic.topic} style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px solid #f1f5f9", paddingBottom: 6 }}>
+                <span>{topic.topic}</span>
+                <span><b>{topic.percentage}%</b> ({topic.correct}/{topic.total})</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p>Chưa có dữ liệu theo topic.</p>
+        )}
+      </Card>
+
+      {normalized.recommendations.length > 0 && (
+        <Card style={{ padding: 16 }}>
+          <h3 style={{ marginTop: 0 }}>Gợi ý học tập</h3>
+          <ul style={{ margin: 0, paddingLeft: 18 }}>
+            {normalized.recommendations.map((item, idx) => (
+              <li key={`rec-${idx}`}>{typeof item === "string" ? item : item?.text || item?.title || JSON.stringify(item)}</li>
+            ))}
+          </ul>
+        </Card>
       )}
 
-      <section style={{ border: "1px solid #ddd6fe", background: "#f5f3ff", borderRadius: 14, padding: 16 }}>
-        <div style={{ fontWeight: 800 }}>💡 AI đề xuất cho bạn:</div>
-        <div style={{ marginTop: 6, whiteSpace: "pre-wrap" }}>{result.ai_recommendation}</div>
-      </section>
-
-      <section style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-        {quizType === "diagnostic" ? (
-          <>
-            <Link to="/learning-path"><button style={{ padding: "10px 14px", fontWeight: 700 }}>Xem lộ trình học cá nhân hóa →</button></Link>
-            <Link to="/assessments"><button style={{ padding: "10px 14px" }}>Làm lại bài kiểm tra</button></Link>
-          </>
-        ) : (
-          <>
-            <button style={{ padding: "10px 14px", fontWeight: 700 }}>Xem báo cáo đầy đủ</button>
-            <button style={{ padding: "10px 14px" }}>Chia sẻ kết quả</button>
-          </>
-        )}
-      </section>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <Link to="/learning-path"><Button variant="primary">Đi đến lộ trình học</Button></Link>
+        <Button onClick={gotoTutor}>Học với AI Tutor theo topic yếu nhất</Button>
+      </div>
     </div>
   );
 }
