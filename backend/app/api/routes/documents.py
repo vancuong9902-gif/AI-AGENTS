@@ -17,6 +17,8 @@ from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
 from app.models.document_topic import DocumentTopic
 from app.models.quiz import QuizLegacy
+from app.models.quiz_set import QuizSet
+from app.models.question import Question
 from app.core.config import settings
 from app.services.document_pipeline import extract_and_chunk_with_report
 from app.services.topic_service import (
@@ -31,6 +33,7 @@ from app.services.topic_service import (
     is_appendix_title,
     validate_and_clean_topic_title,
     extract_exercises_from_topic,
+    parse_quick_check_quiz,
 )
 from app.services import vector_store
 from app.infra.queue import is_async_enabled, enqueue
@@ -65,6 +68,53 @@ def _infer_page_range_from_chunks(chunks: list[DocumentChunk], start_idx: int | 
     if not vals:
         return (None, None)
     return (min(vals), max(vals))
+
+
+
+def _create_topic_quick_check_quiz(db: Session, *, user_id: int, topic_title: str, study_guide_md: str) -> int | None:
+    """Create QuizSet(kind=topic_quick_check) from study guide quick-check section."""
+    qs_items = parse_quick_check_quiz(study_guide_md)
+    if len(qs_items) < 10:
+        return None
+
+    quiz_set = QuizSet(
+        user_id=int(user_id),
+        kind="topic_quick_check",
+        topic=(str(topic_title or "Chủ đề")[:255]),
+        level="mixed",
+        source_query_id=None,
+        duration_seconds=600,
+    )
+    db.add(quiz_set)
+    db.flush()
+
+    rows: list[Question] = []
+    for i, q in enumerate(qs_items[:10], 1):
+        opts = [str(x).strip() for x in (q.get("options") or []) if str(x).strip()][:4]
+        if len(opts) < 2:
+            continue
+        while len(opts) < 4:
+            opts.append("Không có đáp án phù hợp")
+        rows.append(
+            Question(
+                quiz_set_id=quiz_set.id,
+                order_no=i,
+                type="mcq",
+                bloom_level="understand",
+                stem=str(q.get("stem") or "").strip()[:1000],
+                options=opts[:4],
+                correct_index=0,
+                explanation=None,
+                estimated_minutes=1,
+                sources=[{"source": "topic_study_guide"}],
+            )
+        )
+    if len(rows) < 10:
+        db.rollback()
+        return None
+    db.add_all(rows)
+    db.flush()
+    return int(quiz_set.id)
 
 def _dynamic_topic_target(full_text: str, estimated_pages: int | None = None) -> float:
     full_len = len(full_text or '')
@@ -302,6 +352,7 @@ def list_document_topics(request: Request, document_id: int, db: Session = Depen
             "end_chunk_index": t.end_chunk_index,
             "has_original_exercises": bool((t.metadata_json or {}).get("has_original_exercises")),
             "original_exercise_count": len((t.metadata_json or {}).get("original_exercises") or []),
+            "quick_check_quiz_id": t.quick_check_quiz_id,
         }
 
         st_tight = topic_range_stats(
@@ -452,6 +503,25 @@ def regenerate_document_topics(
                 str(t.get('content_preview') or t.get('summary') or ''),
                 str(t.get('title') or ''),
             )
+            topic_body = ""
+            if s_idx is not None and e_idx is not None:
+                try:
+                    topic_body = "\n\n".join([(c.text or "") for c in chunks[int(s_idx): int(e_idx) + 1]]).strip()
+                except Exception:
+                    topic_body = ""
+            quick_check_quiz_id = None
+            try:
+                det = build_topic_details(topic_body, title=str(t.get('title') or ''))
+                sg = str(det.get('study_guide_md') or '').strip()
+                if sg:
+                    quick_check_quiz_id = _create_topic_quick_check_quiz(
+                        db,
+                        user_id=int(getattr(doc, 'user_id', 0) or 0),
+                        topic_title=str(t.get('title') or ''),
+                        study_guide_md=sg,
+                    )
+            except Exception:
+                quick_check_quiz_id = None
             tm = DocumentTopic(
                 document_id=int(document_id),
                 topic_index=i,
@@ -459,13 +529,13 @@ def regenerate_document_topics(
                 display_title=(cleaned_title or str(t.get('title') or '').strip())[:255],
                 needs_review=bool(t.get('needs_review') or title_warnings),
                 extraction_confidence=float(t.get('extraction_confidence') or 0.0),
-                metadata_json={'original_exercises': original_exercises},
                 summary=str(t.get('summary') or '').strip(),
                 keywords=[str(x).strip() for x in (t.get('keywords') or []) if str(x).strip()],
                 start_chunk_index=s_idx,
                 end_chunk_index=e_idx,
                 page_start=page_start,
                 page_end=page_end,
+                quick_check_quiz_id=quick_check_quiz_id,
                 metadata_json={
                     "original_exercises": (t.get("original_exercises") or []),
                     "has_original_exercises": bool(t.get("has_original_exercises")),
@@ -514,6 +584,7 @@ def regenerate_document_topics(
                         'keywords': tm.keywords or [],
                         'has_original_exercises': bool((tm.metadata_json or {}).get('has_original_exercises')),
                         'original_exercise_count': len((tm.metadata_json or {}).get('original_exercises') or []),
+                        'quick_check_quiz_id': tm.quick_check_quiz_id,
                         'start_chunk_index': tm.start_chunk_index,
                         'end_chunk_index': tm.end_chunk_index,
                         'chunk_span': stats_tight.get('chunk_span', 0),
@@ -961,6 +1032,25 @@ async def upload_document(
                     str(t.get("content_preview") or t.get("summary") or ""),
                     str(t.get("title") or ""),
                 )
+                topic_body = ""
+                if s_idx is not None and e_idx is not None:
+                    try:
+                        topic_body = "\n\n".join([(c.text or "") for c in chunk_models[int(s_idx): int(e_idx) + 1]]).strip()
+                    except Exception:
+                        topic_body = ""
+                quick_check_quiz_id = None
+                try:
+                    det = build_topic_details(topic_body, title=str(t.get("title") or ""))
+                    sg = str(det.get("study_guide_md") or "").strip()
+                    if sg:
+                        quick_check_quiz_id = _create_topic_quick_check_quiz(
+                            db,
+                            user_id=int(user_id),
+                            topic_title=str(t.get("title") or ""),
+                            study_guide_md=sg,
+                        )
+                except Exception:
+                    quick_check_quiz_id = None
                 tm = DocumentTopic(
                     document_id=doc.id,
                     topic_index=i,
@@ -968,13 +1058,13 @@ async def upload_document(
                     display_title=(cleaned_title or str(t.get("title") or "").strip())[:255],
                     needs_review=bool(t.get("needs_review") or title_warnings),
                     extraction_confidence=float(t.get("extraction_confidence") or 0.0),
-                    metadata_json={"original_exercises": original_exercises},
                     summary=str(t.get("summary") or "").strip(),
                     keywords=[str(x).strip() for x in (t.get("keywords") or []) if str(x).strip()],
                     start_chunk_index=s_idx,
                     end_chunk_index=e_idx,
                     page_start=page_start,
                     page_end=page_end,
+                    quick_check_quiz_id=quick_check_quiz_id,
                     metadata_json={
                         "original_exercises": (t.get("original_exercises") or []),
                         "has_original_exercises": bool(t.get("has_original_exercises")),
@@ -1032,6 +1122,7 @@ async def upload_document(
                             "keywords": tm.keywords or [],
                             "has_original_exercises": bool((tm.metadata_json or {}).get("has_original_exercises")),
                             "original_exercise_count": len((tm.metadata_json or {}).get("original_exercises") or []),
+                            "quick_check_quiz_id": tm.quick_check_quiz_id,
                             "start_chunk_index": tm.start_chunk_index,
                             "end_chunk_index": tm.end_chunk_index,
                             # richer topic profile (computed during extraction)
