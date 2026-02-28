@@ -56,6 +56,7 @@ export default function Tutor() {
 
       const answer = data?.answer || data?.answer_md || "(Không có câu trả lời)";
       const isOffTopic = data?.is_off_topic === true;
+      const isOffTopic = data?.is_off_topic === true || data?.off_topic === true;
       setMessages((prev) => [...prev, { role: "assistant", text: answer, meta: data, offTopic: isOffTopic }]);
     } catch (e) {
       const msg = e?.message || "Tutor lỗi";
@@ -140,7 +141,68 @@ export default function Tutor() {
         {messages.map((m, idx) => {
           const warn = m.role === "assistant" && m.offTopic;
           const confidenceMsg = m.role === "assistant" ? confidenceText(m.meta?.confidence) : "";
+          if (m.role === "assistant" && m.offTopic) {
+            const topicScope = m.meta?.topic_scope || currentTopic;
+            const redirectHint = m.meta?.redirect_hint || `Mình muốn hỏi về ${topicScope}`;
+            const followUps = Array.isArray(m.meta?.follow_up_questions) ? m.meta.follow_up_questions.slice(0, 3) : [];
 
+            return (
+              <div
+                key={idx}
+                style={{
+                  position: "relative",
+                  background: "#fff3cd",
+                  border: "1px solid #f0c75e",
+                  padding: 12,
+                  borderRadius: 10,
+                  margin: "8px 0",
+                }}
+              >
+                <div style={{ position: "absolute", top: 8, right: 10, fontSize: 18 }}>⚠️</div>
+                <div style={{ fontWeight: 900, marginBottom: 6 }}>Câu hỏi ngoài phạm vi</div>
+                <div style={{ whiteSpace: "pre-wrap" }}>{m.text}</div>
+                {followUps.length > 0 && (
+                  <div style={{ marginTop: 10 }}>
+                    <div style={{ fontWeight: 800, marginBottom: 8 }}>Thay vào đó, bạn có muốn hỏi về:</div>
+                    <div style={{ display: "grid", gap: 8 }}>
+                      {followUps.map((fq, i) => (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => {
+                            setQuestion(fq);
+                            questionInputRef.current?.focus();
+                          }}
+                          style={{
+                            textAlign: "left",
+                            borderRadius: 8,
+                            border: "1px solid #f0c75e",
+                            background: "#fff9e8",
+                            padding: "8px 10px",
+                            cursor: "pointer",
+                          }}
+                        >
+                          {fq}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div style={{ marginTop: 10 }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuestion(redirectHint);
+                      questionInputRef.current?.focus();
+                    }}
+                    style={{ padding: "8px 12px", borderRadius: 8, border: "1px solid #e0b000", background: "#fff" }}
+                  >
+                    Hỏi về {topicScope}
+                  </button>
+                </div>
+              </div>
+            );
+          }
           return (
             <div
               key={idx}

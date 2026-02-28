@@ -32,15 +32,6 @@ except Exception:  # pragma: no cover
     redis = None  # type: ignore
 
 
-OFF_TOPIC_PATTERNS = [
-    r"thời tiết|nhiệt độ|dự báo",
-    r"ăn gì|nhà hàng|quán|món",
-    r"phim|nhạc|ca sĩ|diễn viên",
-    r"giá cổ phiếu|tỷ giá|bitcoin",
-    r"tình yêu|yêu đương|người yêu",
-    r"chính trị|bầu cử|tổng thống",
-]
-
 TUTOR_REFUSAL_TEMPLATE = (
     "Xin lỗi, tôi chỉ có thể hỗ trợ các câu hỏi liên quan đến [{scope}]. "
     "Câu hỏi này nằm ngoài phạm vi tôi có thể giải đáp. Bạn có muốn hỏi về [{scope}] không?"
@@ -72,6 +63,77 @@ KHÔNG ĐƯỢC:
 CONTEXT (Tài liệu học):
 {rag_context}
 """
+
+class OffTopicDetector:
+    """Multi-layer off-topic detection cho Tutor AI."""
+
+    ALWAYS_REJECT_PATTERNS = [
+        r"hãy\s+làm\s+(bài|giúp|thay)",
+        r"cho\s+tôi\s+đáp\s+án\s+câu",
+        r"(thời\s*tiết|tin\s*tức|bóng\s*đá|giải\s*trí)",
+        r"(hack|crack|bypass|cheat)",
+        r"(viết\s+code|lập\s+trình)",
+    ]
+
+    def check(self, question: str, topic: str, rag_results: dict) -> dict:
+        for pattern in self.ALWAYS_REJECT_PATTERNS:
+            if re.search(pattern, question or "", re.IGNORECASE):
+                return {
+                    "is_off_topic": True,
+                    "reason": "keyword_blacklist",
+                    "confidence": 0.99,
+                    "layer": 1,
+                }
+
+        best_relevance = self._get_rag_relevance(rag_results)
+        if best_relevance < 0.1:
+            return {
+                "is_off_topic": True,
+                "reason": "low_rag_relevance",
+                "confidence": 1 - best_relevance,
+                "layer": 2,
+            }
+
+        if 0.1 <= best_relevance < 0.3 and llm_available():
+            llm_verdict = self._llm_topic_check(question=question, topic=topic)
+            if not llm_verdict:
+                return {
+                    "is_off_topic": True,
+                    "reason": "llm_classification",
+                    "confidence": 0.85,
+                    "layer": 3,
+                }
+
+        return {
+            "is_off_topic": False,
+            "reason": None,
+            "confidence": best_relevance,
+            "layer": 0,
+        }
+
+    def _get_rag_relevance(self, rag_results: dict) -> float:
+        corr = rag_results.get("corrective") or {}
+        attempts = corr.get("attempts") or []
+        if attempts:
+            return float(attempts[-1].get("best_relevance", 0.0) or 0.0)
+        return 0.0
+
+    def _llm_topic_check(self, question: str, topic: str) -> bool:
+        prompt = (
+            f"Phân loại câu hỏi sau:\n"
+            f"Câu hỏi: \"{(question or '')[:200]}\"\n"
+            f"Chủ đề học: \"{topic or ''}\"\n\n"
+            "Câu hỏi có liên quan đến chủ đề học KHÔNG?\n"
+            "Trả lời: YES (có liên quan) hoặc NO (không liên quan)"
+        )
+        try:
+            resp = chat_text(messages=[{"role": "user", "content": prompt}], max_tokens=10, temperature=0)
+        except Exception:
+            return True
+        return "yes" in (resp or "").lower()
+
+
+_off_topic_detector = OffTopicDetector()
 
 _LOCAL_SESSION_STORE: Dict[str, Dict[str, Any]] = {}
 
@@ -114,11 +176,6 @@ def _save_tutor_session(user_id: int, data: Dict[str, Any], ttl_sec: int = 60 * 
             cli.setex(key, int(ttl_sec), json.dumps(payload, ensure_ascii=False))
         except Exception:
             pass
-
-
-def is_clearly_off_topic(question: str) -> bool:
-    q_lower = (question or "").lower()
-    return any(re.search(p, q_lower) for p in OFF_TOPIC_PATTERNS)
 
 
 def _suggest_topics(db: Session, *, document_ids: Optional[List[int]], top_k: int = 3) -> List[str]:
@@ -180,6 +237,26 @@ def _intent_aware_topic_suggestions(
 
 def _build_off_topic_message(*, scope: str, approved_topics: List[str], suggestions: List[str]) -> str:
     return TUTOR_REFUSAL_TEMPLATE.format(scope=scope)
+
+
+def _suggest_on_topic_questions(topic: Optional[str], off_topic_q: str) -> List[str]:
+    scope = (topic or "chủ đề học hiện tại").strip()
+    if not scope:
+        scope = "chủ đề học hiện tại"
+
+    topic_lower = scope.lower()
+    if "phương trình bậc hai" in topic_lower:
+        return [
+            "Công thức nghiệm của phương trình bậc hai là gì?",
+            "Khi nào phương trình bậc hai vô nghiệm?",
+            "Ứng dụng của phương trình bậc hai trong thực tế?",
+        ]
+
+    return [
+        f"Khái niệm cốt lõi của '{scope}' là gì?",
+        f"Những lỗi thường gặp khi học '{scope}' là gì?",
+        f"Bạn có thể cho một ví dụ áp dụng của '{scope}' không?",
+    ]
 
 
 def _ai_topic_relevance_check(question: str, topic: Optional[str]) -> Optional[bool]:
@@ -622,6 +699,36 @@ def tutor_chat(
     filters = {"document_ids": doc_ids} if doc_ids else {}
     query = f"{topic.strip()}: {q}" if topic and topic.strip() else q
     rag = corrective_retrieve_and_log(db=db, query=query, top_k=int(max(3, min(20, top_k))), filters=filters, topic=topic)
+
+    off_topic_check = _off_topic_detector.check(question=q, topic=topic or "", rag_results=rag)
+    if off_topic_check["is_off_topic"]:
+        topic_label = topic or "chủ đề học hiện tại"
+        refusal = (
+            f"Xin lỗi bạn, câu hỏi này nằm ngoài phạm vi tôi có thể giải đáp trong buổi học này. "
+            f"Tôi chuyên hỗ trợ về '{topic_label}'. "
+            f"Bạn có muốn hỏi về một khía cạnh cụ thể của '{topic_label}' không? "
+            f"Tôi sẵn sàng giải thích chi tiết!"
+        )
+        _log_tutor_flagged_question(
+            db,
+            user_id=int(user_id),
+            question=q,
+            topic=topic,
+            reason=str(off_topic_check.get("reason") or "off_topic"),
+            suggested_topics=intent_suggestions,
+        )
+        return TutorChatData(
+            answer_md=refusal,
+            was_answered=False,
+            is_off_topic=True,
+            refusal_message=refusal,
+            off_topic_reason=str(off_topic_check.get("reason") or "off_topic"),
+            suggested_topics=intent_suggestions,
+            follow_up_questions=_suggest_on_topic_questions(topic, q),
+            quick_check_mcq=[],
+            sources=[],
+            retrieval={**(rag.get("corrective") or {}), "off_topic_check": off_topic_check},
+        ).model_dump()
 
     corr = rag.get("corrective") or {}
     attempts = corr.get("attempts") or []

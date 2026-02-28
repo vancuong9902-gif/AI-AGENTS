@@ -51,3 +51,16 @@ class HomeworkSubmitFeedback(BaseModel):
 class HomeworkSubmitResponse(BaseModel):
     question_id: str
     feedback: HomeworkSubmitFeedback
+
+
+class HomeworkAnswerRequest(BaseModel):
+    question_id: int
+    answer: str | int
+    used_hint: bool = False
+
+
+class HomeworkAnswerResponse(BaseModel):
+    is_correct: bool
+    score_points: int
+    explanation: str = ""
+    correct_answer: str = ""

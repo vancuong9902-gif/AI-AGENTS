@@ -686,6 +686,7 @@ def generate_student_ai_assessment(db: Session, user_id: int, entry_attempt: Any
     final_score = float(getattr(final_attempt, "score_percent", 0.0) or 0.0)
     improvement = final_score - entry_score
     level = classify_student_level(int(round(final_score)))
+    level_key = str(level["level_key"])
 
     final_breakdown = score_breakdown(getattr(final_attempt, "breakdown_json", []) or [])
     by_topic = final_breakdown.get("by_topic") if isinstance(final_breakdown.get("by_topic"), dict) else {}
@@ -710,7 +711,7 @@ def generate_student_ai_assessment(db: Session, user_id: int, entry_attempt: Any
         )
         weak_text = ", ".join(weak_topics) if weak_topics else "một vài chủ đề nền tảng"
         return (
-            f"{name}: {fallback_map.get(level, fallback_map['trung_binh'])} "
+            f"{name}: {fallback_map.get(level_key, fallback_map['trung_binh'])} "
             f"{progress_text} Điểm mạnh hiện tại là {', '.join(strong_topics) if strong_topics else 'các câu hỏi nhận biết-cơ bản'}. "
             f"Em nên tập trung ôn lại {weak_text} và luyện 20-30 phút mỗi ngày với bài tập tăng dần độ khó."
         )
@@ -807,7 +808,8 @@ def build_classroom_final_report(db: Session, classroom_id: int) -> Dict[str, An
                 improved += 1
 
         level = classify_student_level(int(round(final_score)))
-        level_dist[level] = int(level_dist.get(level, 0) or 0) + 1
+        level_key = str(level["level_key"])
+        level_dist[level_key] = int(level_dist.get(level_key, 0) or 0) + 1
 
         final_breakdown = score_breakdown(getattr(final_attempt, "breakdown_json", []) or []) if final_attempt else {}
         weak_topics = [
@@ -836,7 +838,7 @@ def build_classroom_final_report(db: Session, classroom_id: int) -> Dict[str, An
             {
                 "user_id": int(uid),
                 "name": str(getattr(db.query(User).filter(User.id == int(uid)).first(), "full_name", "") or f"User #{uid}"),
-                "level": level,
+                "level": level_key,
                 "entry_score": round(entry_score, 2),
                 "final_score": round(final_score, 2),
                 "improvement": round(final_score - entry_score, 2),

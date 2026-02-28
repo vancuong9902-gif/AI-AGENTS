@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+from io import BytesIO
 from datetime import datetime, timezone
 
 from typing import Optional, Any
 
-from fastapi import APIRouter, Body, Depends, File, Form, Request, UploadFile, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, Request, UploadFile, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.schemas.quiz import QuizGenerateRequest
 from app.schemas.question_bank import QuestionBankGenerateRequest
 from app.api.deps import get_current_user_optional, require_teacher
@@ -35,6 +36,7 @@ from app.services.topic_service import (
     validate_and_clean_topic_title,
     extract_exercises_from_topic,
     parse_quick_check_quiz,
+    build_topic_preview_for_teacher,
 )
 from app.services import vector_store
 from app.infra.queue import is_async_enabled, enqueue
@@ -46,6 +48,16 @@ from app.services.text_quality import quality_score
 from app.services.text_repair import repair_ocr_spacing_text
 
 router = APIRouter(tags=['documents'])
+
+DOCUMENT_PROCESS_STATUS: dict[int, dict[str, Any]] = {}
+
+
+def _set_doc_status(document_id: int, *, status: str, progress_pct: int, topic_count: int = 0) -> None:
+    DOCUMENT_PROCESS_STATUS[int(document_id)] = {
+        'status': str(status),
+        'progress_pct': max(0, min(100, int(progress_pct))),
+        'topic_count': max(0, int(topic_count)),
+    }
 
 
 def _is_pdf(mime_type: str | None, filename: str | None) -> bool:
@@ -681,6 +693,7 @@ def regenerate_document_topics(
 
 
 @router.get('/documents/{document_id}/topics/preview')
+@router.get('/v1/documents/{document_id}/topics/preview')
 def preview_document_topics(
     request: Request,
     document_id: int,
@@ -693,34 +706,14 @@ def preview_document_topics(
     if int(doc.user_id) != int(getattr(teacher, 'id')):
         raise HTTPException(status_code=403, detail='Not allowed')
 
-    topics = (
-        db.query(DocumentTopic)
-        .filter(DocumentTopic.document_id == int(document_id))
-        .order_by(func.coalesce(DocumentTopic.page_start, 10**9).asc(), DocumentTopic.topic_index.asc())
-        .all()
-    )
+    try:
+        payload = build_topic_preview_for_teacher(int(document_id), db)
+    except ValueError:
+        raise HTTPException(status_code=404, detail='Document not found')
 
     return {
         'request_id': request.state.request_id,
-        'data': {
-            'document_id': int(document_id),
-            'topics': [
-                {
-                    'topic_id': int(t.id),
-                    'topic_index': int(t.topic_index),
-                    'title': _topic_title_for_generation(t),
-                    'summary': str(t.summary or ''),
-                    'coverage_score': float((t.metadata_json or {}).get('coverage_score') or 0.0),
-                    'confidence': str((t.metadata_json or {}).get('confidence') or 'low'),
-                    'sample_content': str((t.metadata_json or {}).get('sample_content') or ''),
-                    'subtopics': (t.metadata_json or {}).get('subtopics') or [],
-                    'page_ranges': (t.metadata_json or {}).get('page_ranges') or [],
-                    'status': getattr(t, 'status', 'pending_review'),
-                    'is_confirmed': bool(getattr(t, 'is_confirmed', False)),
-                }
-                for t in topics
-            ],
-        },
+        'data': payload,
         'error': None,
     }
 
@@ -967,6 +960,7 @@ def confirm_document_topics(
 
 
 @router.post('/documents/{doc_id}/topics/confirm')
+@router.post('/v1/documents/{doc_id}/topics/confirm')
 def confirm_document_topics_v2(
     request: Request,
     doc_id: int,
@@ -974,13 +968,111 @@ def confirm_document_topics_v2(
     db: Session = Depends(get_db),
     teacher: User = Depends(require_teacher),
 ):
-    return confirm_document_topics(
-        request=request,
-        doc_id=doc_id,
-        payload=payload,
-        db=db,
-        teacher=teacher,
+    doc = db.query(Document).filter(Document.id == int(doc_id)).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail='Document not found')
+    if int(doc.user_id) != int(getattr(teacher, 'id')):
+        raise HTTPException(status_code=403, detail='Not allowed')
+
+    approved_ids = {int(x) for x in (payload.get('approved_topic_ids') or [])}
+    rejected_ids = {int(x) for x in (payload.get('rejected_topic_ids') or [])}
+    renamed_topics = payload.get('renamed_topics') or {}
+    if not isinstance(renamed_topics, dict):
+        renamed_topics = {}
+
+    topics = db.query(DocumentTopic).filter(DocumentTopic.document_id == int(doc_id)).all()
+    topic_by_id = {int(t.id): t for t in topics}
+    if not topic_by_id:
+        raise HTTPException(status_code=400, detail='No topics found for document')
+
+    now = datetime.now(timezone.utc)
+    approved_count = 0
+    rejected_count = 0
+    for topic_id, topic in topic_by_id.items():
+        if topic_id in approved_ids:
+            topic.status = 'approved'
+            topic.is_confirmed = True
+            approved_count += 1
+        elif topic_id in rejected_ids:
+            topic.status = 'rejected'
+            topic.is_confirmed = False
+            rejected_count += 1
+
+        if str(topic_id) in renamed_topics:
+            raw_title = str(renamed_topics.get(str(topic_id)) or '').strip()
+            if raw_title:
+                cleaned, _warnings = validate_and_clean_topic_title(raw_title)
+                new_title = (cleaned or raw_title)[:255]
+                topic.title = new_title
+                topic.teacher_edited_title = new_title
+
+        topic.reviewed_at = now
+        db.add(topic)
+
+    db.commit()
+
+    return {
+        'request_id': request.state.request_id,
+        'data': {
+            'approved': int(approved_count),
+            'rejected': int(rejected_count),
+            'message': 'Đã xác nhận topic thành công',
+        },
+        'error': None,
+    }
+
+
+@router.post('/documents/{doc_id}/topics/add-custom')
+@router.post('/v1/documents/{doc_id}/topics/add-custom')
+def add_custom_topic(
+    request: Request,
+    doc_id: int,
+    payload: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    doc = db.query(Document).filter(Document.id == int(doc_id)).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail='Document not found')
+    if int(doc.user_id) != int(getattr(teacher, 'id')):
+        raise HTTPException(status_code=403, detail='Not allowed')
+
+    title = str(payload.get('title') or '').strip()
+    description = str(payload.get('description') or '').strip()
+    if not title:
+        raise HTTPException(status_code=422, detail='title is required')
+
+    cleaned_title, _warnings = validate_and_clean_topic_title(title)
+    next_index = (db.query(func.max(DocumentTopic.topic_index)).filter(DocumentTopic.document_id == int(doc_id)).scalar() or -1) + 1
+    topic = DocumentTopic(
+        document_id=int(doc_id),
+        topic_index=int(next_index),
+        title=(cleaned_title or title)[:255],
+        display_title=(cleaned_title or title)[:255],
+        summary=description,
+        keywords=[],
+        status='approved',
+        is_confirmed=True,
+        extraction_confidence=1.0,
+        needs_review=False,
+        metadata_json={'source': 'manual'},
+        reviewed_at=datetime.now(timezone.utc),
     )
+    db.add(topic)
+    db.commit()
+    db.refresh(topic)
+
+    return {
+        'request_id': request.state.request_id,
+        'data': {
+            'topic_id': int(topic.id),
+            'title': topic.title,
+            'status': topic.status,
+            'source': 'manual',
+            'message': 'Đã thêm topic thủ công',
+        },
+        'error': None,
+    }
 
 
 @router.post('/documents/{document_id}/topics/approve-all')
@@ -1253,40 +1345,141 @@ def get_document_status(
     if not doc:
         raise HTTPException(status_code=404, detail='Document not found')
 
-    chunks = db.query(DocumentChunk).filter(DocumentChunk.document_id == int(document_id)).all()
-    topics_count = db.query(func.count(DocumentTopic.id)).filter(DocumentTopic.document_id == int(document_id)).scalar() or 0
-    ocr_used = any(bool((getattr(c, 'meta', {}) or {}).get('ocr')) for c in chunks)
-
-    if not chunks:
-        stage = 'uploaded'
-    elif int(topics_count) <= 0:
-        stage = 'extracting'
-    else:
-        stage = 'completed'
-
-    return {
-        'request_id': request.state.request_id,
-        'data': {
-            'document_id': int(document_id),
-            'stage': stage,
-            'ocr_used': bool(ocr_used),
-            'ocr_engine': 'tesseract' if ocr_used else None,
-            'topics_count': int(topics_count),
-            'steps': {
-                'upload': True,
-                'parse_structure': bool(chunks),
-                'extract_text': bool(chunks),
-                'split_topics': int(topics_count) > 0,
-                'completed': int(topics_count) > 0,
+    status_row = DOCUMENT_PROCESS_STATUS.get(int(document_id))
+    topic_count = int(
+        db.query(func.count(DocumentTopic.id)).filter(DocumentTopic.document_id == int(document_id)).scalar() or 0
+    )
+    if status_row:
+        return {
+            'request_id': request.state.request_id,
+            'data': {
+                'status': status_row['status'],
+                'progress_pct': int(status_row['progress_pct']),
+                'topic_count': max(topic_count, int(status_row['topic_count'])),
             },
-        },
-        'error': None,
-    }
+            'error': None,
+        }
+
+    if topic_count > 0:
+        derived = {'status': 'ready', 'progress_pct': 100, 'topic_count': topic_count}
+    else:
+        has_chunks = db.query(func.count(DocumentChunk.id)).filter(DocumentChunk.document_id == int(document_id)).scalar() or 0
+        derived = {'status': 'processing' if has_chunks else 'pending', 'progress_pct': 50 if has_chunks else 0, 'topic_count': 0}
+
+    return {'request_id': request.state.request_id, 'data': derived, 'error': None}
+
+
+async def process_document_pipeline(
+    document_id: int,
+    user_id: int,
+    *,
+    filename: str,
+    mime_type: str,
+    title: str,
+    tags: list[str],
+    file_bytes: bytes,
+) -> None:
+    db = SessionLocal()
+    _set_doc_status(document_id, status='processing', progress_pct=10, topic_count=0)
+    try:
+        upload_file = UploadFile(filename=filename, file=BytesIO(file_bytes), headers={'content-type': mime_type})
+        full_text, chunks, pdf_report = await extract_and_chunk_with_report(upload_file)
+
+        doc = db.query(Document).filter(Document.id == int(document_id)).first()
+        if not doc:
+            raise RuntimeError('Document not found')
+        doc.content = full_text or ''
+        doc.title = title or filename or 'Untitled'
+        doc.tags = tags
+        doc.mime_type = mime_type or 'application/octet-stream'
+
+        chunk_models = []
+        for idx, ch in enumerate(chunks):
+            chunk_models.append(
+                DocumentChunk(
+                    document_id=doc.id,
+                    chunk_index=idx,
+                    text=ch['text'],
+                    meta={
+                        **(ch.get('meta') or {}),
+                        'hash': hashlib.sha1(' '.join(str(ch['text']).split()).encode('utf-8', errors='ignore')).hexdigest(),
+                        'char_len': len(str(ch['text'])),
+                    },
+                )
+            )
+        db.add_all(chunk_models)
+        db.commit()
+        _set_doc_status(document_id, status='processing', progress_pct=55, topic_count=0)
+
+        topic_models: list[DocumentTopic] = []
+        try:
+            topic_obj = _extract_topics_doc_auto(
+                full_text,
+                [c.get('text') or '' for c in chunks],
+                mime_type=str(getattr(doc, 'mime_type', '') or ''),
+                filename=str(getattr(doc, 'filename', '') or ''),
+                include_details=True,
+                max_topics=int(getattr(settings, 'TOPIC_MAX_TOPICS', 60) or 60),
+            )
+            if str(topic_obj.get('status') or '') == 'OK':
+                topics = topic_obj.get('topics') or []
+                ranges = []
+                if topics and topics[0].get('start_chunk_index') is not None and topics[0].get('end_chunk_index') is not None:
+                    for t in topics:
+                        ranges.append((t.get('start_chunk_index'), t.get('end_chunk_index')))
+                else:
+                    ranges = assign_topic_chunk_ranges(topics, chunk_lengths=[len(c.text or '') for c in chunk_models])
+
+                for i, (t, (s_idx, e_idx)) in enumerate(zip(topics, ranges)):
+                    cleaned_title, title_warnings = validate_and_clean_topic_title(str(t.get('title') or '').strip()[:255])
+                    page_start, page_end = _infer_page_range_from_chunks(chunk_models, s_idx, e_idx)
+                    topic_models.append(
+                        DocumentTopic(
+                            document_id=doc.id,
+                            is_confirmed=False,
+                            topic_index=i,
+                            title=(cleaned_title or str(t.get('title') or '').strip())[:255],
+                            display_title=(cleaned_title or str(t.get('title') or '').strip())[:255],
+                            needs_review=bool(t.get('needs_review') or title_warnings),
+                            extraction_confidence=float(t.get('extraction_confidence') or 0.0),
+                            summary=str(t.get('summary') or '').strip(),
+                            keywords=[str(x).strip() for x in (t.get('keywords') or []) if str(x).strip()],
+                            start_chunk_index=s_idx,
+                            end_chunk_index=e_idx,
+                            page_start=page_start,
+                            page_end=page_end,
+                        )
+                    )
+        except Exception:
+            topic_models = []
+
+        if topic_models:
+            db.add_all(topic_models)
+            db.commit()
+
+        _set_doc_status(document_id, status='processing', progress_pct=85, topic_count=len(topic_models))
+
+        if vector_store.is_enabled():
+            try:
+                if is_async_enabled():
+                    enqueue(task_index_document, int(doc.id), queue_name='index')
+                else:
+                    payload_chunks = [{'chunk_id': c.id, 'document_id': c.document_id, 'text': c.text} for c in chunk_models]
+                    vector_store.add_chunks(payload_chunks)
+            except Exception:
+                pass
+
+        _set_doc_status(document_id, status='ready', progress_pct=100, topic_count=len(topic_models))
+    except Exception:
+        _set_doc_status(document_id, status='error', progress_pct=100, topic_count=0)
+    finally:
+        db.close()
 
 
 @router.post('/documents/upload')
 async def upload_document(
     request: Request,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     teacher: User = Depends(require_teacher),
     file: UploadFile = File(...),
@@ -1295,245 +1488,50 @@ async def upload_document(
     tags: Optional[str] = Form(None),
 ):
     # Ignore user_id from form; use authenticated (demo header) teacher.
-    user_id = int(getattr(teacher, "id"))
-    ensure_user_exists(db, int(user_id), role="teacher")
+    user_id = int(getattr(teacher, 'id'))
+    ensure_user_exists(db, int(user_id), role='teacher')
+
+    data = await file.read()
+    if not data.startswith(b'%PDF'):
+        raise HTTPException(status_code=422, detail='File không phải PDF hợp lệ')
 
     parsed_tags = _parse_tags(tags)
-    full_text, chunks, pdf_report = await extract_and_chunk_with_report(file)
-
+    safe_title = (title or file.filename or 'Untitled').strip() or 'Untitled'
     doc = Document(
         user_id=user_id,
-        title=title or file.filename or 'Untitled',
-        content=full_text or '',
-        filename=file.filename or 'unknown',
-        mime_type=file.content_type or 'application/octet-stream',
+        title=safe_title,
+        content='',
+        filename=file.filename or 'unknown.pdf',
+        mime_type=file.content_type or 'application/pdf',
         tags=parsed_tags,
     )
     db.add(doc)
     db.commit()
     db.refresh(doc)
 
-    chunk_models = []
-    for idx, ch in enumerate(chunks):
-        chunk_models.append(
-            DocumentChunk(
-                document_id=doc.id,
-                chunk_index=idx,
-                text=ch['text'],
-                meta={**(ch.get('meta') or {}), 'hash': hashlib.sha1(' '.join(str(ch['text']).split()).encode('utf-8', errors='ignore')).hexdigest(), 'char_len': len(str(ch['text']))},
-            )
-        )
-    db.add_all(chunk_models)
-    db.flush()
-    db.commit()
+    _set_doc_status(doc.id, status='pending', progress_pct=0, topic_count=0)
+    background_tasks.add_task(
+        process_document_pipeline,
+        int(doc.id),
+        int(user_id),
+        filename=doc.filename,
+        mime_type=doc.mime_type,
+        title=safe_title,
+        tags=parsed_tags,
+        file_bytes=data,
+    )
 
-    # --- Auto-topic extraction (Content Agent) ---
-    topics_payload: list[dict[str, Any]] = []
-    topics_status = "SKIPPED"
-    topics_reason = None
-    topics_quality = None
-
-    try:
-        topic_obj = _extract_topics_doc_auto(
-            full_text,
-            [c.get("text") or "" for c in chunks],
-            mime_type=str(getattr(doc, 'mime_type', '') or ''),
-            filename=str(getattr(doc, 'filename', '') or ''),
-            include_details=True,
-            max_topics=int(getattr(settings, 'TOPIC_MAX_TOPICS', 60) or 60),
-        )
-        topics_quality = topic_obj.get("quality")
-        topics_status = str(topic_obj.get("status") or "SKIPPED")
-        if topics_status == "OK":
-            topics = topic_obj.get("topics") or []
-
-            # Prefer start/end from the extractor (chunk-aware). If absent, fall back to deterministic length-based mapping.
-            ranges = []
-            if topics and topics[0].get("start_chunk_index") is not None and topics[0].get("end_chunk_index") is not None:
-                for t in topics:
-                    ranges.append((t.get("start_chunk_index"), t.get("end_chunk_index")))
-            else:
-                ranges = assign_topic_chunk_ranges(topics, chunk_lengths=[len(c.text or "") for c in chunk_models])
-
-            # IMPORTANT: Keep stored ranges TIGHT for clean topic display.
-            # When generating quizzes, we can expand the evidence window on-the-fly.
-
-            topic_models: list[DocumentTopic] = []
-            for i, (t, (s_idx, e_idx)) in enumerate(zip(topics, ranges)):
-                cleaned_title, title_warnings = validate_and_clean_topic_title(str(t.get("title") or "").strip()[:255])
-                page_start, page_end = _infer_page_range_from_chunks(chunk_models, s_idx, e_idx)
-                original_exercises = extract_exercises_from_topic(
-                    str(t.get("content_preview") or t.get("summary") or ""),
-                    str(t.get("title") or ""),
-                )
-                topic_body = ""
-                if s_idx is not None and e_idx is not None:
-                    try:
-                        topic_body = "\n\n".join([(c.text or "") for c in chunk_models[int(s_idx): int(e_idx) + 1]]).strip()
-                    except Exception:
-                        topic_body = ""
-                quick_check_quiz_id = None
-                try:
-                    det = build_topic_details(topic_body, title=str(t.get("title") or ""))
-                    sg = str(det.get("study_guide_md") or "").strip()
-                    if sg:
-                        quick_check_quiz_id = _create_topic_quick_check_quiz(
-                            db,
-                            user_id=int(user_id),
-                            topic_title=str(t.get("title") or ""),
-                            study_guide_md=sg,
-                        )
-                except Exception:
-                    quick_check_quiz_id = None
-                tm = DocumentTopic(
-                    document_id=doc.id,
-                    is_confirmed=False,
-                    topic_index=i,
-                    title=(cleaned_title or str(t.get("title") or "").strip())[:255],
-                    display_title=(cleaned_title or str(t.get("title") or "").strip())[:255],
-                    needs_review=bool(t.get("needs_review") or title_warnings),
-                    extraction_confidence=float(t.get("extraction_confidence") or 0.0),
-                    summary=str(t.get("summary") or "").strip(),
-                    keywords=[str(x).strip() for x in (t.get("keywords") or []) if str(x).strip()],
-                    start_chunk_index=s_idx,
-                    end_chunk_index=e_idx,
-                    page_start=page_start,
-                    page_end=page_end,
-                    quick_check_quiz_id=quick_check_quiz_id,
-                    metadata_json={
-                        "original_exercises": (t.get("original_exercises") or []),
-                        "has_original_exercises": bool(t.get("has_original_exercises")),
-                        "coverage_score": float(t.get("coverage_score") or 0.0),
-                        "confidence": str(t.get("confidence") or "low"),
-                        "sample_content": str(t.get("sample_content") or ""),
-                        "subtopics": (t.get("subtopics") or []),
-                        "page_ranges": (t.get("page_ranges") or []),
-                    },
-                )
-                topic_models.append(tm)
-
-            if topic_models:
-                db.add_all(topic_models)
-                db.commit()
-
-                # Build response payload with the *same order* as extracted topics.
-                for tm, t in zip(topic_models, topics):
-                    s_idx = tm.start_chunk_index
-                    e_idx = tm.end_chunk_index
-                    included_chunk_ids: list[int] = []
-                    if s_idx is not None and e_idx is not None and 0 <= int(s_idx) <= int(e_idx) < len(chunk_models):
-                        included_chunk_ids = [c.id for c in chunk_models[int(s_idx): int(e_idx) + 1]]
-
-                    chunk_lengths = [len(c.text or "") for c in chunk_models]
-                    stats_tight = topic_range_stats(
-                        start_chunk_index=s_idx,
-                        end_chunk_index=e_idx,
-                        chunk_lengths=chunk_lengths,
-                    )
-                    s2, e2 = (s_idx, e_idx)
-                    if s_idx is not None and e_idx is not None:
-                        try:
-                            (s2, e2) = ensure_topic_chunk_ranges_ready_for_quiz(
-                                [(int(s_idx), int(e_idx))],
-                                chunk_lengths=chunk_lengths,
-                            )[0]
-                        except Exception:
-                            s2, e2 = (s_idx, e_idx)
-                    stats = topic_range_stats(
-                        start_chunk_index=s2,
-                        end_chunk_index=e2,
-                        chunk_lengths=chunk_lengths,
-                    )
-                    quiz_ready = (
-                        stats.get('chunk_span', 0) >= int(getattr(settings, 'TOPIC_MIN_CHUNKS_FOR_QUIZ', 4) or 4)
-                        and stats.get('char_len', 0) >= int(getattr(settings, 'TOPIC_MIN_CHARS_FOR_QUIZ', 1400) or 1400)
-                    )
-
-                    topics_payload.append(
-                        {
-                            "topic_id": tm.id,
-                            "topic_index": tm.topic_index,
-                            "title": tm.title,
-                            "display_title": tm.display_title or tm.title,
-                            "needs_review": bool(tm.needs_review),
-                            "extraction_confidence": float(tm.extraction_confidence or 0.0),
-                            "page_range": [tm.page_start, tm.page_end],
-                            "summary": tm.summary,
-                            "keywords": tm.keywords or [],
-                            "has_original_exercises": bool((tm.metadata_json or {}).get("has_original_exercises")),
-                            "original_exercise_count": len((tm.metadata_json or {}).get("original_exercises") or []),
-                            "coverage_score": float((tm.metadata_json or {}).get("coverage_score") or 0.0),
-                            "confidence": str((tm.metadata_json or {}).get("confidence") or "low"),
-                            "sample_content": str((tm.metadata_json or {}).get("sample_content") or ""),
-                            "subtopics": (tm.metadata_json or {}).get("subtopics") or [],
-                            "page_ranges": (tm.metadata_json or {}).get("page_ranges") or [],
-                            "quick_check_quiz_id": tm.quick_check_quiz_id,
-                            "start_chunk_index": tm.start_chunk_index,
-                            "end_chunk_index": tm.end_chunk_index,
-                            # richer topic profile (computed during extraction)
-                            "outline": (t.get("outline") or []),
-                            "key_points": (t.get("key_points") or []),
-                            "definitions": (t.get("definitions") or []),
-                            "examples": (t.get("examples") or []),
-                            "formulas": (t.get("formulas") or []),
-                            # Optional: external enrichment for "Ít dữ liệu" topics
-                            "sources": (t.get("sources") or []),
-                            "external_notes": (t.get("external_notes") or []),
-                            "content_preview": t.get("content_preview"),
-                            "content_len": t.get("content_len"),
-                            "has_more_content": t.get("has_more_content"),
-                            "included_chunk_ids": included_chunk_ids,
-                            "chunk_span": stats_tight.get('chunk_span', 0),
-                            "range_char_len": stats_tight.get('char_len', 0),
-                            "evidence_chunk_span": stats.get('chunk_span', 0),
-                            "evidence_char_len": stats.get('char_len', 0),
-                            "quiz_ready": bool(quiz_ready),
-                        }
-                    )
-        else:
-            topics_reason = topic_obj.get("reason")
-    except Exception as e:
-        topics_status = "ERROR"
-        topics_reason = str(e)
-
-    # Try to index chunks into FAISS (semantic RAG).
-    # IMPORTANT: Semantic RAG is optional for the demo (API billing/quota may be unavailable).
-    # When disabled, we skip indexing instead of returning a scary error message.
-    vector_info = {"vector_indexed": False}
-    if vector_store.is_enabled():
-        try:
-            # Event-driven infra:
-            # - If ASYNC_QUEUE_ENABLED=true and Redis/RQ are available, enqueue indexing.
-            # - Otherwise do the synchronous add_chunks (demo-friendly default).
-            if is_async_enabled():
-                job = enqueue(task_index_document, int(doc.id), queue_name="index")
-                vector_info = {"vector_indexed": False, "queued": True, **job}
-            else:
-                payload_chunks = [{"chunk_id": c.id, "document_id": c.document_id, "text": c.text} for c in chunk_models]
-                info = vector_store.add_chunks(payload_chunks)
-                vector_info = {"vector_indexed": True, **info}
-        except Exception as e:
-            vector_info = {"vector_indexed": False, "vector_error": str(e)}
-    else:
-        vector_info = {"vector_indexed": False, "skipped": True, "reason": "Semantic RAG disabled"}
+    page_count = 0
+    if data:
+        page_count = data.count(b'/Type /Page')
 
     return {
         'request_id': request.state.request_id,
         'data': {
-            'document_id': doc.id,
-            'title': doc.title,
+            'doc_id': int(doc.id),
             'filename': doc.filename,
-            'mime_type': doc.mime_type,
-            'chunk_count': len(chunk_models),
-            'topics_status': topics_status,
-            'topics_reason': topics_reason,
-            'topics_quality': topics_quality,
-            'topics': topics_payload,
-            'pdf_report': pdf_report,
-            'ocr_used': bool((pdf_report or {}).get('ocr_used')),
-            'ocr_engine': (pdf_report or {}).get('ocr_engine'),
-            **vector_info,
-            'vector_status': vector_store.status(),
+            'page_count': int(page_count),
+            'status': 'processing',
         },
         'error': None,
     }
