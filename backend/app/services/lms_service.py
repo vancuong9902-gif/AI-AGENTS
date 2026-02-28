@@ -4,6 +4,7 @@ import asyncio
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
+import json
 import statistics
 
 from statistics import mean
@@ -13,6 +14,8 @@ from app.services.llm_service import chat_json, chat_text, llm_available
 from sqlalchemy.orm import Session
 
 from app.models.learning_plan import LearningPlanHomeworkSubmission
+from app.models.agent_log import AgentLog
+from app.models.diagnostic_attempt import DiagnosticAttempt
 from app.models.user import User
 from datetime import datetime
 from typing import Any
@@ -932,6 +935,229 @@ def _build_student_ai_evaluation(*, student_data: dict[str, Any]) -> dict[str, A
             str(x).strip() for x in (payload.get("improvements") or fallback["improvements"]) if str(x).strip()
         ][:5],
         "recommendation": str(payload.get("recommendation") or fallback["recommendation"]).strip(),
+    }
+
+
+def _calc_plan_completion(plan: LearningPlan | None, homework_completed: int) -> float:
+    if not plan:
+        return 0.0
+    total_days = max(1, int(getattr(plan, "days_total", 0) or 0))
+    return round((max(0, int(homework_completed)) / total_days) * 100.0, 2)
+
+
+def _topic_scores_from_diag(diag: DiagnosticAttempt | None) -> dict[str, float]:
+    if not diag:
+        return {}
+    mastery = getattr(diag, "mastery_json", {}) or {}
+    by_topic = mastery.get("by_topic") if isinstance(mastery.get("by_topic"), dict) else {}
+    out: dict[str, float] = {}
+    for topic, value in by_topic.items():
+        if isinstance(value, dict):
+            out[str(topic)] = _safe_percent(value.get("percent") or value.get("score") or 0.0)
+        else:
+            out[str(topic)] = _safe_percent(value)
+    return out
+
+
+def _extract_topic_scores_for_student(attempt: DiagnosticAttempt | None) -> dict[str, float]:
+    if not attempt:
+        return {}
+    scores = _topic_scores_from_diag(attempt)
+    if scores:
+        return scores
+    try:
+        if isinstance(attempt.answers_json, list):
+            parsed = score_breakdown(attempt.answers_json).get("by_topic") or {}
+            return {str(k): _safe_percent((v or {}).get("percent") or 0.0) for k, v in parsed.items()}
+    except Exception:
+        return {}
+    return {}
+
+
+def _pick_topics_by_threshold(topic_scores: dict[str, float], *, threshold: float, reverse: bool = False) -> list[str]:
+    pairs = sorted(topic_scores.items(), key=lambda x: x[1], reverse=reverse)
+    if reverse:
+        return [name for name, value in pairs if value >= threshold][:3]
+    return [name for name, value in pairs if value < threshold][:3]
+
+
+def _fallback_evaluation(student: dict[str, Any]) -> dict[str, Any]:
+    improvement = student.get("improvement")
+    performance = "có tiến bộ" if isinstance(improvement, (int, float)) and improvement > 0 else "cần thêm hỗ trợ"
+    return {
+        "summary": f"Học sinh {performance} trong giai đoạn vừa qua, cần duy trì lộ trình học ổn định.",
+        "strengths": student.get("strong_topics") or ["Duy trì nề nếp học tập"],
+        "improvements": student.get("weak_topics") or ["Bổ sung luyện tập chủ đề còn yếu"],
+        "recommendation": "Giáo viên theo dõi theo tuần và giao thêm bài tập mục tiêu theo topic.",
+        "grade_suggestion": "B",
+    }
+
+
+def _fallback_class_summary(students: list[dict[str, Any]]) -> dict[str, Any]:
+    top = [s.get("name") for s in sorted(students, key=lambda x: x.get("final_score") or 0, reverse=True)[:3] if s.get("name")]
+    support = [s.get("name") for s in students if (s.get("final_score") or 0) < 50][:5]
+    return {
+        "overall_assessment": "Lớp học đang có chuyển biến tích cực, cần tiếp tục cá nhân hóa hỗ trợ cho nhóm còn yếu.",
+        "class_strengths": ["Nề nếp học tập được duy trì", "Nhiều học sinh có tiến bộ qua kỳ"],
+        "class_weaknesses": ["Một số chủ đề nền tảng còn chưa vững"],
+        "teacher_recommendations": ["Tăng cường luyện tập theo nhóm chủ đề", "Theo dõi nhóm học sinh cần hỗ trợ hàng tuần"],
+        "outstanding_students": top,
+        "support_needed": support,
+    }
+
+
+def _generate_student_ai_evaluation(student: dict[str, Any]) -> dict[str, Any]:
+    if not llm_available():
+        return _fallback_evaluation(student)
+
+    prompt = f"""Bạn là giáo viên kinh nghiệm. Hãy viết nhận xét học sinh.
+
+DỮ LIỆU HỌC SINH:
+- Điểm đầu vào: {student.get('diagnostic_score', 'N/A')}%
+- Điểm cuối kỳ: {student.get('final_score', 'N/A')}%
+- Tiến bộ: {student.get('improvement', 'N/A')}%
+- Trình độ: {student.get('level', {}).get('label', 'N/A')}
+- Điểm mạnh (topic): {', '.join(student.get('strong_topics', ['N/A']))}
+- Điểm yếu (topic): {', '.join(student.get('weak_topics', ['N/A']))}
+- Bài tập hoàn thành: {student.get('homework_completed', 0)} bài
+- Mức độ hoàn thành lộ trình: {student.get('plan_completion_pct', 0)}%
+- Số lần hỏi AI Tutor: {student.get('tutor_sessions', 0)} lần
+
+Viết nhận xét bằng tiếng Việt. Trả về JSON:
+{{
+  "summary": "Nhận xét tổng quát 2-3 câu",
+  "strengths": ["Điểm mạnh 1", "Điểm mạnh 2"],
+  "improvements": ["Cần cải thiện 1", "Cần cải thiện 2"],
+  "recommendation": "Đề xuất cụ thể cho giáo viên về học sinh này",
+  "grade_suggestion": "A/B/C/D/F"
+}}"""
+
+    try:
+        resp = chat_json(prompt, max_tokens=500, temperature=0.3)
+    except Exception:
+        resp = None
+    return resp if isinstance(resp, dict) else _fallback_evaluation(student)
+
+
+def _generate_class_ai_summary(students: list[dict[str, Any]]) -> dict[str, Any]:
+    if not llm_available() or not students:
+        return _fallback_class_summary(students)
+
+    scored = [s for s in students if s.get("final_score") is not None]
+    avg_score = sum(float(s["final_score"]) for s in scored) / len(scored) if scored else 0.0
+    improvement_values = [float(s["improvement"]) for s in students if isinstance(s.get("improvement"), (int, float))]
+    avg_improvement = sum(improvement_values) / len(improvement_values) if improvement_values else 0.0
+
+    level_dist: dict[str, int] = {}
+    for s in students:
+        lvl = str((s.get("level") or {}).get("label") or "Chưa phân loại")
+        level_dist[lvl] = level_dist.get(lvl, 0) + 1
+
+    top_performers = [s.get("name") for s in sorted(students, key=lambda x: x.get("final_score") or 0, reverse=True)[:3] if s.get("name")]
+    needs_attention = [s.get("name") for s in students if (s.get("final_score") or 0) < 50 and s.get("name")][:5]
+
+    prompt = f"""Bạn là hiệu trưởng viết báo cáo lớp học. Tiếng Việt.
+
+Dữ liệu lớp:
+- Tổng học sinh: {len(students)}
+- Điểm TB cuối kỳ: {avg_score:.1f}%
+- Cải thiện TB: {avg_improvement:.1f}%
+- Phân loại: {level_dist}
+- Top 3: {top_performers}
+- Cần chú ý: {needs_attention}
+
+Trả về JSON:
+{{
+  "overall_assessment": "Đánh giá tổng thể lớp (3-4 câu)",
+  "class_strengths": ["Điểm mạnh của lớp"],
+  "class_weaknesses": ["Điểm cần cải thiện"],
+  "teacher_recommendations": ["Gợi ý cho giáo viên (2-3 điểm)"],
+  "outstanding_students": ["Tên học sinh xuất sắc"],
+  "support_needed": ["Tên học sinh cần hỗ trợ thêm"]
+}}"""
+    try:
+        summary = chat_json(prompt, max_tokens=600, temperature=0.3)
+    except Exception:
+        summary = None
+    return summary if isinstance(summary, dict) else _fallback_class_summary(students)
+
+
+def generate_full_teacher_report(classroom_id: int, db: Session) -> dict[str, Any]:
+    classroom_id = int(classroom_id)
+    members = (
+        db.query(ClassroomMember)
+        .filter(ClassroomMember.classroom_id == classroom_id, ClassroomMember.role == "student")
+        .all()
+    )
+
+    students_data: list[dict[str, Any]] = []
+    for member in members:
+        user_id = int(member.user_id)
+        diag = (
+            db.query(DiagnosticAttempt)
+            .filter(DiagnosticAttempt.user_id == user_id, DiagnosticAttempt.stage == "pre")
+            .order_by(DiagnosticAttempt.created_at.desc())
+            .first()
+        )
+        final = (
+            db.query(DiagnosticAttempt)
+            .filter(DiagnosticAttempt.user_id == user_id, DiagnosticAttempt.stage == "post")
+            .order_by(DiagnosticAttempt.created_at.desc())
+            .first()
+        )
+
+        homework_done = (
+            db.query(LearningPlanHomeworkSubmission)
+            .filter(LearningPlanHomeworkSubmission.user_id == user_id)
+            .count()
+        )
+        plan = (
+            db.query(LearningPlan)
+            .filter(LearningPlan.user_id == user_id, LearningPlan.classroom_id == classroom_id)
+            .order_by(LearningPlan.updated_at.desc())
+            .first()
+        )
+        tutor_queries = db.query(AgentLog).filter(AgentLog.user_id == user_id).count()
+
+        diag_score = float(diag.score_percent) if diag else None
+        final_score = float(final.score_percent) if final else None
+        topic_scores = _extract_topic_scores_for_student(final or diag)
+        base_score = final_score if final_score is not None else (diag_score or 0.0)
+        level_key = classify_student_level(int(round(base_score)))
+        level_map = {
+            "gioi": "Giỏi",
+            "kha": "Khá",
+            "trung_binh": "Trung bình",
+            "yeu": "Yếu",
+        }
+
+        student_data = {
+            "user_id": user_id,
+            "name": str((member.user.full_name if member.user else None) or f"Student #{user_id}"),
+            "diagnostic_score": round(diag_score, 2) if diag_score is not None else None,
+            "final_score": round(final_score, 2) if final_score is not None else None,
+            "improvement": round(final_score - diag_score, 2) if diag_score is not None and final_score is not None else None,
+            "level": {"key": level_key, "label": level_map.get(level_key, level_key)},
+            "topic_scores": topic_scores,
+            "homework_completed": int(homework_done),
+            "plan_completion_pct": _calc_plan_completion(plan, homework_done),
+            "tutor_sessions": int(tutor_queries),
+            "weak_topics": _pick_topics_by_threshold(topic_scores, threshold=60.0, reverse=False),
+            "strong_topics": _pick_topics_by_threshold(topic_scores, threshold=75.0, reverse=True),
+        }
+        student_data["ai_evaluation"] = _generate_student_ai_evaluation(student_data)
+        students_data.append(student_data)
+
+    class_summary = _generate_class_ai_summary(students_data)
+    classroom = db.get(Classroom, classroom_id)
+    return {
+        "classroom_id": classroom_id,
+        "classroom_name": str(getattr(classroom, "name", None) or f"Classroom #{classroom_id}"),
+        "generated_at": datetime.utcnow().isoformat(),
+        "total_students": len(students_data),
+        "students": students_data,
+        "class_summary": class_summary,
+        "export_available": True,
     }
 
 
