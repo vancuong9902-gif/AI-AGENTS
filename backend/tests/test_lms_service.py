@@ -6,6 +6,7 @@ from app.services.lms_service import (
     classify_student_multidim,
     generate_student_evaluation_report,
     generate_class_narrative,
+    per_student_bloom_analysis,
     score_breakdown,
 )
 
@@ -127,3 +128,29 @@ def test_score_breakdown_includes_bloom_based_weak_topics():
     weak = {r["topic"]: r for r in scored["weak_topics"]}
     assert weak["đại số"]["assignment_type"] == "reading"
     assert weak["hình học"]["assignment_type"] == "essay_case_study"
+
+
+def test_per_student_bloom_analysis_returns_bloom_and_weak_topics():
+    attempts = [
+        type("A", (), {
+            "user_id": 1,
+            "breakdown_json": [
+                {"bloom_level": "remember", "topic": "đại số", "is_correct": True},
+                {"bloom_level": "apply", "topic": "đại số", "is_correct": False},
+                {"bloom_level": "analyze", "topic": "hình học", "is_correct": False},
+            ],
+        })(),
+        type("A", (), {
+            "user_id": 2,
+            "breakdown_json": [
+                {"bloom_level": "understand", "topic": "xác suất", "is_correct": True},
+            ],
+        })(),
+    ]
+
+    out = per_student_bloom_analysis(attempts, {10: "diagnostic_pre"})
+    assert len(out) == 2
+    student_1 = out[0]
+    assert student_1["student_id"] == 1
+    assert set(student_1["bloom_accuracy"].keys()) == {"remember", "understand", "apply", "analyze", "evaluate", "create"}
+    assert student_1["weak_topics"][0]["topic"] in {"đại số", "hình học"}
