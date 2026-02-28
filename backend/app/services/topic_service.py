@@ -2824,6 +2824,10 @@ def extract_topics(
     NOTE: content_preview is bounded; full content can be reconstructed later from chunks by (start_chunk_index,end_chunk_index).
     """
 
+    from app.services.vietnamese_font_fix import fix_vietnamese_font_encoding
+
+    full_text = fix_vietnamese_font_encoding(full_text or "")
+
     # Repair common PDF/OCR spacing artifacts before any splitting/quality checks.
     try:
         full_text = repair_ocr_spacing_text(full_text or "")
