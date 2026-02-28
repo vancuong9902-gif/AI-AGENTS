@@ -1,909 +1,223 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
-import { apiJson } from "../lib/api";
-import { GroupedBarChart, HorizontalBarList } from "../components/Charts";
-import { FaArrowLeft, FaChartLine, FaClipboard, FaFilter, FaPaperPlane, FaSearch, FaSyncAlt, FaUsers } from "react-icons/fa";
+import { useParams } from "react-router-dom";
+import {
+  Cell,
+  Legend,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+} from "recharts";
+import { API_BASE, apiJson } from "../lib/api";
 
-function Card({ children, style }) {
-  return (
-    <div
-      style={{
-        background: "#fff",
-        borderRadius: 18,
-        padding: 16,
-        boxShadow: "0 2px 16px rgba(0,0,0,0.06)",
-        ...style,
-      }}
-    >
-      {children}
-    </div>
+const LEVEL_LABEL = {
+  gioi: "Giỏi",
+  kha: "Khá",
+  trung_binh: "Trung bình",
+  yeu: "Yếu",
+};
 
-  );
+const LEVEL_COLORS = {
+  gioi: "#22c55e",
+  kha: "#3b82f6",
+  trung_binh: "#f59e0b",
+  yeu: "#ef4444",
+};
+
+function Card({ children }) {
+  return <div style={{ background: "#fff", borderRadius: 12, padding: 16, boxShadow: "0 2px 12px rgba(0,0,0,0.08)" }}>{children}</div>;
 }
 
-function StatCard({ title, value, hint }) {
+function SummaryCard({ title, value, hint }) {
   return (
-    <Card style={{ padding: 14 }}>
-      <div style={{ color: "#666", fontWeight: 900, fontSize: 12 }}>{title}</div>
-      <div style={{ fontSize: 26, fontWeight: 1000, marginTop: 6 }}>{value}</div>
-      {hint ? <div style={{ marginTop: 6, color: "#666" }}>{hint}</div> : null}
+    <Card>
+      <div style={{ color: "#666", fontSize: 12, fontWeight: 700 }}>{title}</div>
+      <div style={{ fontSize: 28, fontWeight: 800, marginTop: 6 }}>{value}</div>
+      {hint ? <div style={{ marginTop: 4, color: "#666", fontSize: 13 }}>{hint}</div> : null}
     </Card>
   );
 }
 
-function ProgressPill({ pct }) {
-  const p = Math.max(0, Math.min(100, Number(pct) || 0));
-  const good = p >= 70;
-  return (
-    <span
-      style={{
-        padding: "6px 10px",
-        borderRadius: 999,
-        border: "1px solid #eee",
-        background: good ? "#f6fff6" : "#fff7f0",
-        color: "#222",
-        fontWeight: 1000,
-        fontVariantNumeric: "tabular-nums",
-      }}
-      title="Progress"
-    >
-      {Math.round(p)}%
-    </span>
-  );
-}
-
-
-
-function AINarrativeCard({ narrative }) {
-  if (!narrative) return null;
-  return (
-    <div
-      style={{
-        background: "linear-gradient(135deg, #e3f2fd, #bbdefb)",
-        border: "1px solid #2196F3",
-        borderRadius: 12,
-        padding: "16px 20px",
-        marginBottom: 20,
-      }}
-    >
-      <div style={{ fontWeight: 700, color: "#1565C0", marginBottom: 8, fontSize: 15 }}>🤖 Nhận xét từ AI</div>
-      <p style={{ margin: 0, color: "#333", lineHeight: 1.7, fontSize: 14 }}>{narrative}</p>
-    </div>
-  );
-}
-
-function ProgressChart({ data }) {
-  if (!data?.length) return null;
-  const categories = data.map((item) => ({
-    key: String(item.student_id),
-    label: `#${item.student_id}`,
-    pre: Number(item.pre_score) || 0,
-    post: Number(item.post_score) || 0,
-  }));
-  return (
-    <GroupedBarChart
-      title="📈 Tiến bộ: Điểm đầu vào vs Cuối kỳ"
-      subtitle="So sánh điểm pre-test và post-test theo từng học sinh"
-      categories={categories}
-      series={[
-        { key: "pre", label: "Điểm đầu vào" },
-        { key: "post", label: "Điểm cuối kỳ" },
-      ]}
-      maxValue={100}
-      height={300}
-    />
-  );
-}
-
-function WeakTopicsTable({ topics }) {
-  if (!topics || topics.length === 0) return null;
-  return (
-    <div style={{ background: "#fff", borderRadius: 12, padding: 16, marginBottom: 20, boxShadow: "0 2px 16px rgba(0,0,0,0.06)" }}>
-      <h3 style={{ marginTop: 0, color: "#C62828" }}>⚠️ Các phần học sinh đang yếu nhất</h3>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-        <thead>
-          <tr style={{ background: "#FEE2E2" }}>
-            <th style={{ padding: "8px 12px", textAlign: "left" }}>Chủ đề</th>
-            <th style={{ padding: "8px 12px", textAlign: "center" }}>Điểm TB</th>
-            <th style={{ padding: "8px 12px", textAlign: "center" }}>Học sinh yếu</th>
-            <th style={{ padding: "8px 12px", textAlign: "left" }}>Đề xuất</th>
-          </tr>
-        </thead>
-        <tbody>
-          {topics.slice(0, 5).map((t, i) => (
-            <tr key={`${t.topic}-${i}`} style={{ borderBottom: "1px solid #eee", background: i % 2 === 0 ? "#fff" : "#FFF7ED" }}>
-              <td style={{ padding: "8px 12px", fontWeight: 600 }}>{t.topic}</td>
-              <td style={{ padding: "8px 12px", textAlign: "center", color: t.avg_pct < 50 ? "#DC2626" : "#D97706" }}>{t.avg_pct}%</td>
-              <td style={{ padding: "8px 12px", textAlign: "center" }}>
-                {t.weak_count}/{t.total}
-              </td>
-              <td style={{ padding: "8px 12px", color: "#555", fontSize: 12 }}>{t.suggestion}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-
-      {reportModal ? (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 }}>
-          <div style={{ background: "#fff", borderRadius: 12, padding: 16, width: "min(560px, 92vw)" }}>
-            <div style={{ fontWeight: 800, fontSize: 18 }}>Học sinh {reportModal.student?.full_name || `#${reportModal.student?.user_id}`} vừa hoàn thành bài cuối kỳ. Xem báo cáo?</div>
-            <div style={{ color: "#666", marginTop: 8 }}>
-              {reportModal.report?.title || "Báo cáo mới"}
-            </div>
-            <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end", gap: 8 }}>
-              <button onClick={() => setReportModal(null)} style={{ padding: "8px 12px" }}>Đóng</button>
-              <button
-                onClick={async () => {
-                  try {
-                    await apiJson(`/teacher/reports/${reportModal.report.id}/mark-read`, { method: "POST" });
-                  } catch {
-                    // ignore
-                  }
-                  setReportModal(null);
-                  navigate(`/teacher/reports/student/${reportModal.student.user_id}`);
-                }}
-                style={{ padding: "8px 12px" }}
-              >
-                Xem báo cáo
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-    </>
-  );
-}
-
-function clamp(x, a, b) {
-  const n = Number(x);
-  if (!Number.isFinite(n)) return a;
-  return Math.max(a, Math.min(b, n));
-}
-
 export default function TeacherClassroomDashboard() {
   const { id } = useParams();
-  const navigate = useNavigate();
   const classroomId = Number(id);
-
-  const [data, setData] = useState(null);
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState(null);
-
-  // Filters
-  const [query, setQuery] = useState("");
-  const [minProgress, setMinProgress] = useState(0);
-  const [minHomework, setMinHomework] = useState(0);
-  const [needHelpOnly, setNeedHelpOnly] = useState(false);
-  const [needHelpThreshold, setNeedHelpThreshold] = useState(60);
-  const [sortKey, setSortKey] = useState("progress_desc");
-
-  // Assign plan
-  // Topic picker (giống giao đề) - Option B: cho phép chọn nhiều topic
-  const [docs, setDocs] = useState([]);
-  const [selectedDocIds, setSelectedDocIds] = useState([]);
-  const [topicsByDoc, setTopicsByDoc] = useState({});
-  const [selectedTopics, setSelectedTopics] = useState([]);
-
-  const [level, setLevel] = useState("beginner");
-  const [daysTotal, setDaysTotal] = useState(7);
-  const [minutesPerDay, setMinutesPerDay] = useState(35);
-  const [assigning, setAssigning] = useState(false);
-  const [assignMsg, setAssignMsg] = useState(null);
-  const [reportsByStudent, setReportsByStudent] = useState({});
-  const [reportModal, setReportModal] = useState(null);
-
-  const effectiveDocIds = useMemo(() => {
-    return (selectedDocIds || []).map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0);
-  }, [selectedDocIds]);
-
-  const effectiveTopics = useMemo(() => {
-    return (selectedTopics || []).map((s) => String(s)).filter(Boolean);
-  }, [selectedTopics]);
-
-  const loadDocs = async () => {
-    try {
-      const data = await apiJson("/documents");
-      const arr = data?.documents || [];
-      setDocs(Array.isArray(arr) ? arr : []);
-    } catch {
-      // ignore
-    }
-  };
-
-  const refresh = async () => {
-    setErr(null);
-    setAssignMsg(null);
-    setLoading(true);
-    try {
-      const [payload, reportPayload] = await Promise.all([
-        apiJson(`/teacher/classrooms/${classroomId}/dashboard`),
-        apiJson(`/lms/teacher/report/${classroomId}`),
-      ]);
-      setData(payload);
-      setReport(reportPayload?.data || null);
-    } catch (e) {
-      setErr(e?.message || String(e));
-    } finally {
-      setLoading(false);
-    }
-  };
+  const [err, setErr] = useState("");
+  const [levelFilter, setLevelFilter] = useState("all");
+  const [sortBy, setSortBy] = useState("final_desc");
 
   useEffect(() => {
     if (!Number.isFinite(classroomId) || classroomId <= 0) return;
-    refresh();
-    loadDocs();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    (async () => {
+      setLoading(true);
+      setErr("");
+      try {
+        const data = await apiJson(`/lms/teacher/report/${classroomId}`);
+        setReport(data);
+      } catch (e) {
+        setErr(e?.message || "Không thể tải báo cáo lớp học");
+      } finally {
+        setLoading(false);
+      }
+    })();
   }, [classroomId]);
 
-
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      if (!studentsRaw.length) return;
-      try {
-        const entries = await Promise.all(
-          studentsRaw.map(async (s) => {
-            const rep = await apiJson(`/teacher/reports/${Number(s.user_id)}`);
-            const reports = Array.isArray(rep?.reports) ? rep.reports : [];
-            return [Number(s.user_id), reports];
-          })
-        );
-        if (!mounted) return;
-        const map = {};
-        for (const [sid, list] of entries) map[sid] = list;
-        setReportsByStudent(map);
-      } catch {
-        // ignore report polling errors
-      }
-    })();
-    return () => {
-      mounted = false;
-    };
-  }, [studentsRaw]);
-
-  // Fetch topics for selected documents
-  useEffect(() => {
-    (async () => {
-      const missing = (selectedDocIds || []).filter((did) => !topicsByDoc[did]);
-      if (missing.length === 0) return;
-      try {
-        const entries = await Promise.all(
-          missing.map(async (did) => {
-            const data = await apiJson(`/documents/${did}/topics`);
-            return [did, data?.topics || []];
-          })
-        );
-        setTopicsByDoc((prev) => {
-          const next = { ...(prev || {}) };
-          for (const [did, topics] of entries) next[did] = topics;
-          return next;
-        });
-      } catch {
-        // ignore
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedDocIds]);
-
-  const classroom = data?.classroom;
-  const studentsRaw = Array.isArray(data?.students) ? data.students : [];
-
   const students = useMemo(() => {
-    const q = (query || "").trim().toLowerCase();
-    const mp = clamp(minProgress, 0, 100);
-    const mh = clamp(minHomework, 0, 100);
-    const th = clamp(needHelpThreshold, 0, 100);
-
-    const mapped = studentsRaw.map((s) => {
-      const total = Number(s?.tasks_total) || 0;
-      const done = Number(s?.tasks_done) || 0;
-      const progress = total > 0 ? (done / total) * 100 : 0;
-      const hw = s?.homework_avg;
-      const hwPct = typeof hw === "number" && Number.isFinite(hw) ? hw : null;
-      return {
-        ...s,
-        _progress: clamp(progress, 0, 100),
-        _homework: hwPct === null ? null : clamp(hwPct, 0, 100),
-        _name: (s?.full_name || "").toLowerCase(),
-      };
-    });
-
-    let out = mapped.filter((s) => {
-      if (q) {
-        const ok =
-          String(s.user_id).includes(q) ||
-          s._name.includes(q) ||
-          (s.assigned_topic || "").toLowerCase().includes(q);
-        if (!ok) return false;
-      }
-
-      if (s._progress < mp) return false;
-      if (mh > 0) {
-        if (s._homework === null) return false;
-        if (s._homework < mh) return false;
-      }
-
-      if (needHelpOnly) {
-        const hwVal = s._homework === null ? 0 : s._homework;
-        if (!(s._progress < th || hwVal < th)) return false;
-      }
-      return true;
-    });
-
-    const cmpNum = (a, b, key) => (Number(a?.[key]) || 0) - (Number(b?.[key]) || 0);
-    const cmpStr = (a, b, key) => String(a?.[key] || "").localeCompare(String(b?.[key] || ""));
-
-    const sorters = {
-      progress_desc: (a, b) => cmpNum(b, a, "_progress"),
-      progress_asc: (a, b) => cmpNum(a, b, "_progress"),
-      homework_desc: (a, b) => cmpNum(b, a, "_homework"),
-      homework_asc: (a, b) => cmpNum(a, b, "_homework"),
-      id_asc: (a, b) => cmpNum(a, b, "user_id"),
-      name_asc: (a, b) => cmpStr(a, b, "full_name"),
+    const list = Array.isArray(report?.student_list) ? [...report.student_list] : [];
+    const filtered = levelFilter === "all" ? list : list.filter((s) => s.level === levelFilter);
+    const score = (v) => (typeof v === "number" ? v : -1);
+    const sorter = {
+      final_desc: (a, b) => score(b.final_score) - score(a.final_score),
+      final_asc: (a, b) => score(a.final_score) - score(b.final_score),
+      entry_desc: (a, b) => score(b.entry_score) - score(a.entry_score),
+      improvement_desc: (a, b) => score(b.improvement) - score(a.improvement),
+      name_asc: (a, b) => String(a.name || "").localeCompare(String(b.name || "")),
     };
+    filtered.sort(sorter[sortBy] || sorter.final_desc);
+    return filtered;
+  }, [report, levelFilter, sortBy]);
 
-    out.sort(sorters[sortKey] || sorters.progress_desc);
-    return out;
-  }, [studentsRaw, query, minProgress, minHomework, needHelpOnly, needHelpThreshold, sortKey]);
+  const pieData = useMemo(() => {
+    const dist = report?.class_analytics?.score_distribution || {};
+    return ["gioi", "kha", "trung_binh", "yeu"].map((key) => ({ name: LEVEL_LABEL[key], key, value: Number(dist[key]) || 0 }));
+  }, [report]);
 
-  const stats = useMemo(() => {
-    const totalStudents = studentsRaw.length;
-    const assigned = studentsRaw.filter((s) => s.latest_plan_id).length;
-    const withPlans = studentsRaw.filter((s) => Number(s?.tasks_total) > 0).length;
-
-    const progressVals = studentsRaw
-      .map((s) => {
-        const total = Number(s?.tasks_total) || 0;
-        const done = Number(s?.tasks_done) || 0;
-        return total > 0 ? (done / total) * 100 : null;
-      })
-      .filter((x) => typeof x === "number" && Number.isFinite(x));
-
-    const avgProgress = progressVals.length ? progressVals.reduce((a, b) => a + b, 0) / progressVals.length : 0;
-
-    const hwVals = studentsRaw
-      .map((s) => s?.homework_avg)
-      .filter((x) => typeof x === "number" && Number.isFinite(x));
-    const avgHomework = hwVals.length ? hwVals.reduce((a, b) => a + b, 0) / hwVals.length : 0;
-
-    const th = clamp(needHelpThreshold, 0, 100);
-    const needHelpCount = studentsRaw.filter((s) => {
-      const total = Number(s?.tasks_total) || 0;
-      const done = Number(s?.tasks_done) || 0;
-      const progress = total > 0 ? (done / total) * 100 : 0;
-      const hw = typeof s?.homework_avg === "number" ? s.homework_avg : 0;
-      return progress < th || hw < th;
-    }).length;
-
-    return {
-      totalStudents,
-      assigned,
-      withPlans,
-      avgProgress: clamp(avgProgress, 0, 100),
-      avgHomework: clamp(avgHomework, 0, 100),
-      needHelpCount,
-    };
-  }, [studentsRaw, needHelpThreshold]);
-
-  const chartCategories = useMemo(() => {
-    const top = students.slice(0, 12);
-    return top.map((s) => ({
-      key: String(s.user_id),
-      label: `#${s.user_id}`,
-      progress: clamp(s._progress, 0, 100),
-      homework: clamp(s._homework === null ? 0 : s._homework, 0, 100),
-    }));
-  }, [students]);
-
-  const masteryItems = useMemo(() => {
-    return students.slice(0, 14).map((s) => ({
-      key: String(s.user_id),
-      label: s.full_name ? `${s.full_name}` : `User #${s.user_id}`,
-      value: (Number(s._progress) || 0) / 100,
-    }));
-  }, [students]);
-
-  const copyJoinCode = async () => {
-    const code = classroom?.join_code;
-    if (!code) return;
+  const exportPdf = async () => {
     try {
-      if (navigator?.clipboard?.writeText) {
-        await navigator.clipboard.writeText(String(code));
-        setAssignMsg("✅ Đã copy join code");
-      }
-    } catch {
-      // ignore
-    }
-  };
-
-  const assignPlan = async () => {
-    setAssignMsg(null);
-    setErr(null);
-    setAssigning(true);
-    try {
-      const body = {
-        // Option B: join nhiều topic thành 1 chuỗi để backend build plan theo trọng tâm
-        assigned_topic: effectiveTopics.length ? effectiveTopics.join("; ") : null,
-        level,
-        days_total: Number(daysTotal) || 7,
-        minutes_per_day: Number(minutesPerDay) || 35,
-      };
-      const res = await apiJson(`/teacher/classrooms/${classroomId}/assign-learning-plan`, { method: "POST", body });
-      const created = Array.isArray(res?.created) ? res.created.length : 0;
-      setAssignMsg(`✅ Đã giao plan cho ${created} học sinh`);
-      await refresh();
+      const headers = { "Cache-Control": "no-cache" };
+      const uid = localStorage.getItem("user_id");
+      const role = localStorage.getItem("role");
+      if (uid) headers["X-User-Id"] = uid;
+      if (role) headers["X-User-Role"] = role;
+      const res = await fetch(`${API_BASE}/lms/teacher/report/${classroomId}/export`, { headers });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `teacher-report-class-${classroomId}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
     } catch (e) {
-      setErr(e?.message || String(e));
-    } finally {
-      setAssigning(false);
+      setErr(`Xuất PDF thất bại: ${e?.message || e}`);
     }
   };
+
+  const summary = report?.summary || {};
+  const completionRate = summary.total_students > 0 ? Math.round((summary.completed_final_exam / summary.total_students) * 100) : 0;
 
   return (
-    <>
-    <div style={{ maxWidth: 1200, margin: "0 auto", padding: 16 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-        <div style={{ display: "grid", gap: 6 }}>
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <Link to="/teacher/classrooms" style={{ display: "inline-flex", alignItems: "center", gap: 8, textDecoration: "none", color: "#111", fontWeight: 900 }}>
-              <FaArrowLeft />
-              Lớp học
-            </Link>
-            <span style={{ color: "#bbb" }}>·</span>
-            <h1 style={{ margin: 0 }}>{classroom?.name || "Dashboard"}</h1>
-          </div>
-
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", color: "#555" }}>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-              <FaUsers /> {stats.totalStudents} học sinh
-            </span>
-            {classroom?.join_code ? (
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                Join code: <b style={{ letterSpacing: 1 }}>{classroom.join_code}</b>
-                <button
-                  onClick={copyJoinCode}
-                  style={{ border: "1px solid #e6e6e6", background: "#fff", borderRadius: 10, padding: "6px 8px", cursor: "pointer" }}
-                  title="Copy"
-                >
-                  <FaClipboard />
-                </button>
-              </span>
-            ) : null}
-          </div>
-        </div>
-
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <Link
-            to={`/teacher/classrooms/${classroomId}/entry-test`}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "10px 12px",
-              borderRadius: 12,
-              border: "1px solid #111",
-              background: "#111",
-              color: "#fff",
-              fontWeight: 900,
-              textDecoration: "none",
-            }}
-          >
-            <FaPaperPlane /> Tạo entry test
-          </Link>
-
-          <button
-            onClick={refresh}
-            disabled={loading}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "10px 12px",
-              borderRadius: 12,
-              border: "1px solid #e6e6e6",
-              background: "#fff",
-              fontWeight: 900,
-              cursor: loading ? "not-allowed" : "pointer",
-            }}
-          >
-            <FaSyncAlt />
-            {loading ? "Đang tải..." : "Refresh"}
-          </button>
-        </div>
+    <div style={{ padding: 20, display: "grid", gap: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <h2 style={{ margin: 0 }}>Báo cáo giáo viên - Lớp #{classroomId}</h2>
+        <button onClick={exportPdf} style={{ border: "1px solid #ddd", borderRadius: 8, padding: "10px 14px", background: "#111", color: "#fff", fontWeight: 700 }}>
+          Xuất báo cáo PDF
+        </button>
       </div>
 
-      {err ? (
-        <div style={{ marginTop: 12, background: "#fff5f5", border: "1px solid #ffd6d6", padding: 12, borderRadius: 12, color: "#8a1f1f" }}>{err}</div>
-      ) : null}
-
-      {assignMsg ? (
-        <div style={{ marginTop: 12, background: "#f6fff6", border: "1px solid #d8ffd8", padding: 12, borderRadius: 12, color: "#145214" }}>{assignMsg}</div>
-      ) : null}
+      {loading ? <Card>Đang tải báo cáo...</Card> : null}
+      {err ? <Card><div style={{ color: "#b91c1c" }}>{err}</div></Card> : null}
 
       {report ? (
-        <div style={{ marginTop: 14 }}>
-          <AINarrativeCard narrative={report.ai_narrative} />
-          <ProgressChart data={report.progress_chart} />
-          <WeakTopicsTable topics={report.weak_topics} />
-        </div>
-      ) : null}
-
-      {/* Stats */}
-      <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
-        <StatCard title="Học sinh" value={stats.totalStudents} hint={`${stats.assigned} đã được giao plan`} />
-        <StatCard title="Progress trung bình" value={`${Math.round(stats.avgProgress)}%`} hint={`${stats.withPlans} có dữ liệu tasks`} />
-        <StatCard title="Homework trung bình" value={`${Math.round(stats.avgHomework)}%`} hint="tính trên bài đã nộp" />
-        <StatCard title="Cần hỗ trợ" value={stats.needHelpCount} hint={`ngưỡng ${Math.round(clamp(needHelpThreshold, 0, 100))}%`} />
-      </div>
-
-      {/* Charts */}
-      <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 14, alignItems: "start" }}>
-        <GroupedBarChart
-          title="So sánh Progress & Homework (top 12 theo filter)"
-          subtitle="Progress = tasks_done/tasks_total · Homework = điểm trung bình tự luận"
-          categories={chartCategories}
-          series={[
-            { key: "progress", label: "Progress" },
-            { key: "homework", label: "Homework" },
-          ]}
-          maxValue={100}
-          height={280}
-        />
-        <HorizontalBarList title="Progress nhanh (top 14)" items={masteryItems} threshold={clamp(needHelpThreshold, 0, 100) / 100} />
-      </div>
-
-      {/* Filters + Assign */}
-      <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, alignItems: "start" }}>
-        <Card>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
-            <div style={{ fontWeight: 1000, fontSize: 16, display: "inline-flex", alignItems: "center", gap: 8 }}>
-              <FaFilter /> Bộ lọc
-            </div>
-            <div style={{ color: "#666", fontSize: 12 }}>{students.length}/{studentsRaw.length} hiển thị</div>
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
+            <SummaryCard title="Tổng học sinh" value={summary.total_students || 0} />
+            <SummaryCard title="Hoàn thành đầu vào" value={summary.completed_entry_test || 0} />
+            <SummaryCard title="Hoàn thành cuối kỳ" value={`${summary.completed_final_exam || 0} (${completionRate}%)`} />
+            <SummaryCard title="Điểm TB đầu vào" value={(summary.average_entry_score || 0).toFixed(1)} />
+            <SummaryCard title="Điểm TB cuối kỳ" value={(summary.average_final_score || 0).toFixed(1)} hint={`Cải thiện TB: ${(summary.average_improvement || 0).toFixed(1)}`} />
           </div>
 
-          <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8 }}>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <FaSearch style={{ color: "#777" }} />
-                <input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Tìm theo tên/ID/topic"
-                  style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #ddd" }}
-                />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr", gap: 12 }}>
+            <Card>
+              <h3 style={{ marginTop: 0 }}>Phân loại học sinh</h3>
+              <div style={{ width: "100%", height: 280 }}>
+                <ResponsiveContainer>
+                  <PieChart>
+                    <Pie data={pieData} dataKey="value" nameKey="name" outerRadius={90} label>
+                      {pieData.map((e) => <Cell key={e.key} fill={LEVEL_COLORS[e.key]} />)}
+                    </Pie>
+                    <Legend />
+                    <Tooltip />
+                  </PieChart>
+                </ResponsiveContainer>
               </div>
-            </div>
+            </Card>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <div>
-                <div style={{ fontWeight: 900, color: "#555", marginBottom: 6 }}>Min Progress: {Math.round(clamp(minProgress, 0, 100))}%</div>
-                <input type="range" min="0" max="100" value={minProgress} onChange={(e) => setMinProgress(Number(e.target.value))} style={{ width: "100%" }} />
+            <Card>
+              <h3 style={{ marginTop: 0 }}>Tiến trình học theo thời gian</h3>
+              <div style={{ width: "100%", height: 280 }}>
+                <ResponsiveContainer>
+                  <LineChart data={report?.class_analytics?.improvement_chart || []}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="date" />
+                    <YAxis domain={[0, 100]} />
+                    <Tooltip />
+                    <Line type="monotone" dataKey="avg_score" stroke="#2563eb" strokeWidth={3} />
+                  </LineChart>
+                </ResponsiveContainer>
               </div>
-              <div>
-                <div style={{ fontWeight: 900, color: "#555", marginBottom: 6 }}>Min Homework: {Math.round(clamp(minHomework, 0, 100))}%</div>
-                <input type="range" min="0" max="100" value={minHomework} onChange={(e) => setMinHomework(Number(e.target.value))} style={{ width: "100%" }} />
-              </div>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, alignItems: "center" }}>
-              <div>
-                <div style={{ fontWeight: 900, color: "#555", marginBottom: 6 }}>Ngưỡng cần hỗ trợ: {Math.round(clamp(needHelpThreshold, 0, 100))}%</div>
-                <input type="range" min="0" max="100" value={needHelpThreshold} onChange={(e) => setNeedHelpThreshold(Number(e.target.value))} style={{ width: "100%" }} />
-              </div>
-
-              <div style={{ display: "grid", gap: 8 }}>
-                <label style={{ display: "flex", gap: 10, alignItems: "center", fontWeight: 900, color: "#333" }}>
-                  <input type="checkbox" checked={needHelpOnly} onChange={(e) => setNeedHelpOnly(e.target.checked)} />
-                  Chỉ hiển thị HS cần hỗ trợ
-                </label>
-
-                <div>
-                  <div style={{ fontWeight: 900, color: "#555", marginBottom: 6 }}>Sắp xếp</div>
-                  <select value={sortKey} onChange={(e) => setSortKey(e.target.value)} style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #ddd", background: "#fff" }}>
-                    <option value="progress_desc">Progress ↓</option>
-                    <option value="progress_asc">Progress ↑</option>
-                    <option value="homework_desc">Homework ↓</option>
-                    <option value="homework_asc">Homework ↑</option>
-                    <option value="name_asc">Tên A→Z</option>
-                    <option value="id_asc">ID ↑</option>
-                  </select>
-                </div>
-              </div>
-            </div>
+            </Card>
           </div>
-        </Card>
 
-        <Card>
-          <div style={{ fontWeight: 1000, fontSize: 16, display: "inline-flex", alignItems: "center", gap: 8 }}>
-            <FaPaperPlane /> Giao learning plan cho cả lớp
-          </div>
-          <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <div>
-                <div style={{ fontWeight: 900, color: "#555", marginBottom: 6 }}>Topic (chọn từ tài liệu)</div>
-                <div style={{ color: "#666", fontSize: 12, lineHeight: 1.4 }}>
-                  Chọn tài liệu → chọn nhiều topic. Nếu bỏ trống, hệ thống tạo plan tổng quát.
-                </div>
-              </div>
-              <div>
-                <div style={{ fontWeight: 900, color: "#555", marginBottom: 6 }}>Level</div>
-                <select value={level} onChange={(e) => setLevel(e.target.value)} style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #ddd", background: "#fff" }}>
-                  <option value="beginner">beginner</option>
-                  <option value="intermediate">intermediate</option>
-                  <option value="advanced">advanced</option>
-                </select>
-              </div>
+          <Card>
+            <h3 style={{ marginTop: 0 }}>Danh sách học sinh</h3>
+            <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
+              <select value={levelFilter} onChange={(e) => setLevelFilter(e.target.value)}>
+                <option value="all">Tất cả mức</option>
+                <option value="gioi">Giỏi</option>
+                <option value="kha">Khá</option>
+                <option value="trung_binh">Trung bình</option>
+                <option value="yeu">Yếu</option>
+              </select>
+              <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
+                <option value="final_desc">Điểm cuối kỳ giảm dần</option>
+                <option value="final_asc">Điểm cuối kỳ tăng dần</option>
+                <option value="entry_desc">Điểm đầu vào giảm dần</option>
+                <option value="improvement_desc">Tiến bộ giảm dần</option>
+                <option value="name_asc">Tên A-Z</option>
+              </select>
             </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <div>
-                <div style={{ fontWeight: 900, color: "#555", marginBottom: 6 }}>Chọn tài liệu</div>
-                <div style={{ display: "grid", gap: 8, maxHeight: 180, overflow: "auto", border: "1px solid #eee", borderRadius: 12, padding: 10 }}>
-                  {(docs || []).length === 0 ? <div style={{ color: "#666" }}>Chưa có tài liệu. Hãy upload trước.</div> : null}
-                  {(docs || []).map((d) => {
-                    const did = Number(d.document_id);
-                    const checked = (selectedDocIds || []).includes(did);
-                    return (
-                      <label key={did} style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => {
-                            setSelectedDocIds((prev) => {
-                              const cur = Array.isArray(prev) ? prev : [];
-                              if (cur.includes(did)) return cur.filter((x) => x !== did);
-                              return [...cur, did];
-                            });
-                          }}
-                        />
-                        <span>
-                          <b>{d.title}</b> <span style={{ color: "#666" }}>(id={did})</span>
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div>
-                <div style={{ fontWeight: 900, color: "#555", marginBottom: 6 }}>
-                  Chọn topic ({effectiveTopics.length})
-                </div>
-                <div style={{ display: "grid", gap: 8, maxHeight: 180, overflow: "auto", border: "1px solid #eee", borderRadius: 12, padding: 10 }}>
-                  {effectiveDocIds.length === 0 ? <div style={{ color: "#666" }}>Chọn ít nhất 1 tài liệu để hiện topic.</div> : null}
-                  {effectiveDocIds.length > 0 && (
-                    <>
-                      {effectiveDocIds.flatMap((did) => {
-                        const tps = topicsByDoc[did] || [];
-                        const docTitle = (docs || []).find((x) => Number(x.document_id) === Number(did))?.title || `Doc ${did}`;
-                        return (tps || []).map((t) => {
-                          const key = `${did}::${t.topic_id || t.title}`;
-                          const title = String(t.title);
-                          const checked = (selectedTopics || []).includes(title);
-                          const no = Number.isFinite(Number(t.topic_index)) ? Number(t.topic_index) + 1 : null;
-                          return (
-                            <label key={key} style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={() => {
-                                  setSelectedTopics((prev) => {
-                                    const cur = Array.isArray(prev) ? prev : [];
-                                    if (cur.includes(title)) return cur.filter((x) => x !== title);
-                                    return [...cur, title];
-                                  });
-                                }}
-                              />
-                              <span>
-                                <span style={{ color: "#666" }}>{docTitle}{no ? ` — Chủ đề ${no}:` : ":"}</span> {title}
-                              </span>
-                            </label>
-                          );
-                        });
-                      })}
-                      {effectiveDocIds.length > 0 && effectiveDocIds.flatMap((did) => topicsByDoc[did] || []).length === 0 ? (
-                        <div style={{ color: "#666" }}>Tài liệu chưa có topic tự động. Bạn có thể bỏ trống để tạo plan tổng quát.</div>
-                      ) : null}
-                    </>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <div>
-                <div style={{ fontWeight: 900, color: "#555", marginBottom: 6 }}>Số ngày</div>
-                <input type="number" min="1" max="30" value={daysTotal} onChange={(e) => setDaysTotal(Number(e.target.value))} style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
-              </div>
-              <div>
-                <div style={{ fontWeight: 900, color: "#555", marginBottom: 6 }}>Phút/ngày</div>
-                <input type="number" min="10" max="180" value={minutesPerDay} onChange={(e) => setMinutesPerDay(Number(e.target.value))} style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #ddd" }} />
-              </div>
-            </div>
-
-            <button
-              onClick={assignPlan}
-              disabled={assigning || stats.totalStudents === 0}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 10,
-                padding: "11px 14px",
-                borderRadius: 12,
-                border: "1px solid #e6e6e6",
-                background: assigning ? "#f3f3f3" : "#111",
-                color: assigning ? "#888" : "#fff",
-                fontWeight: 1000,
-                cursor: assigning ? "not-allowed" : "pointer",
-              }}
-            >
-              <FaChartLine />
-              {assigning ? "Đang giao..." : "Giao plan"}
-            </button>
-
-            <div style={{ color: "#666", lineHeight: 1.5 }}>
-              Hệ thống tạo plan dựa theo tài liệu của teacher và lưu plan cho từng học sinh.
-            </div>
-          </div>
-        </Card>
-      </div>
-
-      {/* Table */}
-      <Card style={{ marginTop: 14 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
-          <div style={{ fontWeight: 1000, fontSize: 16, display: "inline-flex", alignItems: "center", gap: 10 }}>
-            <FaUsers /> Danh sách học sinh
-          </div>
-          <div style={{ color: "#666" }}>
-            <b>{students.length}</b> / {studentsRaw.length}
-          </div>
-        </div>
-
-        <div style={{ marginTop: 12, overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ textAlign: "left", borderBottom: "1px solid #eee" }}>
-                <th style={{ padding: 10 }}>Học sinh</th>
-                <th style={{ padding: 10 }}>Progress</th>
-                <th style={{ padding: 10 }}>Homework avg</th>
-                <th style={{ padding: 10 }}>Plan</th>
-                <th style={{ padding: 10 }}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {students.map((s) => {
-                const hw = s._homework;
-                const hwText = hw === null ? "—" : `${Math.round(hw)}%`;
-                const prog = s._progress;
-                const total = Number(s?.tasks_total) || 0;
-                const done = Number(s?.tasks_done) || 0;
-                const plan = s.latest_plan_id ? `#${s.latest_plan_id}` : "—";
-                return (
-                  <tr key={s.user_id} style={{ borderBottom: "1px solid #f3f3f3" }}>
-                    <td style={{ padding: 10 }}>
-                      <div style={{ fontWeight: 1000 }}>{s.full_name || `User #${s.user_id}`}</div>
-                      <div style={{ color: "#666", fontSize: 12 }}>
-                        ID: <b>{s.user_id}</b>
-                      </div>
-                      {s.assigned_topic ? <div style={{ color: "#666", fontSize: 12 }}>Topic: {s.assigned_topic}</div> : null}
-                      {((reportsByStudent[s.user_id] || []).filter((r) => !r.is_read).length > 0) ? (
-                        <span style={{ marginTop: 6, display: "inline-block", background: "#fee2e2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 999, padding: "2px 8px", fontSize: 12, fontWeight: 800 }}>
-                          Báo cáo mới
-                        </span>
-                      ) : null}
-                    </td>
-
-                    <td style={{ padding: 10, minWidth: 240 }}>
-                      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                        <div style={{ flex: 1, height: 10, background: "#f2f2f2", borderRadius: 999, position: "relative" }}>
-                          <div style={{ width: `${Math.round(prog)}%`, height: 10, borderRadius: 999, background: prog >= 70 ? "#111" : "#999" }} />
-                        </div>
-                        <ProgressPill pct={prog} />
-                      </div>
-                      <div style={{ color: "#666", fontSize: 12, marginTop: 6 }}>
-                        {done}/{total} tasks
-                      </div>
-                    </td>
-
-                    <td style={{ padding: 10 }}>
-                      <div style={{ fontWeight: 1000 }}>{hwText}</div>
-                      <div style={{ color: "#666", fontSize: 12 }}>{s.last_homework_score == null ? "" : `Lần cuối: ${Math.round(s.last_homework_score)}%`}</div>
-                    </td>
-
-                    <td style={{ padding: 10, fontWeight: 900 }}>{plan}</td>
-
-                    <td style={{ padding: 10 }}>
-                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                        <Link
-                          to={`/teacher/progress/${s.user_id}?classroom_id=${classroomId}`}
-                          style={{
-                            padding: "9px 11px",
-                            borderRadius: 12,
-                            border: "1px solid #e6e6e6",
-                            background: "#fff",
-                            color: "#111",
-                            textDecoration: "none",
-                            fontWeight: 900,
-                          }}
-                        >
-                          Xem tiến độ
-                        </Link>
-
-                        <Link
-                          to={`/teacher/student-plan/${s.user_id}?classroom_id=${classroomId}`}
-                          style={{
-                            padding: "9px 11px",
-                            borderRadius: 12,
-                            border: "1px solid #e6e6e6",
-                            background: "#fff",
-                            color: "#111",
-                            textDecoration: "none",
-                            fontWeight: 900,
-                          }}
-                        >
-                          Xem Learning Path
-                        </Link>
-                        <button
-                          onClick={() => {
-                            const latestUnread = (reportsByStudent[s.user_id] || []).find((r) => !r.is_read) || (reportsByStudent[s.user_id] || [])[0] || null;
-                            if (latestUnread) setReportModal({ student: s, report: latestUnread });
-                            else navigate(`/teacher/reports/student/${s.user_id}`);
-                          }}
-                          style={{
-                            padding: "9px 11px",
-                            borderRadius: 12,
-                            border: "1px solid #e6e6e6",
-                            background: "#fff",
-                            color: "#111",
-                            fontWeight: 900,
-                            cursor: "pointer",
-                          }}
-                        >
-                          Xem báo cáo cuối kỳ
-                        </button>
-                      </div>
-                    </td>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Học sinh</th>
+                    <th style={{ textAlign: "left", borderBottom: "1px solid #eee", padding: 8 }}>Level</th>
+                    <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Entry</th>
+                    <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Final</th>
+                    <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Improvement</th>
+                    <th style={{ textAlign: "right", borderBottom: "1px solid #eee", padding: 8 }}>Homework %</th>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-
-          {students.length === 0 ? <div style={{ marginTop: 10, color: "#666" }}>Không có học sinh phù hợp bộ lọc.</div> : null}
-        </div>
-      </Card>
-    </div>
-
-      {reportModal ? (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 }}>
-          <div style={{ background: "#fff", borderRadius: 12, padding: 16, width: "min(560px, 92vw)" }}>
-            <div style={{ fontWeight: 800, fontSize: 18 }}>Học sinh {reportModal.student?.full_name || `#${reportModal.student?.user_id}`} vừa hoàn thành bài cuối kỳ. Xem báo cáo?</div>
-            <div style={{ color: "#666", marginTop: 8 }}>
-              {reportModal.report?.title || "Báo cáo mới"}
+                </thead>
+                <tbody>
+                  {students.map((s) => (
+                    <tr key={s.student_id} style={{ background: s.level === "yeu" ? "#fee2e2" : "transparent" }}>
+                      <td style={{ padding: 8 }}>{s.name}</td>
+                      <td style={{ padding: 8 }}>{LEVEL_LABEL[s.level] || s.level}</td>
+                      <td style={{ padding: 8, textAlign: "right" }}>{s.entry_score == null ? "-" : s.entry_score.toFixed(1)}</td>
+                      <td style={{ padding: 8, textAlign: "right" }}>{s.final_score == null ? "-" : s.final_score.toFixed(1)}</td>
+                      <td style={{ padding: 8, textAlign: "right" }}>{s.improvement == null ? "-" : s.improvement.toFixed(1)}</td>
+                      <td style={{ padding: 8, textAlign: "right" }}>{(Number(s.homework_completion_rate) || 0).toFixed(1)}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-            <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end", gap: 8 }}>
-              <button onClick={() => setReportModal(null)} style={{ padding: "8px 12px" }}>Đóng</button>
-              <button
-                onClick={async () => {
-                  try {
-                    await apiJson(`/teacher/reports/${reportModal.report.id}/mark-read`, { method: "POST" });
-                  } catch {
-                    // ignore
-                  }
-                  setReportModal(null);
-                  navigate(`/teacher/reports/student/${reportModal.student.user_id}`);
-                }}
-                style={{ padding: "8px 12px" }}
-              >
-                Xem báo cáo
-              </button>
-            </div>
-          </div>
-        </div>
+          </Card>
+
+          <Card>
+            <h3 style={{ marginTop: 0 }}>AI nhận xét tổng quát</h3>
+            <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.6 }}>{report.ai_recommendations || "Chưa có nhận xét."}</div>
+          </Card>
+        </>
       ) : null}
-    </>
+    </div>
   );
 }

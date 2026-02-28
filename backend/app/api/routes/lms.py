@@ -47,6 +47,7 @@ from app.services.lms_service import (
     score_breakdown,
     assign_topic_materials,
     assign_learning_path,
+    teacher_report as build_teacher_report,
 )
 
 
@@ -743,162 +744,10 @@ def get_multidim_profile(request: Request, user_id: int, db: Session = Depends(g
 
 @router.get("/lms/teacher/report/{classroom_id}")
 def teacher_report(request: Request, classroom_id: int, db: Session = Depends(get_db)):
-    assessment_ids = [
-        int(r[0])
-        for r in db.query(ClassroomAssessment.assessment_id)
-        .filter(ClassroomAssessment.classroom_id == int(classroom_id))
-        .all()
-    ]
-    if not assessment_ids:
-        return {
-            "request_id": request.state.request_id,
-            "data": {
-                "rows": [],
-                "summary": {"students": 0, "avg_percent": 0.0, "level_distribution": {}, "avg_improvement": 0.0},
-                "ai_narrative": "",
-                "weak_topics": [],
-                "progress_chart": [],
-            },
-            "error": None,
-        }
-
-    attempts = db.query(Attempt).filter(Attempt.quiz_set_id.in_(assessment_ids)).all()
-    by_student: dict[int, list[float]] = defaultdict(list)
-    by_level: dict[str, int] = defaultdict(int)
-
-    progress_chart: list[dict] = []
-    pre_scores: dict[int, float] = {}
-    post_scores: dict[int, float] = {}
-    pre_breakdowns: dict[int, dict] = {}
-    post_breakdowns: dict[int, dict] = {}
-    all_breakdowns: list[dict] = []
-    by_student_breakdowns: dict[int, list[dict]] = defaultdict(list)
-
-    classroom_student_ids = {
-        int(uid)
-        for uid, in db.query(ClassroomMember.user_id).filter(ClassroomMember.classroom_id == int(classroom_id)).all()
-    }
-
-    quiz_kind_map = {
-        int(qid): str(kind or "")
-        for qid, kind in db.query(QuizSet.id, QuizSet.kind).filter(QuizSet.id.in_(assessment_ids)).all()
-    }
-    per_student = per_student_bloom_analysis(attempts, quiz_kind_map)
-
-    for at in attempts:
-        br = score_breakdown(at.breakdown_json or [])
-        all_breakdowns.append(br)
-        uid = int(at.user_id)
-        by_student_breakdowns[uid].append(br)
-        pct = float(br["overall"]["percent"])
-        by_student[uid].append(pct)
-        by_level[classify_student_level(int(round(pct)))] += 1
-
-        kind = quiz_kind_map.get(int(at.quiz_set_id), "")
-        if kind == "diagnostic_pre":
-            pre_scores[uid] = pct
-            pre_breakdowns[uid] = br
-        elif kind == "diagnostic_post":
-            post_scores[uid] = pct
-            post_breakdowns[uid] = br
-
-    rows = []
-    for uid, vals in sorted(by_student.items()):
-        avg = round(sum(vals) / max(1, len(vals)), 2)
-        rows.append({"student_id": uid, "attempts": len(
-            vals), "avg_percent": avg, "level": classify_student_level(int(round(avg)))})
-
-    all_uids = sorted(set(pre_scores.keys()) | set(post_scores.keys()))
-    for uid in all_uids:
-        pre_score = round(float(pre_scores.get(uid, 0.0)), 1)
-        post_score = round(float(post_scores.get(uid, 0.0)), 1)
-        progress_chart.append(
-            {
-                "student_id": uid,
-                "pre_score": pre_score,
-                "post_score": post_score,
-                "delta": round(post_score - pre_score, 1),
-            }
-        )
-
-    weak_topics = analyze_topic_weak_points(all_breakdowns)
-    level_distribution = dict(by_level)
-
-    deltas = [d["delta"] for d in progress_chart if pre_scores.get(d["student_id"], 0) > 0]
-    avg_improvement = sum(deltas) / max(1, len(deltas))
-
-    narrative = generate_class_narrative(
-        total_students=len(rows),
-        level_dist=level_distribution,
-        weak_topics=weak_topics[:3],
-        avg_improvement=avg_improvement,
-        per_student_data=per_student,
-    )
-
-    per_student_map = {int(item.get("student_id") or 0): item for item in per_student}
-    student_segments = {
-        "nhom_gioi": [
-            int(r.get("student_id"))
-            for r in rows
-            if str(r.get("level") or "") in {"gioi", "kha"}
-        ],
-        "nhom_can_ho_tro": [
-            int(r.get("student_id"))
-            for r in rows
-            if str(r.get("level") or "") in {"trung_binh", "yeu"}
-        ],
-    }
-
-    student_evaluations = []
-    per_student_bloom = per_student_bloom_analysis(by_student_breakdowns=by_student_breakdowns)
-    eval_uids = sorted(set(classroom_student_ids) | set(pre_breakdowns.keys()) | set(post_breakdowns.keys()))
-    for uid in eval_uids:
-        pre_bd = pre_breakdowns.get(uid, {"overall": {"percent": pre_scores.get(uid, 0.0)}})
-        post_bd = post_breakdowns.get(uid, {"overall": {"percent": post_scores.get(uid, 0.0)}})
-        eval_report = generate_student_evaluation_report(
-            student_id=uid,
-            pre_attempt=pre_bd,
-            post_attempt=post_bd,
-            homework_results=get_student_homework_results(uid, db),
-            db=db,
-        )
-        student_evaluations.append(
-            {
-                "student_id": uid,
-                "student_name": resolve_student_name(uid, db),
-                "pre_score": round(float((pre_bd.get("overall") or {}).get("percent") or 0.0), 1),
-                "post_score": round(float((post_bd.get("overall") or {}).get("percent") or 0.0), 1),
-                "overall_grade": eval_report.get("overall_grade", "N/A"),
-                "ai_comment": eval_report.get("ai_comment", ""),
-                "strengths": eval_report.get("strengths") or [],
-                "weaknesses": eval_report.get("weaknesses") or [],
-                "bloom_accuracy": (per_student_map.get(uid) or {}).get("bloom_accuracy") or {},
-                "weak_topics": (per_student_map.get(uid) or {}).get("weak_topics") or [],
-                "segment": "nhom_gioi" if uid in student_segments["nhom_gioi"] else "nhom_can_ho_tro",
-                "ai_teacher_actions": [
-                    f"Tập trung cải thiện Bloom '{min(((per_student_map.get(uid) or {}).get('bloom_accuracy') or {'remember': 100}), key=((per_student_map.get(uid) or {}).get('bloom_accuracy') or {'remember': 100}).get)}' trong 1 tuần tới.",
-                    (
-                        f"Giao 5 bài luyện cho chủ đề yếu: {', '.join(t.get('topic') for t in ((per_student_map.get(uid) or {}).get('weak_topics') or [])[:3])}."
-                        if ((per_student_map.get(uid) or {}).get("weak_topics") or [])
-                        else "Duy trì bài tập củng cố theo tiến độ hiện tại."
-                    ),
-                ],
-            }
-        )
-
+    report = build_teacher_report(db=db, classroom_id=int(classroom_id))
     return {
         "request_id": request.state.request_id,
-        "data": {
-            "rows": rows,
-            "summary": {"students": len(rows), "avg_percent": round(sum((r["avg_percent"] for r in rows), 0.0) / max(1, len(rows)), 1), "level_distribution": dict(by_level), "avg_improvement": round(avg_improvement, 1)},
-            "ai_narrative": narrative,
-            "weak_topics": weak_topics[:5],
-            "progress_chart": progress_chart,
-            "student_evaluations": student_evaluations,
-            "per_student_bloom": per_student_bloom,
-            "per_student_bloom": per_student,
-            "student_segments": student_segments,
-        },
+        "data": report,
         "error": None,
     }
 
