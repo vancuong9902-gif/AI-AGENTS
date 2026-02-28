@@ -1,6 +1,7 @@
 from app.services.document_pipeline import _candidate_page_coverage, _normalize_pipeline_text
 from app.services.lms_service import (
     analyze_topic_weak_points,
+    build_personalized_content_plan,
     build_recommendations,
     classify_student_level,
     classify_student_multidim,
@@ -154,3 +155,38 @@ def test_per_student_bloom_analysis_returns_bloom_and_weak_topics():
     assert student_1["student_id"] == 1
     assert set(student_1["bloom_accuracy"].keys()) == {"remember", "understand", "apply", "analyze", "evaluate", "create"}
     assert student_1["weak_topics"][0]["topic"] in {"đại số", "hình học"}
+
+
+def test_build_personalized_content_plan_for_yeu_student():
+    plan = build_personalized_content_plan(
+        db=None,
+        user_id=101,
+        quiz_attempt_result={
+            "overall": {"percent": 40},
+            "by_topic": {"đại số": {"percent": 0}, "hình học": {"percent": 30}, "xác suất": {"percent": 70}},
+        },
+        document_topics=["đại số", "hình học", "xác suất"],
+    )
+
+    assert plan["student_level"] == "yeu"
+    assert plan["teacher_alert"] is True
+    assert plan["exercise_difficulty_mix"] == {"easy": 100, "medium": 0, "hard": 0}
+    assert plan["weak_topics"][0] == "đại số"
+    assert plan["content_chunks_to_send"]
+
+
+def test_build_personalized_content_plan_for_gioi_student():
+    plan = build_personalized_content_plan(
+        db=None,
+        user_id=102,
+        quiz_attempt_result={
+            "overall": {"percent": 90},
+            "by_topic": {"đại số": {"percent": 88}, "hình học": {"percent": 86}},
+        },
+        document_topics=["đại số", "hình học"],
+    )
+
+    assert plan["student_level"] == "gioi"
+    assert plan["teacher_alert"] is False
+    assert plan["exercise_difficulty_mix"] == {"easy": 0, "medium": 0, "hard": 100}
+    assert "nghiên cứu độc lập" in plan["personalized_message"]

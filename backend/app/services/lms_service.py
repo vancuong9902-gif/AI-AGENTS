@@ -32,6 +32,7 @@ from app.models.classroom import Classroom, ClassroomMember
 from app.models.notification import Notification
 from app.models.attempt import Attempt
 from app.models.classroom_assessment import ClassroomAssessment
+from app.services.external_sources import fetch_external_snippets
 
 
 @dataclass
@@ -53,6 +54,186 @@ def classify_student_level(total_score: int) -> str:
     if score >= 50:
         return "trung_binh"
     return "yeu"
+
+
+def _safe_percent(value: Any) -> float:
+    try:
+        return max(0.0, min(100.0, float(value or 0.0)))
+    except Exception:
+        return 0.0
+
+
+def _extract_overall_percent(quiz_attempt_result: dict[str, Any] | None) -> float:
+    payload = quiz_attempt_result or {}
+    overall = payload.get("overall") if isinstance(payload.get("overall"), dict) else {}
+    return _safe_percent(
+        overall.get("percent")
+        or payload.get("overall_percent")
+        or payload.get("percent")
+        or payload.get("score")
+        or payload.get("total_score")
+    )
+
+
+def _extract_topic_percents(quiz_attempt_result: dict[str, Any] | None, document_topics: list[Any] | None) -> dict[str, float]:
+    payload = quiz_attempt_result or {}
+    by_topic = payload.get("by_topic") if isinstance(payload.get("by_topic"), dict) else {}
+
+    out: dict[str, float] = {}
+    for topic, stats in by_topic.items():
+        name = str(topic or "").strip()
+        if not name:
+            continue
+        if isinstance(stats, dict):
+            total = float(stats.get("total") or 0.0)
+            earned = float(stats.get("earned") or 0.0)
+            pct = stats.get("percent")
+            if pct is None and total > 0:
+                pct = (earned / total) * 100.0
+            out[name] = _safe_percent(pct)
+        else:
+            out[name] = _safe_percent(stats)
+
+    for item in document_topics or []:
+        if isinstance(item, dict):
+            name = str(item.get("topic") or item.get("title") or "").strip()
+        else:
+            name = str(item or "").strip()
+        if name and name not in out:
+            out[name] = 0.0
+
+    return out
+
+
+def _pick_content_chunks_for_topics(
+    db: Session,
+    *,
+    topics: list[str],
+    level: str,
+    max_chunks: int = 10,
+) -> list[dict[str, Any]]:
+    reasons = {
+        "yeu": "Ôn lại từ gốc để củng cố nền tảng.",
+        "trung_binh": "Bù đắp lỗ hổng ở topic dưới 65%.",
+        "kha": "Đẩy mạnh nội dung nâng cao và liên hệ mở rộng.",
+        "gioi": "Mở rộng ngoài SGK với tài liệu chuyên sâu.",
+    }
+    selected: list[dict[str, Any]] = []
+    max_take = max(1, min(30, int(max_chunks or 10)))
+
+    if db is None:
+        return [
+            {"chunk_id": -idx, "topic": topic, "reason": reasons.get(level, reasons["trung_binh"])}
+            for idx, topic in enumerate(topics[:max_take], start=1)
+        ]
+
+    for topic in topics:
+        if len(selected) >= max_take:
+            break
+
+        topic_obj = db.query(DocumentTopic).filter(DocumentTopic.title.ilike(f"%{topic}%")).order_by(DocumentTopic.created_at.desc()).first()
+
+        if topic_obj and topic_obj.start_chunk_index is not None and topic_obj.end_chunk_index is not None:
+            s = min(int(topic_obj.start_chunk_index), int(topic_obj.end_chunk_index))
+            e = max(int(topic_obj.start_chunk_index), int(topic_obj.end_chunk_index))
+            chunks = (
+                db.query(DocumentChunk)
+                .filter(DocumentChunk.document_id == int(topic_obj.document_id))
+                .filter(DocumentChunk.chunk_index >= s)
+                .filter(DocumentChunk.chunk_index <= e)
+                .order_by(DocumentChunk.chunk_index.asc())
+                .limit(3)
+                .all()
+            )
+        else:
+            chunks = (
+                db.query(DocumentChunk)
+                .filter(DocumentChunk.text.ilike(f"%{topic}%"))
+                .order_by(DocumentChunk.created_at.desc())
+                .limit(3)
+                .all()
+            )
+
+        for c in chunks:
+            if len(selected) >= max_take:
+                break
+            selected.append({"chunk_id": int(c.id), "topic": topic, "reason": reasons.get(level, reasons["trung_binh"])})
+
+    if selected:
+        return selected[:max_take]
+
+    for idx, topic in enumerate(topics[:max_take], start=1):
+        selected.append({"chunk_id": -idx, "topic": topic, "reason": reasons.get(level, reasons["trung_binh"])})
+    return selected
+
+
+def build_personalized_content_plan(
+    db: Session,
+    user_id: int,
+    quiz_attempt_result: dict[str, Any],
+    document_topics: list[str] | list[dict[str, Any]],
+) -> dict[str, Any]:
+    overall_percent = _extract_overall_percent(quiz_attempt_result)
+    student_level = classify_student_level(int(round(overall_percent)))
+
+    topic_percents = _extract_topic_percents(quiz_attempt_result, document_topics)
+    sorted_topics = sorted(topic_percents.items(), key=lambda x: (x[1], x[0]))
+    weak_topics = [topic for topic, pct in sorted_topics if pct < 65.0]
+
+    all_topics = [t for t, _ in sorted_topics] or [str(x if not isinstance(x, dict) else x.get("topic") or x.get("title") or "").strip() for x in (document_topics or [])]
+    all_topics = [t for t in all_topics if t]
+
+    teacher_alert = False
+    exercise_difficulty_mix = {"easy": 0, "medium": 0, "hard": 0}
+    selected_topics: list[str] = []
+    personalized_message = ""
+
+    if student_level == "yeu":
+        teacher_alert = True
+        exercise_difficulty_mix = {"easy": 100, "medium": 0, "hard": 0}
+        zero_topics = [t for t, p in sorted_topics if p <= 0.0]
+        selected_topics = zero_topics + [t for t in all_topics if t not in zero_topics]
+        personalized_message = (
+            "Thầy/cô đã mở chế độ học có hướng dẫn cho em. Mỗi 10 phút trợ lý sẽ hỏi thăm tiến độ, "
+            "mình sẽ ôn lại từ nền tảng và làm bài mức dễ để chắc kiến thức nhé."
+        )
+    elif student_level == "trung_binh":
+        exercise_difficulty_mix = {"easy": 50, "medium": 50, "hard": 0}
+        selected_topics = weak_topics + [t for t in all_topics if t not in weak_topics]
+        personalized_message = (
+            "Em đang ở mức trung bình tốt. Hệ thống sẽ ưu tiên các topic dưới 65%, "
+            "kết hợp bài dễ và trung bình để tăng điểm đều và chắc."
+        )
+    elif student_level == "kha":
+        exercise_difficulty_mix = {"easy": 0, "medium": 40, "hard": 60}
+        selected_topics = [t for t, p in sorted_topics if p < 80.0] + [t for t, p in sorted_topics if p >= 80.0]
+        personalized_message = (
+            "Em đang làm khá tốt. Kế hoạch mới tập trung nội dung nâng cao, "
+            "bài đọc mở rộng và tăng tỉ lệ bài khó để bứt phá lên nhóm giỏi."
+        )
+    else:
+        exercise_difficulty_mix = {"easy": 0, "medium": 0, "hard": 100}
+        selected_topics = all_topics or weak_topics
+        ext = []
+        if selected_topics:
+            ext = fetch_external_snippets(selected_topics[0], lang="vi", max_sources=1)
+        ext_note = f" Nguồn mở rộng gợi ý: {ext[0].get('title')}" if ext else ""
+        personalized_message = (
+            "Tuyệt vời! Em thuộc nhóm giỏi, hãy tập trung bài HARD, câu hỏi essay và hướng nghiên cứu độc lập."
+            f"{ext_note}"
+        )
+
+    plan_topics = selected_topics[:8] if selected_topics else weak_topics[:8]
+    content_chunks_to_send = _pick_content_chunks_for_topics(db, topics=plan_topics, level=student_level, max_chunks=12)
+
+    return {
+        "student_level": student_level,
+        "weak_topics": weak_topics,
+        "content_chunks_to_send": content_chunks_to_send,
+        "exercise_difficulty_mix": exercise_difficulty_mix,
+        "personalized_message": personalized_message,
+        "teacher_alert": teacher_alert,
+    }
 
 
 def _extract_percent(value: Any) -> float:
