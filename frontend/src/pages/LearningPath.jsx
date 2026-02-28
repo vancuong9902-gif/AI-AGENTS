@@ -150,6 +150,71 @@ function levelMeta(levelRaw) {
   return { label: levelRaw || "Khá", color: "#0958d9", bg: "#e6f4ff" };
 }
 
+
+const PRACTICE_LEVELS = [
+  { key: "easy", label: "Dễ", bloom: "Remember / Understand" },
+  { key: "medium", label: "Trung bình", bloom: "Apply / Analyze" },
+  { key: "hard", label: "Khó", bloom: "Evaluate / Create" },
+];
+
+function TopicPracticePreview({ topicId, userId, nav }) {
+  const [activeLevel, setActiveLevel] = useState("easy");
+  const [itemsByLevel, setItemsByLevel] = useState({ easy: [], medium: [], hard: [] });
+  const [loadingByLevel, setLoadingByLevel] = useState({ easy: false, medium: false, hard: false });
+  const [errorByLevel, setErrorByLevel] = useState({ easy: "", medium: "", hard: "" });
+
+  useEffect(() => {
+    if (!topicId || !userId) return;
+    if ((itemsByLevel[activeLevel] || []).length > 0 || loadingByLevel[activeLevel]) return;
+
+    (async () => {
+      setLoadingByLevel((m) => ({ ...m, [activeLevel]: true }));
+      setErrorByLevel((m) => ({ ...m, [activeLevel]: "" }));
+      try {
+        const data = await apiJson(`/quiz/by-topic?topic_id=${topicId}&level=${activeLevel}&user_id=${userId}`);
+        const qs = Array.isArray(data?.questions) ? data.questions : [];
+        setItemsByLevel((m) => ({ ...m, [activeLevel]: qs }));
+      } catch (e) {
+        setErrorByLevel((m) => ({ ...m, [activeLevel]: String(e?.message || e) }));
+      } finally {
+        setLoadingByLevel((m) => ({ ...m, [activeLevel]: false }));
+      }
+    })();
+  }, [activeLevel, itemsByLevel, loadingByLevel, topicId, userId]);
+
+  return (
+    <div style={{ marginTop: 10, borderTop: "1px dashed #eee", paddingTop: 10 }}>
+      <div style={{ fontWeight: 700, marginBottom: 8 }}>Bài tập luyện tập</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {PRACTICE_LEVELS.map((lv) => (
+          <button key={lv.key} type="button" onClick={() => setActiveLevel(lv.key)} style={{ border: "1px solid #dbeafe", borderRadius: 999, background: activeLevel === lv.key ? "#1d4ed8" : "#eff6ff", color: activeLevel === lv.key ? "#fff" : "#1e3a8a", padding: "4px 10px", fontSize: 13 }}>
+            {lv.label}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ marginTop: 6, color: "#666", fontSize: 12 }}>
+        Bloom: {PRACTICE_LEVELS.find((x) => x.key === activeLevel)?.bloom}
+      </div>
+
+      {loadingByLevel[activeLevel] && <div style={{ color: "#666", marginTop: 6 }}>Đang tải bài tập...</div>}
+      {errorByLevel[activeLevel] && <div style={{ color: "#cf1322", marginTop: 6 }}>{errorByLevel[activeLevel]}</div>}
+
+      <ol style={{ margin: "8px 0 0 18px", padding: 0 }}>
+        {(itemsByLevel[activeLevel] || []).slice(0, 5).map((q, idx) => (
+          <li key={q?.question_id || idx} style={{ margin: "4px 0", color: "#334155" }}>{q?.stem}</li>
+        ))}
+      </ol>
+
+      <div style={{ marginTop: 8 }}>
+        <button onClick={() => nav(`/practice/${topicId}?level=${activeLevel}`)}>
+          ✏️ Làm từng bài ({PRACTICE_LEVELS.find((x) => x.key === activeLevel)?.label})
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function formatVNDate(dateLike) {
   if (!dateLike) return "chưa rõ ngày";
   const d = new Date(dateLike);
@@ -463,6 +528,7 @@ export default function LearningPath() {
                           <button onClick={() => { setSelectedDay(dayIndex); toggleTask(dayIndex, taskIndex, true); }}>✅ Đánh dấu hoàn thành</button>
                         </div>
                       </div>
+                      {!!task?.topic_id && <TopicPracticePreview topicId={Number(task.topic_id)} userId={Number(userId)} nav={nav} />}
                     </div>
                   );
                 })}
