@@ -11,6 +11,7 @@ export default function Navbar({ onNavigate }) {
     ['/quiz', 'Placement Quiz'],
     ['/tutor', 'Tutor AI'],
     ['/analytics', 'Analytics'],
+    ['/agent-flow', 'Agent Flow'],
   ];
   const teacher = [
     ['/upload', 'Upload'],

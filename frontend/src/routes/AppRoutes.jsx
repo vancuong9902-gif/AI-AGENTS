@@ -25,6 +25,7 @@ import TeacherClassrooms from "../pages/TeacherClassrooms";
 import TeacherClassroomDashboard from "../pages/TeacherClassroomDashboard";
 import StudentClassrooms from "../pages/StudentClassrooms";
 import StudentDashboard from "../pages/StudentDashboard";
+import AgentFlow from "../pages/AgentFlow";
 
 export default function AppRoutes() {
   return (
@@ -129,6 +130,15 @@ export default function AppRoutes() {
         element={
           <ProtectedRoute allow={["student"]}>
             <StudentDashboard />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/agent-flow"
+        element={
+          <ProtectedRoute allow={["student"]}>
+            <AgentFlow />
           </ProtectedRoute>
         }
       />

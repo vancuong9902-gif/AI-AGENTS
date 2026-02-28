@@ -799,3 +799,51 @@ def assign_topic_materials(
     if assignment_ids:
         db.commit()
     return assignment_ids
+
+
+def push_student_report_to_teacher(
+    db: Session,
+    *,
+    user_id: int,
+    quiz_id: int,
+    score_percent: float,
+    analytics: dict,
+) -> None:
+    """
+    Lưu event báo giáo viên: học sinh đã hoàn thành final exam.
+    Có thể mở rộng: gửi email, webhook, hoặc lưu vào bảng notifications.
+    """
+    from app.models.classroom import ClassroomMember, Classroom
+
+    membership = db.query(ClassroomMember).filter(
+        ClassroomMember.user_id == int(user_id)
+    ).first()
+    if not membership:
+        return
+
+    classroom = db.query(Classroom).filter(
+        Classroom.id == int(membership.classroom_id)
+    ).first()
+    if not classroom:
+        return
+
+    event = {
+        "type": "final_exam_completed",
+        "student_id": int(user_id),
+        "quiz_id": int(quiz_id),
+        "score_percent": float(score_percent or 0.0),
+        "analytics": analytics or {},
+        "classroom_id": int(classroom.id),
+        "teacher_id": int(classroom.teacher_id),
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
+    import logging
+
+    logging.getLogger(__name__).info(
+        "[TEACHER_NOTIFY] teacher_id=%s student_id=%s final_exam score=%.1f%% payload=%s",
+        classroom.teacher_id,
+        user_id,
+        float(score_percent or 0.0),
+        event,
+    )

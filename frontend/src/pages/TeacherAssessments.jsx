@@ -97,8 +97,9 @@ export default function TeacherAssessments() {
       try {
         const entries = await Promise.all(
           missing.map(async (id) => {
-            const data = await apiJson(`/documents/${id}/topics`);
-            return [id, data?.topics || []];
+            const data = await apiJson(`/agent/documents/${id}/phase1`);
+            const topicTitles = (data?.topics || []).map((t) => String(t?.title || "").trim()).filter(Boolean);
+            return [id, topicTitles];
           })
         );
         setTopicsByDoc((prev) => {
@@ -112,6 +113,16 @@ export default function TeacherAssessments() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDocIds]);
+
+  useEffect(() => {
+    const all = Array.from(new Set(
+      (selectedDocIds || []).flatMap((did) => (topicsByDoc[did] || []).map((t) => String(t))).filter(Boolean)
+    ));
+    if (all.length === 0) return;
+    const cur = Array.isArray(selectedTopics) ? selectedTopics : [];
+    const same = cur.length === all.length && all.every((x) => cur.includes(x));
+    if (!same) setSelectedTopics(all);
+  }, [selectedDocIds, topicsByDoc, selectedTopics]);
 
   const effectiveDocIds = useMemo(() => {
     return (selectedDocIds || []).map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0);
@@ -256,17 +267,15 @@ export default function TeacherAssessments() {
                   {effectiveDocIds.flatMap((did) => {
                     const tps = topicsByDoc[did] || [];
                     const docTitle = (docs || []).find((x) => Number(x.document_id) === Number(did))?.title || `Doc ${did}`;
-                    return (tps || []).map((t) => {
-                      const key = `${did}::${t.topic_id || t.title}`;
-                      const checked = (selectedTopics || []).includes(String(t.title));
-                      const no = Number.isFinite(Number(t.topic_index)) ? Number(t.topic_index) + 1 : null;
+                    return (tps || []).map((title, idx) => {
+                      const key = `${did}::${title}`;
+                      const checked = (selectedTopics || []).includes(String(title));
                       return (
                         <label key={key} style={{ display: "flex", gap: 10, alignItems: "center" }}>
                           <input
                             type="checkbox"
                             checked={checked}
                             onChange={() => {
-                              const title = String(t.title);
                               setSelectedTopics((prev) => {
                                 const cur = Array.isArray(prev) ? prev : [];
                                 if (cur.includes(title)) return cur.filter((x) => x !== title);
@@ -275,7 +284,7 @@ export default function TeacherAssessments() {
                             }}
                           />
                           <span>
-                            <span style={{ color: "#666" }}>{docTitle}{no ? ` — Chủ đề ${no}:` : ":"}</span> {t.title}
+                            <span style={{ color: "#666" }}>{docTitle} — Chủ đề {idx + 1}:</span> {title}
                           </span>
                         </label>
                       );
