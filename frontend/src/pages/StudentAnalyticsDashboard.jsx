@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { apiJson } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import { DonutGauge, MetricCard, ProgressBar, Sparkline, pct } from "../components/AnalyticsWidgets";
+import StudentLevelBadge from "../components/StudentLevelBadge";
 import ProgressComparison from "../components/ProgressComparison";
-
 function num(v, d = 0) {
   const n = Number(v);
   if (!Number.isFinite(n)) return null;
@@ -31,6 +31,7 @@ export default function StudentAnalyticsDashboard() {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [levelDetails, setLevelDetails] = useState(null);
   const [comparison, setComparison] = useState(null);
 
   const loadDocs = async () => {
@@ -86,6 +87,11 @@ export default function StudentAnalyticsDashboard() {
 
   useEffect(() => {
     if (role !== "student") return;
+    apiJson(`/v1/students/${userId}/level`).then((d) => setLevelDetails(d || null)).catch(() => setLevelDetails(null));
+  }, [role, userId]);
+
+  useEffect(() => {
+    if (role !== "student") return;
     const base = `/analytics`;
     const url = documentId ? `${base}?document_id=${Number(documentId)}` : base;
     window.history.replaceState({}, "", url);
@@ -126,6 +132,11 @@ export default function StudentAnalyticsDashboard() {
         <div>
           <h2 style={{ marginBottom: 4 }}>📊 My Learning Analytics</h2>
           <div style={{ color: "#666" }}>Theo dõi FinalScore + thành phần + rủi ro dropout (explainable).</div>
+          {levelDetails ? (
+            <div style={{ marginTop: 8, maxWidth: 360 }}>
+              <StudentLevelBadge level={levelDetails} size="md" />
+            </div>
+          ) : null}
         </div>
         <button onClick={() => load(documentId)} disabled={loading} style={{ padding: "8px 12px" }}>
           Refresh

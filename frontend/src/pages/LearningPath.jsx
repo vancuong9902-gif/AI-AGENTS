@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiJson } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
+import StudentLevelBadge from "../components/StudentLevelBadge";
 import ProgressComparison from "../components/ProgressComparison";
 
 function MarkdownLite({ text }) {
@@ -143,12 +144,12 @@ function ScorePill({ score, max }) {
   );
 }
 
-function levelMeta(levelRaw) {
+function levelFromRaw(levelRaw) {
   const level = String(levelRaw || "").toLowerCase();
-  if (level.includes("yếu") || level.includes("yeu")) return { label: "Yếu", color: "#cf1322", bg: "#fff1f0" };
-  if (level.includes("trung")) return { label: "Trung bình", color: "#d46b08", bg: "#fff7e6" };
-  if (level.includes("giỏi") || level.includes("gioi")) return { label: "Giỏi", color: "#389e0d", bg: "#f6ffed" };
-  return { label: levelRaw || "Khá", color: "#0958d9", bg: "#e6f4ff" };
+  if (level.includes("yếu") || level.includes("yeu")) return { label: "Yếu", color: "red", emoji: "💪", description: "Cần hỗ trợ thêm – AI sẽ hướng dẫn từng bước", learning_approach: "Học lại từ đầu với hỗ trợ AI intensive" };
+  if (level.includes("trung")) return { label: "Trung Bình", color: "orange", emoji: "📚", description: "Cần ôn tập thêm trước khi học nội dung mới", learning_approach: "Tập trung vào kiến thức nền tảng" };
+  if (level.includes("giỏi") || level.includes("gioi")) return { label: "Giỏi", color: "green", emoji: "🌟", description: "Nắm vững kiến thức, sẵn sàng học nội dung nâng cao", learning_approach: "Tập trung vào bài tập khó và bài tập mở rộng" };
+  return { label: "Khá", color: "blue", emoji: "⭐", description: "Hiểu cơ bản, cần củng cố một số điểm", learning_approach: "Kết hợp ôn tập kiến thức yếu và học mới" };
 }
 
 
@@ -241,6 +242,7 @@ export default function LearningPath() {
 
   const [showGenerated, setShowGenerated] = useState(false);
   const [myPath, setMyPath] = useState(null);
+  const [levelDetails, setLevelDetails] = useState(null);
   const [showOnlyMine, setShowOnlyMine] = useState(false);
   const [finalExam, setFinalExam] = useState(null);
   const [comparison, setComparison] = useState(null);
@@ -263,7 +265,14 @@ export default function LearningPath() {
   );
 
   const allDone = timelineTasks.length > 0 && completedCount === timelineTasks.length;
-  const activeLevel = levelMeta(myPath?.student_level || plan?.student_level || "Khá");
+  const activeLevel = levelDetails || levelFromRaw(myPath?.student_level || plan?.student_level || "Khá");
+  const planStats = useMemo(() => {
+    const tasks = timelineTasks.map((x) => x.task || {});
+    const materials = tasks.filter((t) => ["lesson", "material", "study"].includes(String(t.type || "").toLowerCase())).length || (planDays || []).length;
+    const exercises = tasks.filter((t) => ["homework", "practice", "quiz", "exercise"].includes(String(t.type || "").toLowerCase())).length;
+    const tests = tasks.filter((t) => ["test", "exam", "checkpoint", "final_exam"].includes(String(t.type || "").toLowerCase())).length + (finalExam ? 1 : 0);
+    return { materials, exercises, tests };
+  }, [timelineTasks, planDays, finalExam]);
 
   async function loadPersisted() {
     setLoading(true);
@@ -366,6 +375,9 @@ export default function LearningPath() {
   }, [userId]);
 
   useEffect(() => {
+    apiJson(`/v1/students/${userId}/level`)
+      .then((d) => setLevelDetails(d || null))
+      .catch(() => setLevelDetails(null));
     const cid = Number(localStorage.getItem("active_classroom_id"));
     if (!Number.isFinite(cid) || cid <= 0 || !userId) {
       setComparison(null);
@@ -483,14 +495,15 @@ export default function LearningPath() {
           <div>
             <h2 style={{ margin: 0 }}>🎯 Lộ trình học tập cá nhân</h2>
             <div style={{ marginTop: 6, color: "#333" }}>
-              Trình độ của bạn: <strong>{activeLevel.label}</strong> — Dựa trên bài kiểm tra đầu vào {formatVNDate(myPath?.assessment_date || plan?.created_at)}
+              Dựa trên bài kiểm tra đầu vào {formatVNDate(myPath?.assessment_date || plan?.created_at)}
             </div>
-            <div style={{ marginTop: 8 }}>
-              <span style={{ padding: "4px 10px", borderRadius: 999, color: activeLevel.color, background: activeLevel.bg, fontWeight: 700, border: `1px solid ${activeLevel.color}22` }}>
-                {activeLevel.label}
-              </span>
+            <div style={{ marginTop: 8, maxWidth: 620 }}>
+              <StudentLevelBadge level={activeLevel} size="lg" />
             </div>
-            <div style={{ marginTop: 10, color: "#555" }}>Đã hoàn thành {completedCount}/{timelineTasks.length || 0} nhiệm vụ</div>
+            <div style={{ marginTop: 10, color: "#555" }}>
+              Lộ trình AI tạo cho trình độ <strong>{String(activeLevel?.label || "Khá").toUpperCase()}</strong>: {planStats.materials} tài liệu | {planStats.exercises} bài tập | {planStats.tests} bài kiểm tra
+            </div>
+            <div style={{ marginTop: 8, color: "#555" }}>Đã hoàn thành {completedCount}/{timelineTasks.length || 0} nhiệm vụ</div>
           </div>
 
           <div style={{ display: "flex", gap: 8, alignItems: "flex-start", flexWrap: "wrap" }}>

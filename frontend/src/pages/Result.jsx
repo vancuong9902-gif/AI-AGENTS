@@ -8,6 +8,52 @@ import Card from "../ui/Card";
 import Banner from "../ui/Banner";
 import Button from "../ui/Button";
 import PageHeader from "../ui/PageHeader";
+import StudentLevelBadge from "../components/StudentLevelBadge";
+
+function toArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function toNumber(value, fallback = 0) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+function formatDuration(sec) {
+  const total = Math.max(0, Math.floor(toNumber(sec, 0)));
+  const hh = Math.floor(total / 3600);
+  const mm = Math.floor((total % 3600) / 60);
+  const ss = total % 60;
+  if (hh > 0) return `${hh}h ${String(mm).padStart(2, "0")}m ${String(ss).padStart(2, "0")}s`;
+  return `${mm}m ${String(ss).padStart(2, "0")}s`;
+}
+
+function levelFromScore(scorePercent) {
+  const score = Math.max(0, Math.min(100, Math.round(toNumber(scorePercent, 0))));
+  if (score >= 85) return { label: "Giỏi", color: "green", emoji: "🌟", description: "Nắm vững kiến thức, sẵn sàng học nội dung nâng cao", learning_approach: "Tập trung vào bài tập khó và bài tập mở rộng" };
+  if (score >= 70) return { label: "Khá", color: "blue", emoji: "⭐", description: "Hiểu cơ bản, cần củng cố một số điểm", learning_approach: "Kết hợp ôn tập kiến thức yếu và học mới" };
+  if (score >= 50) return { label: "Trung Bình", color: "orange", emoji: "📚", description: "Cần ôn tập thêm trước khi học nội dung mới", learning_approach: "Tập trung vào kiến thức nền tảng" };
+  return { label: "Yếu", color: "red", emoji: "💪", description: "Cần hỗ trợ thêm – AI sẽ hướng dẫn từng bước", learning_approach: "Học lại từ đầu với hỗ trợ AI intensive" };
+}
+
+function normalizeQuestionRow(item, index) {
+  const selected = item?.student_answer ?? item?.selected_answer ?? item?.user_answer ?? item?.answer ?? item?.answer_text ?? null;
+  const correct = item?.correct_answer ?? item?.correct_option ?? item?.expected_answer ?? null;
+  const isCorrect = typeof item?.is_correct === "boolean" ? item.is_correct : (selected != null && correct != null ? String(selected) === String(correct) : false);
+  const unanswered = selected == null || selected === "" || selected === -1;
+  const status = unanswered ? "unanswered" : (isCorrect ? "correct" : "wrong");
+
+  return {
+    id: item?.question_id ?? item?.id ?? `q-${index + 1}`,
+    question: item?.question ?? item?.question_text ?? item?.content ?? `Câu ${index + 1}`,
+    selected,
+    correct,
+    isCorrect,
+    unanswered,
+    status,
+    difficulty: String(item?.difficulty || "").toLowerCase(),
+    topic: item?.topic ?? item?.topic_name ?? "",
+  };
 import ProgressComparison from "../components/ProgressComparison";
 
 function formatDuration(seconds) {
@@ -188,6 +234,8 @@ export default function Result({ result: propResult, quizType: propQuizType = "d
     return buckets;
   }, [data]);
 
+  const studentLevel = useMemo(() => levelFromScore(data?.scorePercent || 0), [data?.scorePercent]);
+
   const ctaConfig = useMemo(() => {
     if (resolvedQuizType === "diagnostic_pre") {
       return { label: "Bắt đầu học theo lộ trình cá nhân hoá", to: "/learning-path" };
@@ -215,7 +263,10 @@ export default function Result({ result: propResult, quizType: propQuizType = "d
         <>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
             <StatCard label="Điểm số" value={scoreText} />
-            <StatCard label="Phân loại" value={classifyStudent(data.scorePercent)} />
+            <Card style={{ padding: 16 }}>
+              <div style={{ fontSize: 13, color: "#64748b", marginBottom: 8 }}>Phân loại</div>
+              <StudentLevelBadge level={studentLevel} size="md" />
+            </Card>
             <StatCard label="Thời gian làm bài" value={formatDuration(data.durationSec)} />
             <StatCard label="Số câu đúng" value={`${data.correctCount}/${data.totalQuestions}`} />
           </div>

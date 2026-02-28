@@ -391,7 +391,7 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
                     "quiz_set_id": int(quiz_id),
                     "score": int(base.get("total_score_percent") or base.get("score_percent") or 0),
                     "breakdown": base.get("breakdown") or [],
-                    "student_level": classify_student_level(int(base.get("total_score_percent") or base.get("score_percent") or 0)),
+                    "student_level": classify_student_level(int(base.get("total_score_percent") or base.get("score_percent") or 0))["level_key"],
                     "document_ids": [int(quiz.source_query_id)] if getattr(quiz, "source_query_id", None) else [],
                 },
                 trace_id=getattr(request.state, "request_id", None),
@@ -502,7 +502,7 @@ def assign_path_by_quiz(
     result = assign_learning_path(
         db,
         user_id=int(payload.user_id),
-        student_level=level,
+        student_level=str(level["level_key"]),
         document_ids=doc_ids,
         classroom_id=int(payload.classroom_id or 0),
     )
@@ -683,7 +683,7 @@ def lms_submit_attempt(request: Request, assessment_id: int, payload: SubmitAtte
             path_result = assign_learning_path(
                 db,
                 user_id=int(payload.user_id),
-                student_level=level,
+                student_level=str(level["level_key"]),
                 document_ids=[int(x) for x in doc_ids],
             )
             base["assigned_learning_path"] = path_result
@@ -700,7 +700,7 @@ def lms_submit_attempt(request: Request, assessment_id: int, payload: SubmitAtte
                 db,
                 student_id=int(payload.user_id),
                 classroom_id=int(getattr(q, "classroom_id", 0) or 0),
-                student_level=level,
+                student_level=str(level["level_key"]),
                 weak_topics=breakdown.get("weak_topics") or [],
                 document_id=int(doc_ids[0]),
             )
