@@ -73,6 +73,7 @@ export default function AgentFlow() {
   const [finalStartedAt, setFinalStartedAt] = useState(null);
   const finalAutoRef = useRef(false);
   const [finalExamResult, setFinalExamResult] = useState(null);
+  const [finalPrerequisite, setFinalPrerequisite] = useState(null);
 
   const planTopics = useMemo(() => {
     const days = learningPlan?.plan?.days || [];
@@ -254,6 +255,7 @@ export default function AgentFlow() {
   async function generateFinal() {
     setStatus("Đang tạo final exam...");
     setError("");
+    setFinalPrerequisite(null);
     try {
       const data = await apiJson("/agent/final-exam/generate", {
         method: "POST",
@@ -271,6 +273,9 @@ export default function AgentFlow() {
       setCurrentStep(4);
       setStatus("Đã tạo final exam.");
     } catch (e) {
+      if (e?.status === 403 && e?.details?.error === "PREREQUISITE_NOT_MET") {
+        setFinalPrerequisite(e.details);
+      }
       setError(e?.message || "Không tạo được final exam");
     }
   }
@@ -386,7 +391,7 @@ export default function AgentFlow() {
         <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
           <h3 style={{ marginTop: 0 }}>3) Học bài + bài tập theo topic</h3>
           {(planTopics || []).map((t) => (
-            <div key={t.id} style={{ borderTop: "1px dashed #eee", paddingTop: 8, marginTop: 8 }}>
+            <div id={`topic-day-${t.day}`} key={t.id} style={{ borderTop: "1px dashed #eee", paddingTop: 8, marginTop: 8 }}>
               <div><b>{t.title}</b> {topicProgress[t.id]?.completed ? "✅" : "⚪"}</div>
               <button onClick={() => generateTopicExercise(t)} style={{ marginTop: 6 }}>Tạo bài tập topic</button>
             </div>
@@ -412,8 +417,41 @@ export default function AgentFlow() {
 
         <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
           <h3 style={{ marginTop: 0 }}>4) Final Exam</h3>
-          {completionRate < 0.8 ? <div>Hoàn thành topic: {Math.round(completionRate * 100)}%. Cần ít nhất 80% để mở final exam.</div> : null}
-          {completionRate >= 0.8 && !finalQuiz && <button onClick={generateFinal}>Bắt đầu bài kiểm tra cuối kỳ</button>}
+          {!finalQuiz && <button onClick={generateFinal}>Bắt đầu bài kiểm tra cuối kỳ</button>}
+          {finalPrerequisite ? (
+            <div style={{ marginTop: 10, background: "#fff7e6", border: "1px solid #ffd591", borderRadius: 8, padding: 10 }}>
+              <div style={{ fontWeight: 700 }}>Chưa đủ điều kiện thi cuối kỳ</div>
+              <div style={{ marginTop: 6 }}>{finalPrerequisite.detail}</div>
+              <div style={{ marginTop: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                  <span>Tiến độ hiện tại: {Number(finalPrerequisite.progress || 0)}%</span>
+                  <span>Yêu cầu: {Number(finalPrerequisite.required || 70)}%</span>
+                </div>
+                <div style={{ height: 10, background: "#f5f5f5", borderRadius: 999 }}>
+                  <div
+                    style={{
+                      height: "100%",
+                      width: `${Math.max(0, Math.min(100, Number(finalPrerequisite.progress || 0)))}%`,
+                      background: "#fa8c16",
+                      borderRadius: 999,
+                    }}
+                  />
+                </div>
+              </div>
+              {Array.isArray(finalPrerequisite.remaining_lessons) && finalPrerequisite.remaining_lessons.length > 0 && (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ fontWeight: 600 }}>Bài học chưa hoàn thành:</div>
+                  <ul style={{ margin: "6px 0 0 18px" }}>
+                    {finalPrerequisite.remaining_lessons.map((lesson) => (
+                      <li key={`${lesson.day_index}-${lesson.task_index}`}>
+                        <a href={`#topic-day-${lesson.day_index}`}>{lesson.title}</a>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          ) : null}
           {finalQuiz && !finalExamResult && (
             <>
               <div style={{ color: "#cf1322", fontWeight: 700 }}>⚠️ Đây là bài kiểm tra cuối kỳ, không thể làm lại.</div>
