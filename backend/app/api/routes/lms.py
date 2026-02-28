@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections import defaultdict
 from datetime import datetime, timezone
 
@@ -322,6 +324,45 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
         duration_sec=spent,
         answers=payload.answers,
     )
+
+    # Auto-trigger learning plan generation for diagnostic entry test submissions.
+    try:
+        if quiz.kind == "diagnostic_pre":
+            from app.mas.base import AgentContext
+            from app.mas.contracts import Event
+            from app.mas.orchestrator import Orchestrator
+
+            orch = Orchestrator(db=db)
+            event = Event(
+                type="ENTRY_TEST_SUBMITTED",
+                user_id=int(started.user_id),
+                payload={
+                    "attempt_id": int(base.get("attempt_id") or 0),
+                    "quiz_set_id": int(quiz_id),
+                    "score": int(base.get("total_score_percent") or base.get("score_percent") or 0),
+                    "breakdown": base.get("breakdown") or [],
+                    "student_level": classify_student_level(int(base.get("total_score_percent") or base.get("score_percent") or 0)),
+                    "document_ids": [int(quiz.source_query_id)] if getattr(quiz, "source_query_id", None) else [],
+                },
+                trace_id=getattr(request.state, "request_id", None),
+            )
+            ctx = AgentContext(
+                user_id=int(started.user_id),
+                document_ids=[int(quiz.source_query_id)] if getattr(quiz, "source_query_id", None) else [],
+            )
+
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(asyncio.to_thread(orch.run, event, ctx))
+                else:
+                    orch.run(event, ctx)
+            except Exception:
+                orch.run(event, ctx)  # synchronous fallback
+    except Exception as exc:
+        # Log warning but do not fail main submit flow.
+        logging.getLogger(__name__).warning("Auto learning plan failed: %s", exc)
+
     breakdown = score_breakdown(base.get("breakdown") or [])
     level = classify_student_level(
         int(round(float(breakdown["overall"]["percent"]))))
