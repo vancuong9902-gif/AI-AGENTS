@@ -25,6 +25,6 @@ passlib[bcrypt]==1.7.4
 python-jose[cryptography]==3.3.0
 
 # Async queue (event-driven infra)
-redis==5.0.8
+redis>=5.0.0
 rq==1.16.2
 chardet>=5.0.0

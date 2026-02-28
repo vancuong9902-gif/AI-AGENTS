@@ -16,6 +16,18 @@ function fmtTs(s) {
   }
 }
 
+function healthTone(failRate) {
+  if (failRate > 0.1) return "bg-red-100 text-red-700";
+  if (failRate > 0.03) return "bg-amber-100 text-amber-700";
+  return "bg-emerald-100 text-emerald-700";
+}
+
+function healthLabel(failRate) {
+  if (failRate > 0.1) return "red";
+  if (failRate > 0.03) return "yellow";
+  return "green";
+}
+
 export default function TeacherInfraDashboard() {
   const { role } = useAuth();
 
@@ -26,18 +38,41 @@ export default function TeacherInfraDashboard() {
 
   const [reports, setReports] = useState([]);
   const [selected, setSelected] = useState(null);
+  const [dashboard, setDashboard] = useState(null);
+  const [dashboardError, setDashboardError] = useState("");
 
   async function refreshReports() {
     try {
-      const res = await apiJson("GET", `/jobs/drift/reports?limit=50`);
-      setReports(res?.data?.reports || []);
-    } catch (e) {
+      const res = await apiJson(`/jobs/drift/reports?limit=50`);
+      setReports(res?.reports || []);
+    } catch {
       // ignore
     }
   }
 
+  async function refreshAgentDashboard() {
+    try {
+      const res = await apiJson(`/admin/agent-dashboard`);
+      setDashboard(res || null);
+      setDashboardError("");
+    } catch (e) {
+      setDashboardError(e?.message || "Failed to load agent dashboard");
+    }
+  }
+
   useEffect(() => {
-    refreshReports();
+    const t = setTimeout(() => {
+      refreshReports();
+      refreshAgentDashboard();
+    }, 0);
+    return () => clearTimeout(t);
+  }, []);
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      refreshAgentDashboard();
+    }, 5000);
+    return () => clearInterval(t);
   }, []);
 
   useEffect(() => {
@@ -45,8 +80,8 @@ export default function TeacherInfraDashboard() {
     async function poll() {
       if (!jobId) return;
       try {
-        const res = await apiJson("GET", `/jobs/status/${encodeURIComponent(jobId)}`);
-        setJobStatus(res?.data || null);
+        const res = await apiJson(`/jobs/status/${encodeURIComponent(jobId)}`);
+        setJobStatus(res || null);
         setJobError("");
       } catch (e) {
         setJobError(e?.message || "Failed to fetch job status");
@@ -62,12 +97,12 @@ export default function TeacherInfraDashboard() {
     setJobError("");
     setJobStatus(null);
     try {
-      const res = await apiJson("POST", `/jobs/index/rebuild`);
-      const id = res?.data?.job_id || "";
+      const res = await apiJson(`/jobs/index/rebuild`, { method: "POST" });
+      const id = res?.job_id || "";
       setJobId(id);
-      if (!id && res?.data?.sync_executed) {
+      if (!id && res?.sync_executed) {
         // sync fallback result
-        setJobStatus({ status: "finished", result: res?.data?.result });
+        setJobStatus({ status: "finished", result: res?.result });
       }
     } catch (e) {
       setJobError(e?.message || "Failed to enqueue");
@@ -79,11 +114,11 @@ export default function TeacherInfraDashboard() {
     setJobError("");
     setJobStatus(null);
     try {
-      const res = await apiJson("POST", `/jobs/drift/check?days=${days}`);
-      const id = res?.data?.job_id || "";
+      const res = await apiJson(`/jobs/drift/check?days=${days}`, { method: "POST" });
+      const id = res?.job_id || "";
       setJobId(id);
-      if (!id && res?.data?.sync_executed) {
-        setJobStatus({ status: "finished", result: res?.data?.result });
+      if (!id && res?.sync_executed) {
+        setJobStatus({ status: "finished", result: res?.result });
         refreshReports();
       }
     } catch (e) {
@@ -93,12 +128,21 @@ export default function TeacherInfraDashboard() {
 
   async function openReport(id) {
     try {
-      const res = await apiJson("GET", `/jobs/drift/reports/${id}`);
-      setSelected(res?.data || null);
+      const res = await apiJson(`/jobs/drift/reports/${id}`);
+      setSelected(res || null);
     } catch (e) {
       setJobError(e?.message || "Failed to load drift report");
     }
   }
+
+  const alertAgents = useMemo(() => {
+    const entries = Object.entries(dashboard?.agents || {});
+    return entries.filter(([, stats]) => {
+      const total = Number(stats?.success || 0) + Number(stats?.failed || 0) + Number(stats?.timeout || 0);
+      if (!total) return false;
+      return Number(stats?.failed || 0) / total > 0.1;
+    });
+  }, [dashboard]);
 
   if (role !== "teacher") {
     return (
@@ -123,6 +167,73 @@ export default function TeacherInfraDashboard() {
       </div>
 
       <div className="grid md:grid-cols-3 gap-4">
+        <div className="p-4 rounded-lg border bg-white space-y-3 md:col-span-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="font-semibold">MAS Agent Monitoring (24h)</div>
+              <div className="text-xs text-slate-500">Auto refresh mỗi 5 giây</div>
+            </div>
+            <button onClick={refreshAgentDashboard} className="text-sm px-2 py-1 rounded-md border hover:bg-slate-50">Refresh</button>
+          </div>
+
+          {dashboardError ? <div className="text-sm text-red-700">{dashboardError}</div> : null}
+
+          <div className="grid md:grid-cols-4 gap-3">
+            <div className="p-3 rounded-md border bg-slate-50">
+              <div className="text-xs text-slate-600">Events (24h)</div>
+              <div className="text-2xl font-bold">{dashboard?.events_last_24h ?? 0}</div>
+            </div>
+            <div className="p-3 rounded-md border bg-slate-50">
+              <div className="text-xs text-slate-600">Pending events</div>
+              <div className="text-2xl font-bold">{dashboard?.pending_events ?? 0}</div>
+            </div>
+          </div>
+
+          {alertAgents.length > 0 ? (
+            <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
+              Alert: fail rate &gt; 10% ở {alertAgents.map(([name]) => name).join(", ")}
+            </div>
+          ) : null}
+
+          <div className="grid md:grid-cols-2 gap-3">
+            {Object.entries(dashboard?.agents || {}).map(([name, stats]) => {
+              const total = Number(stats?.success || 0) + Number(stats?.failed || 0) + Number(stats?.timeout || 0);
+              const failRate = total ? Number(stats?.failed || 0) / total : 0;
+              return (
+                <div key={name} className="p-3 rounded-md border bg-white space-y-1">
+                  <div className="flex items-center justify-between">
+                    <div className="font-medium">{name}</div>
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${healthTone(failRate)}`}>
+                      {healthLabel(failRate)}
+                    </span>
+                  </div>
+                  <div className="text-sm text-slate-600">
+                    success: {stats?.success || 0} • failed: {stats?.failed || 0} • timeout: {stats?.timeout || 0}
+                  </div>
+                  <div className="text-sm text-slate-600">
+                    avg latency: {stats?.avg_ms || 0} ms • fail rate: {(failRate * 100).toFixed(1)}%
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div>
+            <div className="font-medium mb-2">Real-time event feed</div>
+            <div className="space-y-2 max-h-72 overflow-auto pr-1">
+              {(dashboard?.recent_events || []).map((ev) => (
+                <div key={ev.id} className="p-2 rounded-md border bg-slate-50 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium">{ev.agent_name} • {ev.event_type}</span>
+                    <span className="text-xs text-slate-500">{fmtTs(ev.created_at)}</span>
+                  </div>
+                  <div className="text-xs text-slate-600">status: {ev.status} • duration: {ev.duration_ms || 0} ms • user: {ev.user_id ?? "-"}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
         <div className="p-4 rounded-lg border bg-white space-y-3">
           <div className="font-semibold">Queue actions</div>
 

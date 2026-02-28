@@ -29,6 +29,7 @@ from app.api.routes.llm import router as llm_router
 from app.api.routes.classrooms import router as classrooms_router
 from app.api.routes.exams import router as exams_router
 from app.api.routes.lms import router as lms_router
+from app.api.routes.admin import router as admin_router
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.services import vector_store
@@ -198,3 +199,4 @@ app.include_router(learning_plans_router, prefix="/api")
 app.include_router(evaluation_router, prefix="/api")
 app.include_router(assessments_router, prefix="/api")
 app.include_router(teacher_assessments_router, prefix="/api")
+app.include_router(admin_router, prefix="/api")
