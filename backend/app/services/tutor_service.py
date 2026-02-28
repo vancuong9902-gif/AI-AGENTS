@@ -24,6 +24,24 @@ def _src_preview(text: str, n: int = 180) -> str:
     return s[: n - 1].rstrip() + "…"
 
 
+def _topic_scope(topic: Optional[str]) -> str:
+    t = (topic or "").strip()
+    return t or "môn học hiện tại"
+
+
+def _build_redirect_hint(topic: Optional[str]) -> str:
+    scope = _topic_scope(topic)
+    try:
+        samples = [
+            f"Khái niệm cốt lõi trong {scope} là gì?",
+            f"Bạn có thể giải thích một ví dụ điển hình của {scope} không?",
+        ]
+        sample_question = "' hoặc '".join(samples[:2])
+        return f"Bạn có thể hỏi về '{scope}', ví dụ: '{sample_question}'"
+    except Exception:
+        return f"Bạn có thể hỏi về '{scope}', ví dụ: 'Khái niệm cốt lõi trong {scope} là gì?'"
+
+
 def tutor_chat(
     db: Session,
     *,
@@ -78,22 +96,20 @@ def tutor_chat(
     except Exception:
         q_words = 0
     if chunks and q_words >= 2 and best_rel < float(settings.CRAG_MIN_RELEVANCE) * 0.55:
-        answer_md = (
-            "Mình chỉ có thể trả lời dựa trên *tài liệu giáo viên đã upload*.\n\n"
-            "Câu hỏi này có vẻ **ngoài phạm vi tài liệu hiện tại** (mình không tìm thấy đoạn nào liên quan đủ chắc chắn).\n\n"
-            "👉 Gợi ý: hãy chọn đúng *tài liệu* ở dropdown, hoặc nêu rõ *topic/bài* bạn đang học, rồi hỏi lại."
+        scope = _topic_scope(topic)
+        redirect_hint = _build_redirect_hint(topic)
+        answer = (
+            f"Xin lỗi, câu hỏi này nằm ngoài nội dung môn học hiện tại ({scope}).\n"
+            "Tôi chỉ có thể hỗ trợ các câu hỏi liên quan đến tài liệu học tập.\n"
+            f"Bạn có thể hỏi về: {redirect_hint}"
         )
-        return TutorChatData(
-            answer_md=answer_md,
-            follow_up_questions=[
-                "Bạn đang học bài/ chương nào trong tài liệu?",
-                "Bạn có thể trích 1-2 câu trong tài liệu liên quan để mình giải thích không?",
-                "Bạn muốn mình giải thích khái niệm hay làm bài tập theo ví dụ trong tài liệu?",
-            ],
-            quick_check_mcq=[],
-            sources=[],
-            retrieval=rag.get("corrective") or {},
-        ).model_dump()
+        return {
+            "answer": answer,
+            "off_topic": True,
+            "redirect_hint": redirect_hint,
+            "topic_scope": scope,
+            "sources": [],
+        }
     good, bad = filter_chunks_by_quality(chunks, min_score=float(settings.OCR_MIN_QUALITY_SCORE))
     bad_ratio = float(len(bad)) / float(max(1, len(chunks)))
     if (not good) or (bad_ratio >= float(settings.OCR_BAD_CHUNK_RATIO) and len(good) < 2):
