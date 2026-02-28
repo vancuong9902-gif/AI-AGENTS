@@ -54,6 +54,16 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[\.\?!\n])\s+")
 _TOPIC_IN_STEM_RE = re.compile(r"'([^']+)'|\"([^\"]+)\"|“([^”]+)”")
 
 
+def _is_dup(stem: str, excluded_stems: set[str] | None = None, similarity_threshold: float = 0.75) -> bool:
+    """Return True when stem is too similar to any excluded stem."""
+    if not excluded_stems or not stem:
+        return False
+    s = stem.lower().strip()
+    if not s:
+        return False
+    return any(SequenceMatcher(None, s, ex).ratio() >= float(similarity_threshold) for ex in excluded_stems if ex)
+
+
 def _cap_int(x: Any, *, default: int, lo: int, hi: int) -> int:
     try:
         n = int(x)
@@ -1559,7 +1569,7 @@ def generate_assessment(
     document_ids: List[int],
     topics: List[str],
     kind: str = "midterm",
-    exclude_assessment_ids: List[int] | None = None,
+    exclude_quiz_ids: List[int] | None = None,
     similarity_threshold: float = 0.75,
 ) -> Dict[str, Any]:
     total_q = int(easy_count) + int(hard_count)
@@ -1570,28 +1580,17 @@ def generate_assessment(
 
     ensure_user_exists(db, int(teacher_id), role="teacher")
 
-    # Load stems from assessments to exclude from this generation run.
-    excluded_stems: set[str] = set()
-    excluded_ids = [int(x) for x in (exclude_assessment_ids or [])]
-    if excluded_ids:
-        rows = db.query(Question.stem).filter(Question.quiz_set_id.in_(excluded_ids)).all()
-        excluded_stems = {str(r[0] or "").lower().strip() for r in rows if r and r[0]}
+    _excluded_stems: set[str] = set()
+    if exclude_quiz_ids:
+        from app.models.question import Question
 
-    def _is_duplicate_stem(stem: str) -> bool:
-        """Return True when stem is too similar to excluded stems."""
-        if not excluded_stems or not stem:
-            return False
-        s_norm = stem.lower().strip()
-        if not s_norm:
-            return False
-        threshold = float(similarity_threshold)
-        for ex in excluded_stems:
-            if not ex:
-                continue
-            ratio = SequenceMatcher(None, s_norm, ex).ratio()
-            if ratio >= threshold:
-                return True
-        return False
+        rows = db.query(Question.stem).filter(
+            Question.quiz_set_id.in_([int(x) for x in exclude_quiz_ids])
+        ).all()
+        _excluded_stems = {str(r[0] or "").lower().strip() for r in rows if r[0]}
+
+    def _is_dup_local(stem: str) -> bool:
+        return _is_dup(stem, _excluded_stems, similarity_threshold)
 
     # Auto-scope to teacher documents if UI did not pass document_ids
     doc_ids = list(document_ids or [])
@@ -1803,7 +1802,7 @@ def generate_assessment(
 
     # Filter out stems that overlap with excluded assessments.
     original_count = len(generated)
-    generated = [q for q in generated if not _is_duplicate_stem(str((q or {}).get("stem") or ""))]
+    generated = [q for q in generated if not _is_dup_local(str((q or {}).get("stem") or (q or {}).get("question", "")))]
     filtered_count = max(0, original_count - len(generated))
 
     if filtered_count > 0:
@@ -1844,7 +1843,7 @@ def generate_assessment(
                 more = []
             extra_qs.extend(more or [])
 
-        extra_qs = [q for q in (extra_qs or []) if not _is_duplicate_stem(str((q or {}).get("stem") or ""))]
+        extra_qs = [q for q in (extra_qs or []) if not _is_dup_local(str((q or {}).get("stem") or (q or {}).get("question", "")))]
         if extra_qs:
             generated.extend(extra_qs[:deficit])
 
@@ -1928,7 +1927,7 @@ def generate_assessment(
         "level": quiz_set.level,
         "time_limit_minutes": int(total_minutes),
         "questions": questions_out,
-        "excluded_stems_count": len(excluded_stems),
+        "excluded_stems_count": len(_excluded_stems),
         "filtered_duplicates": int(filtered_count),
     }
 
