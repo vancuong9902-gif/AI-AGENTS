@@ -223,6 +223,7 @@ def _fetch_teacher_topic_units(
                     'summary': _compact(getattr(dt, 'summary', '') or ''),
                     'keywords': list(getattr(dt, 'keywords', []) or [])[:6],
                     'chunk_ids': chunk_ids,
+                    'original_exercises': ((getattr(dt, 'metadata_json', {}) or {}).get('original_exercises') if isinstance(getattr(dt, 'metadata_json', {}), dict) else []),
                 }
             )
 
@@ -549,6 +550,7 @@ def _generate_day_mcq_questions(
     question_count: int,
     evidence_chunks: List[Dict[str, Any]],
     id_prefix: str,
+    original_exercises: List[Dict[str, Any]] | None = None,
 ) -> List[HomeworkMCQQuestion]:
     """Generate small MCQ questions for daily homework (grounded to the same evidence).
 
@@ -556,7 +558,36 @@ def _generate_day_mcq_questions(
     """
 
     qc = max(0, int(question_count or 0))
-    if qc <= 0 or not evidence_chunks:
+    if qc <= 0:
+        return []
+
+    out_from_original: List[HomeworkMCQQuestion] = []
+    for i, ex in enumerate(original_exercises or []):
+        if not isinstance(ex, dict):
+            continue
+        stem = _compact(str(ex.get("question") or ""))
+        if not stem:
+            continue
+        qid = f"{id_prefix}_orig_{i+1}"
+        out_from_original.append(
+            HomeworkMCQQuestion(
+                question_id=qid,
+                stem=stem,
+                options=["A. Đúng", "B. Sai", "C. Chưa đủ dữ kiện", "D. Không liên quan"],
+                correct_index=0,
+                explanation=_compact(str(ex.get("answer_hint") or "")) or None,
+                hint="Đọc lại ví dụ gốc trong tài liệu trước khi chọn đáp án.",
+                related_concept=_compact(str(topic or "")) or None,
+                max_points=1,
+                sources=[],
+            )
+        )
+        if len(out_from_original) >= qc:
+            break
+    if out_from_original:
+        return out_from_original
+
+    if not evidence_chunks:
         return []
 
     try:
@@ -592,6 +623,9 @@ def _generate_day_mcq_questions(
                     stem=stem,
                     options=[str(x) for x in opts][:4],
                     correct_index=int(ci),
+                    explanation=_compact(str(q.get("explanation") or "")) or None,
+                    hint=_compact(str(q.get("hint") or "")) or None,
+                    related_concept=_compact(str(q.get("related_concept") or q.get("topic") or "")) or None,
                     bloom_level=str(q.get("bloom_level") or "remember"),
                     explanation=_compact(str(q.get("explanation") or "")),
                     hint=_compact(str(q.get("hint") or "")),
@@ -831,6 +865,7 @@ def build_teacher_learning_plan(
             question_count=int(mcq_count),
             evidence_chunks=evidence_chunks,
             id_prefix=f"d{int(day)}",
+            original_exercises=(ulist[0].get("original_exercises") if ulist and isinstance(ulist[0], dict) else []),
         )
         try:
             hw = hw.model_copy(update={"mcq_questions": [q.model_dump() for q in (mcq_qs or [])]})

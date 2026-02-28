@@ -362,6 +362,57 @@ def analyze_topic_weak_points(all_breakdowns: list[dict]) -> list[dict]:
     return sorted(result, key=lambda x: x["avg_pct"])[:10]
 
 
+
+def per_student_bloom_analysis(*, by_student_breakdowns: dict[int, list[dict]]) -> list[dict[str, Any]]:
+    """Phân tích Bloom theo từng học sinh để giáo viên xem điểm yếu cá nhân."""
+
+    bloom_order = ["remember", "understand", "apply", "analyze", "evaluate", "create"]
+    result: list[dict[str, Any]] = []
+
+    for uid, bds in sorted((by_student_breakdowns or {}).items(), key=lambda x: int(x[0])):
+        bloom_stats: dict[str, dict[str, int]] = defaultdict(lambda: {"earned": 0, "total": 0})
+        topic_scores: dict[str, list[float]] = defaultdict(list)
+
+        for bd in bds or []:
+            for topic, vals in (bd.get("by_topic") or {}).items():
+                topic_scores[str(topic)].append(float((vals or {}).get("percent") or 0.0))
+
+            # Nếu breakdown gốc không có item-level bloom, fallback dùng topic-level.
+            for topic, vals in (bd.get("by_topic") or {}).items():
+                bloom = "understand"
+                total = int((vals or {}).get("total") or 0)
+                earned = int((vals or {}).get("earned") or 0)
+                bloom_stats[bloom]["total"] += max(0, total)
+                bloom_stats[bloom]["earned"] += max(0, min(total, earned))
+
+        bloom_accuracy = []
+        for b in bloom_order:
+            earned = int(bloom_stats[b]["earned"])
+            total = int(bloom_stats[b]["total"])
+            bloom_accuracy.append({
+                "bloom_level": b,
+                "percent": round((earned / total) * 100, 2) if total > 0 else 0.0,
+                "answered": total,
+            })
+
+        weak_topics = sorted(
+            [
+                {"topic": t, "percent": round(sum(vals) / max(1, len(vals)), 2)}
+                for t, vals in topic_scores.items()
+                if vals and (sum(vals) / len(vals)) < 65
+            ],
+            key=lambda x: x["percent"],
+        )[:5]
+
+        result.append(
+            {
+                "student_id": int(uid),
+                "bloom_accuracy": bloom_accuracy,
+                "weak_topics": weak_topics,
+            }
+        )
+
+    return result
 def per_student_bloom_analysis(attempts: list, quiz_kind_map: dict) -> list[dict]:
     """Tính Bloom breakdown và weak topics cho từng học sinh."""
 

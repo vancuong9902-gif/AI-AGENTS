@@ -152,6 +152,8 @@ def grade_homework(
             "max_points": mp,
             "comment": f"Câu trả lời quá ngắn (<{min_chars} ký tự). Hãy viết rõ ý theo rubric.",
             "rubric_breakdown": [],
+            "explanation": "Bài làm chưa đủ độ dài tối thiểu để chấm tự luận.",
+            "hint": "Hãy bổ sung lập luận theo từng tiêu chí trong rubric.",
         }
 
     rb = _sanitize_rubric(rubric, max_points=mp)
@@ -173,6 +175,8 @@ def grade_homework(
             "max_points": int(mp),
             "comment": data.get("comment") or "Bài làm đã được chấm (heuristic).",
             "rubric_breakdown": data.get("rubric_breakdown") or [],
+            "explanation": "Điểm tự luận được tính theo rubric hiện tại.",
+            "hint": "Đọc lại nhận xét theo từng tiêu chí để cải thiện lần nộp sau.",
         }
 
     system = """Bạn là GIẢNG VIÊN CHẤM BÀI TẬP VỀ NHÀ (TỰ LUẬN).
@@ -215,6 +219,8 @@ Yêu cầu:
             "max_points": mp,
             "comment": "Không chấm được (đầu ra không hợp lệ).",
             "rubric_breakdown": [],
+            "explanation": "Không đọc được phản hồi từ mô hình chấm điểm.",
+            "hint": "Hãy nộp lại với câu trả lời rõ ràng hơn và bám sát câu hỏi.",
         }
 
     try:
@@ -268,6 +274,7 @@ Yêu cầu:
     if not comment:
         comment = "Bài làm đã được chấm theo rubric."
 
+    return {"score_points": sp, "max_points": mp, "comment": comment, "rubric_breakdown": out_rb, "explanation": "Điểm tự luận được tổng hợp từ rubric_breakdown.", "hint": "Ưu tiên cải thiện tiêu chí có điểm thấp nhất trong rubric_breakdown."}
     return {"score_points": sp, "max_points": mp, "comment": comment, "rubric_breakdown": out_rb}
 
 

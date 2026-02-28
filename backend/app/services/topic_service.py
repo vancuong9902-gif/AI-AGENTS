@@ -3057,6 +3057,55 @@ def generate_study_guide_md(body: str, *, title: str) -> str:
     return t.strip()[:14000]
 
 
+
+def extract_exercises_from_topic(topic_text: str, topic_title: str) -> list[dict[str, str]]:
+    """Trích xuất bài tập gốc từ nội dung topic bằng LLM (best-effort)."""
+
+    text = str(topic_text or "").strip()
+    title = str(topic_title or "").strip() or "Chủ đề"
+    if not text or not llm_available():
+        return []
+
+    excerpt = "\n".join(text.splitlines()[:180])[:8000]
+    system = (
+        "Bạn là trợ lý học tập. Hãy trích xuất CÁC BÀI TẬP GỐC xuất hiện trong nội dung, "
+        "không tự tạo thêm. Trả JSON array, mỗi phần tử gồm: question, answer_hint. "
+        "Nếu không thấy bài tập thì trả []"
+    )
+    user = {
+        "topic_title": title,
+        "topic_text_excerpt": excerpt,
+    }
+
+    try:
+        obj = chat_json(
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+            ],
+            temperature=0.0,
+            max_tokens=700,
+        )
+    except Exception:
+        return []
+
+    if isinstance(obj, dict):
+        obj = obj.get("exercises")
+    if not isinstance(obj, list):
+        return []
+
+    out: list[dict[str, str]] = []
+    for it in obj:
+        if not isinstance(it, dict):
+            continue
+        q = str(it.get("question") or "").strip()
+        h = str(it.get("answer_hint") or "").strip()
+        if q:
+            out.append({"question": q[:500], "answer_hint": h[:300]})
+        if len(out) >= 20:
+            break
+    return out
+
 def extract_topics(
     full_text: str,
     *,

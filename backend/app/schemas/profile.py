@@ -112,6 +112,9 @@ class HomeworkMCQQuestion(BaseModel):
     stem: str = ""
     options: List[str] = Field(default_factory=list)
     correct_index: int = Field(..., ge=0)
+    explanation: Optional[str] = None
+    hint: Optional[str] = None
+    related_concept: Optional[str] = None
     bloom_level: str = "remember"
     explanation: str = ""
     hint: str = ""
