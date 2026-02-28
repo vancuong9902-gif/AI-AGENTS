@@ -12,6 +12,7 @@ from app.models.attempt import Attempt
 from app.models.classroom_assessment import ClassroomAssessment
 from app.models.document_topic import DocumentTopic
 from app.models.quiz_set import QuizSet
+from app.models.question import Question
 from app.models.session import Session as UserSession
 from app.services.assessment_service import generate_assessment, submit_assessment
 from app.services.lms_service import build_recommendations, classify_student_level, score_breakdown
@@ -125,7 +126,84 @@ def lms_generate_placement(request: Request, payload: GenerateLmsQuizIn, db: Ses
 @router.post("/lms/final/generate")
 def lms_generate_final(request: Request, payload: GenerateLmsQuizIn, db: Session = Depends(get_db)):
     payload.title = payload.title or "Final Test"
-    return _generate_assessment_lms(request=request, db=db, payload=payload, kind="diagnostic_post")
+
+    placement_ids: list[int] = []
+    try:
+        placement_attempts = (
+            db.query(Attempt)
+            .join(QuizSet, QuizSet.id == Attempt.quiz_set_id)
+            .filter(
+                Attempt.user_id == int(payload.teacher_id),
+                QuizSet.kind == "diagnostic_pre",
+                QuizSet.user_id == int(payload.teacher_id),
+            )
+            .all()
+        )
+        placement_ids = sorted({int(a.quiz_set_id) for a in placement_attempts if a and a.quiz_set_id})
+    except Exception:
+        placement_ids = []
+
+    data = generate_assessment(
+        db,
+        teacher_id=int(payload.teacher_id),
+        classroom_id=int(payload.classroom_id),
+        title=payload.title,
+        level="intermediate",
+        kind="diagnostic_post",
+        easy_count=int(payload.easy_count + payload.medium_count),
+        hard_count=int(payload.hard_count),
+        document_ids=[int(x) for x in payload.document_ids],
+        topics=payload.topics,
+        exclude_assessment_ids=placement_ids,
+        similarity_threshold=0.75,
+    )
+    data["difficulty_plan"] = {
+        "easy": int(payload.easy_count),
+        "medium": int(payload.medium_count),
+        "hard": int(payload.hard_count),
+    }
+    data["excluded_from"] = placement_ids
+    return {"request_id": request.state.request_id, "data": data, "error": None}
+
+
+@router.get("/lms/assessments/compare-overlap/{id1}/{id2}")
+def compare_assessment_overlap(request: Request, id1: int, id2: int, db: Session = Depends(get_db)):
+    """Compare stem overlap between two assessments for QA/debug usage."""
+    from difflib import SequenceMatcher
+
+    stems1 = [str(r[0] or "") for r in db.query(Question.stem).filter(Question.quiz_set_id == int(id1)).all()]
+    stems2 = [str(r[0] or "") for r in db.query(Question.stem).filter(Question.quiz_set_id == int(id2)).all()]
+
+    duplicates: list[dict[str, object]] = []
+    for s1 in stems1:
+        s1_norm = s1.lower().strip()
+        if not s1_norm:
+            continue
+        for s2 in stems2:
+            s2_norm = s2.lower().strip()
+            if not s2_norm:
+                continue
+            ratio = SequenceMatcher(None, s1_norm, s2_norm).ratio()
+            if ratio >= 0.75:
+                duplicates.append(
+                    {
+                        "stem1": s1[:80],
+                        "stem2": s2[:80],
+                        "similarity": round(float(ratio), 3),
+                    }
+                )
+
+    return {
+        "request_id": request.state.request_id,
+        "data": {
+            "assessment_1_count": len(stems1),
+            "assessment_2_count": len(stems2),
+            "duplicate_count": len(duplicates),
+            "overlap_percent": round(len(duplicates) / max(1, len(stems1)) * 100, 1),
+            "duplicates": duplicates[:20],
+        },
+        "error": None,
+    }
 
 
 @router.post("/quizzes/placement")

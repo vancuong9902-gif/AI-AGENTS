@@ -3,9 +3,11 @@ from __future__ import annotations
 import random
 import copy
 import json
+import logging
 import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from difflib import SequenceMatcher
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -1545,10 +1547,21 @@ def _collect_chunks(
     good2, _bad2 = filter_chunks_by_quality(chunks, min_score=float(settings.OCR_MIN_QUALITY_SCORE))
     return good2 or chunks
 
-def generate_assessment(db: Session, *, teacher_id: int, classroom_id: int, title: str, level: str,
-                        easy_count: int, hard_count: int,
-                        document_ids: List[int], topics: List[str],
-                        kind: str = "midterm") -> Dict[str, Any]:
+def generate_assessment(
+    db: Session,
+    *,
+    teacher_id: int,
+    classroom_id: int,
+    title: str,
+    level: str,
+    easy_count: int,
+    hard_count: int,
+    document_ids: List[int],
+    topics: List[str],
+    kind: str = "midterm",
+    exclude_assessment_ids: List[int] | None = None,
+    similarity_threshold: float = 0.75,
+) -> Dict[str, Any]:
     total_q = int(easy_count) + int(hard_count)
 
     if not _is_assessment_kind(kind):
@@ -1556,6 +1569,29 @@ def generate_assessment(db: Session, *, teacher_id: int, classroom_id: int, titl
     kind = _normalize_assessment_kind(kind)
 
     ensure_user_exists(db, int(teacher_id), role="teacher")
+
+    # Load stems from assessments to exclude from this generation run.
+    excluded_stems: set[str] = set()
+    excluded_ids = [int(x) for x in (exclude_assessment_ids or [])]
+    if excluded_ids:
+        rows = db.query(Question.stem).filter(Question.quiz_set_id.in_(excluded_ids)).all()
+        excluded_stems = {str(r[0] or "").lower().strip() for r in rows if r and r[0]}
+
+    def _is_duplicate_stem(stem: str) -> bool:
+        """Return True when stem is too similar to excluded stems."""
+        if not excluded_stems or not stem:
+            return False
+        s_norm = stem.lower().strip()
+        if not s_norm:
+            return False
+        threshold = float(similarity_threshold)
+        for ex in excluded_stems:
+            if not ex:
+                continue
+            ratio = SequenceMatcher(None, s_norm, ex).ratio()
+            if ratio >= threshold:
+                return True
+        return False
 
     # Auto-scope to teacher documents if UI did not pass document_ids
     doc_ids = list(document_ids or [])
@@ -1765,6 +1801,56 @@ def generate_assessment(db: Session, *, teacher_id: int, classroom_id: int, titl
         except Exception:
             pass
 
+    # Filter out stems that overlap with excluded assessments.
+    original_count = len(generated)
+    generated = [q for q in generated if not _is_duplicate_stem(str((q or {}).get("stem") or ""))]
+    filtered_count = max(0, original_count - len(generated))
+
+    if filtered_count > 0:
+        logging.getLogger(__name__).info(
+            "Filtered %s/%s duplicate questions (similarity >= %s)",
+            filtered_count,
+            original_count,
+            float(similarity_threshold),
+        )
+
+    target_total = int(easy_count) + int(hard_count)
+    deficit = target_total - len(generated)
+    if deficit > 0 and llm_available():
+        extra_system_hint = (
+            f"QUAN TRỌNG: Hệ thống đã loại {deficit} câu bị trùng với bài trước. "
+            f"Hãy tạo {deficit} câu HOÀN TOÀN MỚI, tiếp cận topic từ góc độ khác: "
+            "ứng dụng thực tế, bài toán ngược, hoặc kết hợp nhiều khái niệm."
+        )
+        topic_list = topics_cycle or [((title or "tài liệu").strip() or "tài liệu")]
+        extra_qs: List[Dict[str, Any]] = []
+        for idx, topic_name in enumerate(topic_list):
+            if len(extra_qs) >= deficit:
+                break
+            remain = deficit - len(extra_qs)
+            slots_left = max(1, len(topic_list) - idx)
+            per_topic = max(1, (remain + slots_left - 1) // slots_left)
+            try:
+                more = _generate_mcq_with_llm(
+                    topic_name,
+                    level,
+                    per_topic,
+                    chunks,
+                    extra_system_hint=extra_system_hint,
+                )
+            except HTTPException:
+                raise
+            except Exception:
+                more = []
+            extra_qs.extend(more or [])
+
+        extra_qs = [q for q in (extra_qs or []) if not _is_duplicate_stem(str((q or {}).get("stem") or ""))]
+        if extra_qs:
+            generated.extend(extra_qs[:deficit])
+
+    if len(generated) > target_total:
+        generated = generated[:target_total]
+
     # -------------------------
     # Estimate time per question (minutes)
     # -------------------------
@@ -1842,6 +1928,8 @@ def generate_assessment(db: Session, *, teacher_id: int, classroom_id: int, titl
         "level": quiz_set.level,
         "time_limit_minutes": int(total_minutes),
         "questions": questions_out,
+        "excluded_stems_count": len(excluded_stems),
+        "filtered_duplicates": int(filtered_count),
     }
 
 
