@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -29,6 +30,8 @@ from app.models.quiz_set import QuizSet
 from app.models.student_assignment import StudentAssignment
 from app.models.classroom import Classroom, ClassroomMember
 from app.models.notification import Notification
+from app.models.attempt import Attempt
+from app.models.classroom_assessment import ClassroomAssessment
 
 
 @dataclass
@@ -676,6 +679,233 @@ def resolve_student_name(student_id: int, db: Session) -> str:
     if not user:
         return f"Student {student_id}"
     return str(user.full_name or user.email or f"Student {student_id}")
+
+
+async def generate_class_ai_comment(class_stats: dict) -> str:
+    prompt = f"""
+    Bạn là AI giáo dục. Dựa trên dữ liệu lớp học sau, hãy viết nhận xét tổng quát
+    bằng tiếng Việt (3-5 câu) để gửi cho giáo viên:
+
+    - Tổng học sinh: {class_stats['total_students']}
+    - Điểm TB đầu vào: {class_stats['avg_entry']:.1f}
+    - Điểm TB cuối kỳ: {class_stats['avg_final']:.1f}
+    - Phân loại: {class_stats['distribution']}
+    - Topic yếu nhất: {class_stats['weakest_topic']}
+
+    Nhận xét ngắn gọn, tích cực, có định hướng cải thiện.
+    """
+    if not llm_available():
+        return (
+            "Lớp học có tiến triển tích cực qua kỳ học. "
+            "Giáo viên nên duy trì nhịp ôn tập cho nhóm trung bình/yếu và tăng hoạt động luyện tập theo chủ đề yếu nhất."
+        )
+    try:
+        return await asyncio.to_thread(
+            chat_text,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=220,
+        )
+    except Exception:
+        return "Lớp có xu hướng cải thiện, nên tiếp tục hỗ trợ nhóm học sinh còn yếu theo từng chủ đề cụ thể."
+
+
+def teacher_report(db: Session, classroom_id: int) -> dict[str, Any]:
+    classroom_id = int(classroom_id)
+    student_ids = [
+        int(uid)
+        for uid, in db.query(ClassroomMember.user_id).filter(ClassroomMember.classroom_id == classroom_id).all()
+    ]
+    assessment_ids = [
+        int(r[0])
+        for r in db.query(ClassroomAssessment.assessment_id)
+        .filter(ClassroomAssessment.classroom_id == classroom_id)
+        .all()
+    ]
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    if not student_ids:
+        return {
+            "classroom_id": classroom_id,
+            "generated_at": now_iso,
+            "summary": {
+                "total_students": 0,
+                "completed_entry_test": 0,
+                "completed_final_exam": 0,
+                "average_entry_score": 0.0,
+                "average_final_score": 0.0,
+                "average_improvement": 0.0,
+            },
+            "student_list": [],
+            "class_analytics": {
+                "score_distribution": {"gioi": 0, "kha": 0, "trung_binh": 0, "yeu": 0},
+                "topic_performance": {},
+                "improvement_chart": [],
+            },
+            "ai_recommendations": "",
+        }
+
+    attempts = (
+        db.query(Attempt)
+        .filter(Attempt.quiz_set_id.in_(assessment_ids))
+        .order_by(Attempt.created_at.asc())
+        .all()
+        if assessment_ids
+        else []
+    )
+    quiz_kind_map = {
+        int(qid): str(kind or "")
+        for qid, kind in db.query(QuizSet.id, QuizSet.kind).filter(QuizSet.id.in_(assessment_ids)).all()
+    }
+
+    attempts_by_student: dict[int, list[Any]] = defaultdict(list)
+    entry_scores: dict[int, float] = {}
+    final_scores: dict[int, float] = {}
+    latest_breakdown: dict[int, dict[str, Any]] = {}
+    chart_bucket: dict[str, list[float]] = defaultdict(list)
+    topic_perf_values: dict[str, list[float]] = defaultdict(list)
+    topic_perf_students: dict[str, set[int]] = defaultdict(set)
+
+    for at in attempts:
+        uid = int(at.user_id)
+        if uid not in student_ids:
+            continue
+        attempts_by_student[uid].append(at)
+        breakdown = score_breakdown(at.breakdown_json or [])
+        latest_breakdown[uid] = breakdown
+        pct = float((breakdown.get("overall") or {}).get("percent") or 0.0)
+        chart_bucket[at.created_at.date().isoformat()].append(pct)
+        for topic, stats in (breakdown.get("by_topic") or {}).items():
+            topic_perf_values[str(topic)].append(float((stats or {}).get("percent") or 0.0))
+            topic_perf_students[str(topic)].add(uid)
+        kind = quiz_kind_map.get(int(at.quiz_set_id), "")
+        if kind == "diagnostic_pre":
+            entry_scores[uid] = pct
+        elif kind == "diagnostic_post":
+            final_scores[uid] = pct
+
+    users = db.query(User).filter(User.id.in_(student_ids)).all()
+    user_map = {int(u.id): u for u in users}
+    plans = db.query(LearningPlan).filter(LearningPlan.classroom_id == classroom_id).all()
+    plan_days_map: dict[int, int] = defaultdict(int)
+    for p in plans:
+        plan_days_map[int(p.user_id)] = max(plan_days_map[int(p.user_id)], int(p.days_total or 0))
+    submissions = (
+        db.query(LearningPlanHomeworkSubmission)
+        .filter(LearningPlanHomeworkSubmission.user_id.in_(student_ids))
+        .all()
+    )
+    sub_count_by_student: dict[int, int] = defaultdict(int)
+    last_submission_by_student: dict[int, datetime] = {}
+    for sub in submissions:
+        uid = int(sub.user_id)
+        sub_count_by_student[uid] += 1
+        if sub.created_at and (uid not in last_submission_by_student or sub.created_at > last_submission_by_student[uid]):
+            last_submission_by_student[uid] = sub.created_at
+
+    student_list = []
+    distribution = {"gioi": 0, "kha": 0, "trung_binh": 0, "yeu": 0}
+    for uid in sorted(student_ids):
+        entry = entry_scores.get(uid)
+        final = final_scores.get(uid)
+        base_score = final if final is not None else (entry if entry is not None else 0.0)
+        level = classify_student_level(int(round(base_score)))
+        distribution[level] += 1
+        improvement = round((final - entry), 2) if final is not None and entry is not None else None
+        if entry is None and final is not None:
+            level_change = "new"
+        elif improvement is None:
+            level_change = "stable"
+        elif improvement >= 3:
+            level_change = "improved"
+        elif improvement <= -3:
+            level_change = "declined"
+        else:
+            level_change = "stable"
+
+        by_topic = (latest_breakdown.get(uid) or {}).get("by_topic") or {}
+        sorted_topics = sorted(
+            ((str(k), float((v or {}).get("percent") or 0.0)) for k, v in by_topic.items()),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        strong_topics = [k for k, v in sorted_topics if v >= 70][:3]
+        weak_topics = [k for k, v in sorted_topics[::-1] if v < 60][:3]
+
+        planned_days = max(1, plan_days_map.get(uid, 0) or sub_count_by_student.get(uid, 0) or 1)
+        homework_rate = round((sub_count_by_student.get(uid, 0) / planned_days) * 100, 2)
+
+        last_attempt_at = attempts_by_student.get(uid, [])[-1].created_at if attempts_by_student.get(uid) else None
+        last_activity = max(x for x in [last_attempt_at, last_submission_by_student.get(uid)] if x is not None) if (last_attempt_at or last_submission_by_student.get(uid)) else None
+        user = user_map.get(uid)
+        student_list.append(
+            {
+                "student_id": uid,
+                "name": str((user.full_name if user else None) or (user.email if user else None) or f"Student {uid}"),
+                "entry_score": round(entry, 2) if entry is not None else None,
+                "final_score": round(final, 2) if final is not None else None,
+                "improvement": improvement,
+                "level": level,
+                "level_change": level_change,
+                "strong_topics": strong_topics,
+                "weak_topics": weak_topics,
+                "homework_completion_rate": homework_rate,
+                "last_activity": last_activity.isoformat() if last_activity else None,
+            }
+        )
+
+    completed_entry = sum(1 for v in entry_scores.values() if v is not None)
+    completed_final = sum(1 for v in final_scores.values() if v is not None)
+    avg_entry = round(mean(entry_scores.values()), 2) if entry_scores else 0.0
+    avg_final = round(mean(final_scores.values()), 2) if final_scores else 0.0
+    improvements = [final_scores[uid] - entry_scores[uid] for uid in final_scores if uid in entry_scores]
+    avg_improvement = round(mean(improvements), 2) if improvements else 0.0
+
+    topic_performance = {}
+    total_students = len(student_ids)
+    for topic, values in topic_perf_values.items():
+        topic_performance[topic] = {
+            "avg_score": round(mean(values), 2),
+            "completion_rate": round((len(topic_perf_students[topic]) / max(1, total_students)) * 100, 2),
+        }
+    weakest_topic = min(topic_performance.items(), key=lambda x: x[1]["avg_score"])[0] if topic_performance else "chưa xác định"
+
+    improvement_chart = [
+        {"date": date_str, "avg_score": round(mean(vals), 2)}
+        for date_str, vals in sorted(chart_bucket.items(), key=lambda x: x[0])
+    ]
+
+    ai_recommendations = asyncio.run(
+        generate_class_ai_comment(
+            {
+                "total_students": total_students,
+                "avg_entry": avg_entry,
+                "avg_final": avg_final,
+                "distribution": distribution,
+                "weakest_topic": weakest_topic,
+            }
+        )
+    )
+
+    return {
+        "classroom_id": classroom_id,
+        "generated_at": now_iso,
+        "summary": {
+            "total_students": total_students,
+            "completed_entry_test": completed_entry,
+            "completed_final_exam": completed_final,
+            "average_entry_score": avg_entry,
+            "average_final_score": avg_final,
+            "average_improvement": avg_improvement,
+        },
+        "student_list": student_list,
+        "class_analytics": {
+            "score_distribution": distribution,
+            "topic_performance": topic_performance,
+            "improvement_chart": improvement_chart,
+        },
+        "ai_recommendations": ai_recommendations,
+    }
 
 
 def _topic_body_len(topic: DocumentTopic) -> int:

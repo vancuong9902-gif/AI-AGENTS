@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -19,70 +20,59 @@ class _FakeQuery:
     def order_by(self, *args, **kwargs):
         return self
 
-    def count(self):
-        return len(self._rows)
-
-    def first(self):
-        return self._rows[0] if self._rows else None
-
 
 class _FakeDB:
     def query(self, *entities):
-        name = ",".join(getattr(e, "name", str(e)) for e in entities)
-        normalized = name.replace(" ", "").lower()
         entity_dump = ",".join(str(e).lower() for e in entities)
-        if "assessment_id" in name:
+        if "classroommember.user_id" in entity_dump:
+            return _FakeQuery([(101,), (102,)])
+        if "classroomassessment.assessment_id" in entity_dump:
             return _FakeQuery([(1,), (2,)])
-        if (
-            "classroom_members" in normalized
-            or "classroommember" in normalized
-            or ("classroom" in entity_dump and "user_id" in entity_dump)
-        ):
-            return _FakeQuery([(101,)])
-        if "quiz_sets.id,quiz_sets.kind" in normalized or "quizset.id,quizset.kind" in normalized:
+        if "quizset.id" in entity_dump and "quizset.kind" in entity_dump:
             return _FakeQuery([(1, "diagnostic_pre"), (2, "diagnostic_post")])
-        if "users" in normalized:
-            return _FakeQuery([SimpleNamespace(id=101, full_name="HS A", email="a@test")])
-        if "attempts" in normalized:
+        if "attempt" in entity_dump:
             return _FakeQuery(
                 [
-                    SimpleNamespace(user_id=101, quiz_set_id=1, breakdown_json=[]),
-                    SimpleNamespace(user_id=101, quiz_set_id=2, breakdown_json=[]),
+                    SimpleNamespace(user_id=101, quiz_set_id=1, breakdown_json=[], created_at=datetime.now(timezone.utc)),
+                    SimpleNamespace(user_id=101, quiz_set_id=2, breakdown_json=[], created_at=datetime.now(timezone.utc)),
                 ]
             )
+        if "user.id" in entity_dump:
+            return _FakeQuery([SimpleNamespace(id=101, full_name="HS A", email="a@test")])
+        if "learningplan" in entity_dump:
+            return _FakeQuery([SimpleNamespace(user_id=101, days_total=5)])
+        if "learningplanhomeworksubmission" in entity_dump:
+            return _FakeQuery([SimpleNamespace(user_id=101, created_at=datetime.now(timezone.utc))])
         return _FakeQuery([])
 
 
-def test_teacher_report_includes_narrative_and_charts(monkeypatch):
-    """Endpoint trả đủ các trường mới."""
-
+def test_teacher_report_returns_full_shape(monkeypatch):
     app.dependency_overrides[get_db] = lambda: _FakeDB()
 
     def _fake_score_breakdown(_):
         _fake_score_breakdown.calls += 1
         if _fake_score_breakdown.calls == 1:
-            return {"overall": {"percent": 45.0}, "by_topic": {"Đạo hàm": {"percent": 45.0}}}
-        return {"overall": {"percent": 70.0}, "by_topic": {"Đạo hàm": {"percent": 70.0}}}
+            return {"overall": {"percent": 45.0}, "by_topic": {"dao_ham": {"percent": 45.0}}}
+        return {"overall": {"percent": 70.0}, "by_topic": {"dao_ham": {"percent": 70.0}}}
 
     _fake_score_breakdown.calls = 0
+    monkeypatch.setattr("app.services.lms_service.score_breakdown", _fake_score_breakdown)
+    async def _fake_comment(_stats):
+        return "Lớp có tiến bộ tốt."
 
-    monkeypatch.setattr("app.api.routes.lms.score_breakdown", _fake_score_breakdown)
-    monkeypatch.setattr("app.api.routes.lms.generate_class_narrative", lambda **kwargs: "Nhận xét mẫu")
+    monkeypatch.setattr("app.services.lms_service.generate_class_ai_comment", _fake_comment)
 
     client = TestClient(app)
     response = client.get("/api/lms/teacher/report/1")
     assert response.status_code == 200
     data = response.json()["data"]
-    assert "ai_narrative" in data
-    assert "weak_topics" in data
-    assert "progress_chart" in data
-    assert "student_evaluations" in data
-    assert "per_student_bloom" in data
-    assert "student_segments" in data
-    assert data["student_evaluations"][0]["student_id"] == 101
-    assert "bloom_accuracy" in data["student_evaluations"][0]
-    assert "ai_teacher_actions" in data["student_evaluations"][0]
-    assert data["summary"]["students"] >= 0
-    assert "avg_improvement" in data["summary"]
+    assert data["classroom_id"] == 1
+    assert "generated_at" in data
+    assert "summary" in data
+    assert "student_list" in data
+    assert "class_analytics" in data
+    assert "ai_recommendations" in data
+    assert data["summary"]["total_students"] == 2
+    assert set(data["class_analytics"]["score_distribution"].keys()) == {"gioi", "kha", "trung_binh", "yeu"}
 
     app.dependency_overrides.clear()
