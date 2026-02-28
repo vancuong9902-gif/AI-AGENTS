@@ -30,6 +30,8 @@ from app.services.agent_service import (
     generate_topic_exercises,
     postprocess_topic_attempt,
 )
+from app.services.lms_service import push_student_report_to_teacher
+
 
 router = APIRouter(tags=["agent"])
 
@@ -115,6 +117,18 @@ def final_exam_submit(request: Request, quiz_id: int, payload: FinalExamSubmitRe
     )
     analytics = final_exam_analytics(data.get("breakdown") or [])
     data["analytics"] = analytics
+    try:
+        push_student_report_to_teacher(
+            db=db,
+            user_id=int(payload.user_id),
+            quiz_id=int(quiz_id),
+            score_percent=float(data.get("score_percent", 0) or 0),
+            analytics=analytics,
+        )
+    except Exception as e:
+        import logging
+
+        logging.getLogger(__name__).warning(f"push_report failed: {e}")
     safe = jsonable_encoder(data)
     return safe
 

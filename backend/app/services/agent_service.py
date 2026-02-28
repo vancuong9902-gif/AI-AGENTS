@@ -274,11 +274,11 @@ def _llm_generate_exam_questions(
         title = "Bài kiểm tra ghi nhớ (Retention Check)"
     else:
         spec = {
-            "EASY": {"mcq": 0},
-            "MEDIUM": {"mcq": 30, "short_answer": 5, "application": 3},
-            "HARD": {"mcq": 0},
+            "EASY": {"mcq": 5, "short_answer": 2},
+            "MEDIUM": {"mcq": 8, "short_answer": 3, "application": 2},
+            "HARD": {"mcq": 5, "analytical": 3, "complex": 2},
         }
-        title = "Bài kiểm tra tổng hợp cuối khóa"
+        title = "Bài kiểm tra cuối kỳ tổng hợp (3 mức độ)"
 
     sys = (
         "Bạn là GIÁO VIÊN ra đề và chấm đáp án mẫu. "
@@ -433,11 +433,16 @@ def _expected_counts(kind: str) -> Dict[Tuple[str, str], int]:
             ("MEDIUM", "short_answer"): 1,
             ("MEDIUM", "application"): 1,
         }
-    # final_exam: keep section MEDIUM only
+    # final_exam: 3 mức EASY + MEDIUM + HARD, khác cấu trúc entry_test
     return {
-        ("MEDIUM", "mcq"): 30,
-        ("MEDIUM", "short_answer"): 5,
-        ("MEDIUM", "application"): 3,
+        ("EASY", "mcq"): 5,
+        ("EASY", "short_answer"): 2,
+        ("MEDIUM", "mcq"): 8,
+        ("MEDIUM", "short_answer"): 3,
+        ("MEDIUM", "application"): 2,
+        ("HARD", "mcq"): 5,
+        ("HARD", "analytical"): 3,
+        ("HARD", "complex"): 2,
     }
 
 
