@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.assessment_service import get_used_question_stems
+from app.services.assessment_service import get_classroom_diagnostic_pre_stems, get_used_question_stems
 
 
 class _FakeQuery:
@@ -50,3 +50,11 @@ def test_get_used_question_stems_normalizes_and_truncates():
 def test_get_used_question_stems_empty_kinds_returns_empty_set():
     db = _FakeDB([("foo",)])
     assert get_used_question_stems(db, user_id=7, kinds=[]) == set()
+
+
+def test_get_classroom_diagnostic_pre_stems_normalizes():
+    db = _FakeDB([("  Intro to Python?  ",), ("intro to python",), (None,)])
+
+    stems = get_classroom_diagnostic_pre_stems(db, user_id=7, classroom_id=3)
+
+    assert stems == {"intro to python"}

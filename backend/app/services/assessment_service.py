@@ -115,6 +115,29 @@ def get_used_question_stems(db: Session, *, user_id: int, kinds: list[str]) -> s
     return out
 
 
+def get_classroom_diagnostic_pre_stems(db: Session, *, user_id: int, classroom_id: int) -> set[str]:
+    """Load normalized stems from diagnostic_pre assessments in the current classroom for a user."""
+    rows = (
+        db.query(Question.stem)
+        .join(QuizSet, QuizSet.id == Question.quiz_set_id)
+        .join(ClassroomAssessment, ClassroomAssessment.assessment_id == QuizSet.id)
+        .join(Attempt, Attempt.quiz_set_id == QuizSet.id)
+        .filter(
+            ClassroomAssessment.classroom_id == int(classroom_id),
+            Attempt.user_id == int(user_id),
+            QuizSet.kind == "diagnostic_pre",
+        )
+        .all()
+    )
+    out: set[str] = set()
+    for r in rows:
+        raw = r[0] if isinstance(r, (tuple, list)) else r
+        norm = _normalize_stem_for_dedup(str(raw or ""))
+        if norm:
+            out.add(norm)
+    return out
+
+
 def _get_used_question_stems(db: Session, user_id: int) -> set[str]:
     """Load stems used by a user's entry_test attempts for final-exam exclusion."""
     return get_used_question_stems(db, user_id=int(user_id), kinds=["entry_test"])
@@ -1783,7 +1806,10 @@ def generate_assessment(
         "TỔNG HỢP kiến thức từ nhiều chủ đề, không phải chỉ ghi nhớ đơn thuần. Mức độ khó "
         "phải cao hơn bài kiểm tra đầu vào."
     )
-    dedup_similarity_threshold = 0.7 if kind == "final_exam" else float(similarity_threshold)
+    dedup_similarity_threshold = 0.65 if kind == "final_exam" else float(similarity_threshold)
+
+    final_exam_excluded_instruction = ""
+    diagnostic_pre_stems_for_prompt: list[str] = []
 
     if kind == "final_exam":
         dedup_uid = int(dedup_user_id) if dedup_user_id is not None else int(teacher_id)
@@ -1807,6 +1833,21 @@ def generate_assessment(
     dedup_topics_from_entry: list[str] = []
     if kind == "final_exam":
         history_user_id = int(attempt_user_id if attempt_user_id is not None else teacher_id)
+        diagnostic_pre_stems = get_classroom_diagnostic_pre_stems(
+            db,
+            user_id=history_user_id,
+            classroom_id=int(classroom_id),
+        )
+        _excluded_stems.update(diagnostic_pre_stems)
+        diagnostic_pre_stems_for_prompt = sorted(list(diagnostic_pre_stems))[:80]
+        if diagnostic_pre_stems_for_prompt:
+            stems_payload = json.dumps(diagnostic_pre_stems_for_prompt, ensure_ascii=False)
+            final_exam_excluded_instruction = (
+                "These question stems have already been used in the entry assessment and MUST NOT be reused or paraphrased: "
+                f"{stems_payload}. "
+                "Generate ENTIRELY NEW questions covering the same topics but testing DIFFERENT aspects, "
+                "deeper understanding, and application-level skills."
+            )
         prior_stems = get_used_question_stems(db, user_id=history_user_id, kinds=["diagnostic_pre", "entry_test"])
         _excluded_stems.update(prior_stems)
         if len(prior_stems) > 20:
@@ -1955,6 +1996,8 @@ def generate_assessment(
                         hint = (hint + "\n" + final_rules) if hint else final_rules
                     if (kind or "").lower() == "final_exam":
                         hint = (hint + "\n" + final_exam_llm_system_hint) if hint else final_exam_llm_system_hint
+                    if (kind or "").lower() == "final_exam" and final_exam_excluded_instruction:
+                        hint = (hint + "\n" + final_exam_excluded_instruction) if hint else final_exam_excluded_instruction
                     try:
                         qs = _generate_mcq_with_llm(
                             t,
@@ -2201,46 +2244,61 @@ def generate_assessment(
     target_total = int(easy_count) + int(medium_count) + int(hard_count)
     deficit = target_total - len(generated)
     if deficit > 0 and llm_available():
-        extra_system_hint = (
-            f"QUAN TRỌNG: Hệ thống đã loại {deficit} câu bị trùng với bài trước. "
-            f"Hãy tạo {deficit} câu HOÀN TOÀN MỚI, tiếp cận topic từ góc độ khác: "
-            "ứng dụng thực tế, bài toán ngược, hoặc kết hợp nhiều khái niệm."
-        )
         topic_list = topics_cycle or [((title or "tài liệu").strip() or "tài liệu")]
-        extra_qs: List[Dict[str, Any]] = []
-        for idx, topic_name in enumerate(topic_list):
-            if len(extra_qs) >= deficit:
+        for _retry_no in range(1, 4):
+            deficit = target_total - len(generated)
+            if deficit <= 0:
                 break
-            remain = deficit - len(extra_qs)
-            slots_left = max(1, len(topic_list) - idx)
-            per_topic = max(1, (remain + slots_left - 1) // slots_left)
-            try:
+            extra_system_hint = (
+                f"QUAN TRỌNG: Hệ thống đã loại {deficit} câu bị trùng với bài trước. "
+                f"Hãy tạo {deficit} câu HOÀN TOÀN MỚI, tiếp cận topic từ góc độ khác: "
+                "ứng dụng thực tế, bài toán ngược, hoặc kết hợp nhiều khái niệm."
+            )
+            if final_exam_excluded_instruction and (kind or "").lower() == "final_exam":
+                extra_system_hint = f"{extra_system_hint}\n{final_exam_excluded_instruction}"
+            extra_qs: List[Dict[str, Any]] = []
+            for idx, topic_name in enumerate(topic_list):
+                if len(extra_qs) >= deficit:
+                    break
+                remain = deficit - len(extra_qs)
+                slots_left = max(1, len(topic_list) - idx)
+                per_topic = max(1, (remain + slots_left - 1) // slots_left)
                 try:
-                    more = _generate_mcq_with_llm(
-                        topic_name,
-                        level,
-                        per_topic,
-                        chunks,
-                        extra_system_hint=extra_system_hint,
-                        excluded_stems=sorted(_excluded_stems),
-                    )
-                except TypeError:
-                    more = _generate_mcq_with_llm(
-                        topic_name,
-                        level,
-                        per_topic,
-                        chunks,
-                        extra_system_hint=extra_system_hint,
-                    )
-            except HTTPException:
-                raise
-            except Exception:
-                more = []
-            extra_qs.extend(more or [])
+                    try:
+                        more = _generate_mcq_with_llm(
+                            topic_name,
+                            level,
+                            per_topic,
+                            chunks,
+                            extra_system_hint=extra_system_hint,
+                            excluded_stems=sorted(_excluded_stems),
+                        )
+                    except TypeError:
+                        more = _generate_mcq_with_llm(
+                            topic_name,
+                            level,
+                            per_topic,
+                            chunks,
+                            extra_system_hint=extra_system_hint,
+                        )
+                except HTTPException:
+                    raise
+                except Exception:
+                    more = []
+                extra_qs.extend(more or [])
 
-        extra_qs = [q for q in (extra_qs or []) if not _is_dup_local(str((q or {}).get("stem") or (q or {}).get("question", "")))]
-        if extra_qs:
-            generated.extend(extra_qs[:deficit])
+            extra_qs = [q for q in (extra_qs or []) if not _is_dup_local(str((q or {}).get("stem") or (q or {}).get("question", "")))]
+            if extra_qs:
+                generated.extend(extra_qs[:deficit])
+
+        final_deficit = target_total - len(generated)
+        if final_deficit > 0 and (kind or "").lower() == "final_exam":
+            logging.getLogger(__name__).warning(
+                "Final exam generation still lacks %s fully new questions after 3 retries (user_id=%s, classroom_id=%s)",
+                int(final_deficit),
+                int(attempt_user_id if attempt_user_id is not None else teacher_id),
+                int(classroom_id),
+            )
 
     if len(generated) > target_total:
         generated = generated[:target_total]
