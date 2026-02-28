@@ -554,6 +554,7 @@ def generate_exam(
             document_ids=document_ids,
             topics=topics,
             excluded_question_ids=excluded_question_ids,
+            dedup_user_id=int(user_id),
             attempt_user_id=int(user_id),
         )
         quiz_id = int(final_assessment.get("assessment_id"))
@@ -585,6 +586,7 @@ def generate_exam(
             "title": "Final Exam",
             "questions": q_out,
             "retrieval": ctx.get("rag") or {},
+            "deduplication_info": final_assessment.get("deduplication_info") or {"excluded_count": 0, "topics_from_entry": []},
         }
 
     # LLM generation with one retry if counts mismatch.
