@@ -5,9 +5,9 @@ import { useAuth } from "../context/AuthContext";
 import Result from "./Result";
 
 export default function AssessmentTake() {
-  const { id } = useParams();
+  const { id, quizSetId } = useParams();
   const navigate = useNavigate();
-  const assessmentId = Number(id);
+  const assessmentId = Number(quizSetId || id);
   const { userId } = useAuth();
 
   const [data, setData] = useState(null);
@@ -122,6 +122,15 @@ export default function AssessmentTake() {
 
     return { easy, medium, hard };
   }, [data]);
+
+
+  const detectDifficulty = (q) => {
+    const bloom = String(q?.bloom_level || "").toLowerCase();
+    if (["remember", "understand"].includes(bloom)) return "Easy";
+    if (["apply", "analyze"].includes(bloom)) return "Medium";
+    if (["evaluate", "create"].includes(bloom) || q?.type === "essay") return "Hard";
+    return "Medium";
+  };
 
   const weakestTopic = useMemo(() => {
     const topicMap = {};
@@ -281,7 +290,7 @@ export default function AssessmentTake() {
         answer_text: answers[q.question_id]?.answer_text ?? null,
       }));
 
-      const r = await apiJson(`/assessments/${data.assessment_id}/submit`, {
+      const r = await apiJson(`/assessments/quiz-sets/${data.assessment_id}/submit`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -309,19 +318,7 @@ export default function AssessmentTake() {
 
       const isEntryTest = String(r?.assessment_kind || data?.kind || "").toLowerCase() === "diagnostic_pre";
       if (isEntryTest) {
-        try {
-          await apiJson(`/lms/assign-path`, {
-            method: "POST",
-            body: {
-              user_id: Number(userId ?? 1),
-              quiz_id: Number(data?.assessment_id || assessmentId),
-              classroom_id: Number(r?.classroom_id || 0),
-            },
-          });
-          setPathAssigned(true);
-        } catch {
-          setPathAssigned(false);
-        }
+        setPathAssigned(Boolean(r?.learning_plan_created));
       }
 
       if (auto) {
@@ -394,7 +391,7 @@ export default function AssessmentTake() {
       style={{ background: "#fff", borderRadius: 12, padding: 12, boxShadow: "0 2px 10px rgba(0,0,0,0.06)" }}
     >
       <div style={{ fontWeight: 700, marginBottom: 6 }}>
-        Câu {orderNo} ({q.type === "mcq" ? "Trắc nghiệm" : "Tự luận"})
+        Câu {orderNo} ({q.type === "mcq" ? "Trắc nghiệm" : "Tự luận"}) • {detectDifficulty(q)}
         {Number(q?.estimated_minutes || 0) > 0 ? (
           <span style={{ fontWeight: 500, color: "#666" }}> • ~{q.estimated_minutes} phút</span>
         ) : null}
@@ -473,6 +470,11 @@ export default function AssessmentTake() {
           <div style={{ color: "#666" }}>
             Level: <b>{data?.level}</b> {data?.kind ? <span>• Kind: <b>{data.kind}</b></span> : null}
           </div>
+          {(String(data?.kind || "").toLowerCase() === "diagnostic_pre" || String(data?.metadata?.type || "").toLowerCase() === "diagnostic") ? (
+            <div style={{ marginTop: 8, display: "inline-block", background: "#e6f4ff", color: "#0958d9", border: "1px solid #91caff", borderRadius: 999, padding: "4px 10px", fontWeight: 800 }}>
+              ĐÂY LÀ BÀI KIỂM TRA ĐẦU VÀO
+            </div>
+          ) : null}
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <Link to="/assessments" style={{ textDecoration: "none" }}>
@@ -675,6 +677,12 @@ export default function AssessmentTake() {
               </span>
               <span style={{ color: "#555" }}>{result.status}</span>
             </div>
+
+            {result?.student_level ? (
+              <div style={{ marginTop: 8, color: "#0958d9" }}>
+                Phân loại trình độ: <b>{result.student_level}</b>
+              </div>
+            ) : null}
 
             {pathAssigned && (
               <div style={{ marginTop: 10, padding: 10, borderRadius: 10, background: "#fffbe6", border: "1px solid #ffe58f" }}>

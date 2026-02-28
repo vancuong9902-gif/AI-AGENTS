@@ -4,6 +4,7 @@ import asyncio
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
+import json
 import statistics
 
 from statistics import mean
@@ -29,6 +30,7 @@ from app.models.learning_plan import LearningPlan
 from app.models.quiz_set import QuizSet
 from app.models.student_assignment import StudentAssignment
 from app.models.classroom import Classroom, ClassroomMember
+from app.models.diagnostic_attempt import DiagnosticAttempt
 from app.models.notification import Notification
 from app.models.attempt import Attempt
 from app.models.classroom_assessment import ClassroomAssessment
@@ -239,6 +241,76 @@ def build_personalized_content_plan(
         "exercise_difficulty_mix": exercise_difficulty_mix,
         "personalized_message": personalized_message,
         "teacher_alert": teacher_alert,
+    }
+
+
+def _safe_topic_percentage(value: Any) -> float:
+    pct = _safe_percent(value)
+    return pct * 100.0 if 0.0 < pct <= 1.0 else pct
+
+
+def get_student_progress_comparison(user_id: int, classroom_id: int, db: Session) -> dict[str, Any]:
+    diagnostic = (
+        db.query(DiagnosticAttempt)
+        .join(ClassroomAssessment, ClassroomAssessment.assessment_id == DiagnosticAttempt.assessment_id)
+        .filter(
+            DiagnosticAttempt.user_id == int(user_id),
+            ClassroomAssessment.classroom_id == int(classroom_id),
+            DiagnosticAttempt.stage == "pre",
+        )
+        .order_by(DiagnosticAttempt.created_at.asc())
+        .first()
+    )
+
+    final = (
+        db.query(DiagnosticAttempt)
+        .join(ClassroomAssessment, ClassroomAssessment.assessment_id == DiagnosticAttempt.assessment_id)
+        .filter(
+            DiagnosticAttempt.user_id == int(user_id),
+            ClassroomAssessment.classroom_id == int(classroom_id),
+            DiagnosticAttempt.stage == "post",
+        )
+        .order_by(DiagnosticAttempt.created_at.desc())
+        .first()
+    )
+
+    topic_comparison: list[dict[str, Any]] = []
+    if diagnostic and final:
+        try:
+            diag_topics = json.loads(json.dumps((diagnostic.mastery_json or {}).get("by_topic") or {}))
+        except Exception:
+            diag_topics = {}
+        try:
+            final_topics = json.loads(json.dumps((final.mastery_json or {}).get("by_topic") or {}))
+        except Exception:
+            final_topics = {}
+
+        all_topics = sorted(set(diag_topics.keys()) | set(final_topics.keys()))
+        for topic in all_topics:
+            diag_pct = _safe_topic_percentage(diag_topics.get(topic, 0))
+            final_pct = _safe_topic_percentage(final_topics.get(topic, 0))
+            topic_comparison.append(
+                {
+                    "topic": topic,
+                    "diagnostic_pct": diag_pct,
+                    "final_pct": final_pct,
+                    "improvement": final_pct - diag_pct,
+                    "improved": final_pct > diag_pct,
+                }
+            )
+
+    return {
+        "diagnostic_score": diagnostic.correct_count if diagnostic else None,
+        "diagnostic_pct": diagnostic.score_percent if diagnostic else None,
+        "diagnostic_level": diagnostic.level if diagnostic else None,
+        "final_score": final.correct_count if final else None,
+        "final_pct": final.score_percent if final else None,
+        "final_level": final.level if final else None,
+        "improvement_points": (final.correct_count - diagnostic.correct_count) if (diagnostic and final) else None,
+        "improvement_pct": (final.score_percent - diagnostic.score_percent) if (diagnostic and final) else None,
+        "level_changed": (diagnostic.level != final.level) if (diagnostic and final) else False,
+        "topic_comparison": topic_comparison,
+        "has_final": final is not None,
     }
 
 

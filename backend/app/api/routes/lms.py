@@ -45,6 +45,7 @@ from app.services.lms_service import (
     persist_multidim_profile,
     generate_student_evaluation_report,
     per_student_bloom_analysis,
+    get_student_progress_comparison,
     get_student_homework_results,
     resolve_student_name,
     score_breakdown,
@@ -573,6 +574,12 @@ def student_recommendations(request: Request, student_id: int, db: Session = Dep
         for r in recs
     ]
     return {"request_id": request.state.request_id, "data": {"student_id": student_id, "recommendations": recs, "assignments": assignments}, "error": None}
+
+
+@router.get("/students/{user_id}/progress")
+def student_progress_comparison(request: Request, user_id: int, classroomId: int = Query(..., ge=1), db: Session = Depends(get_db)):
+    data = get_student_progress_comparison(user_id=int(user_id), classroom_id=int(classroomId), db=db)
+    return {"request_id": request.state.request_id, "data": data, "error": None}
 
 
 

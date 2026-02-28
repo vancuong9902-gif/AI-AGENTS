@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -24,6 +25,7 @@ from app.schemas.assessment import (
 )
 from app.services.assessment_service import (
     generate_assessment,
+    generate_diagnostic_assessment,
     get_assessment,
     submit_assessment,
     start_assessment_session,
@@ -170,6 +172,13 @@ def _build_detailed_result(raw: dict) -> dict:
     return {**raw, **detailed}
 
 
+
+
+class DiagnosticGenerateRequest(BaseModel):
+    classroom_id: int
+    topic_ids: list[int] = Field(default_factory=list)
+    difficulty_config: dict[str, int] | None = None
+
 def _check_and_trigger_class_report(db: Session, *, assessment_id: int, user_id: int) -> None:
     _ = user_id
     mapping = (
@@ -258,6 +267,32 @@ def assessments_generate(
             document_ids=payload.document_ids,
             topics=payload.topics,
             kind=payload.kind,
+        )
+        return {"request_id": request.state.request_id, "data": data, "error": None}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+
+
+@router.post("/assessments/generate-diagnostic")
+def assessments_generate_diagnostic(
+    request: Request,
+    payload: DiagnosticGenerateRequest,
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    c = db.query(Classroom).filter(Classroom.id == int(payload.classroom_id)).first()
+    if not c or int(c.teacher_id) != int(teacher.id):
+        raise HTTPException(status_code=404, detail="Classroom not found")
+
+    try:
+        data = generate_diagnostic_assessment(
+            db,
+            teacher_id=int(teacher.id),
+            classroom_id=int(payload.classroom_id),
+            topic_ids=[int(t) for t in (payload.topic_ids or [])],
+            difficulty_config=payload.difficulty_config or {"easy": 5, "medium": 5, "hard": 5},
         )
         return {"request_id": request.state.request_id, "data": data, "error": None}
     except ValueError as e:
@@ -363,6 +398,17 @@ def assessments_submit(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
+
+@router.post("/assessments/quiz-sets/{quiz_set_id}/submit")
+def assessments_submit_quiz_set(
+    request: Request,
+    quiz_set_id: int,
+    payload: AssessmentSubmitRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    return assessments_submit(request=request, assessment_id=quiz_set_id, payload=payload, db=db, user=user)
 
 # -----------------------
 # Teacher endpoints

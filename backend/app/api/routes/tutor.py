@@ -14,6 +14,7 @@ from app.services.tutor_service import get_classroom_tutor_logs, tutor_chat, tut
 router = APIRouter(tags=["tutor"])
 
 
+@router.post("/v1/tutor/chat")
 @router.post("/tutor/chat")
 def chat(request: Request, payload: TutorChatRequest, db: Session = Depends(get_db)):
     data = tutor_chat(
