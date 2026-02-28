@@ -33,6 +33,7 @@ import AgentFlow from "../pages/AgentFlow";
 import TopicDetail from "../pages/TopicDetail";
 import StudentPractice from "../pages/StudentPractice";
 import FinalExam from "../pages/FinalExam";
+import TopicPreview from "../pages/TopicPreview";
 
 export default function AppRoutes() {
   return (
@@ -44,6 +45,15 @@ export default function AppRoutes() {
         element={
           <ProtectedRoute allow={["teacher"]}>
             <Upload />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/documents/:docId/topics/preview"
+        element={
+          <ProtectedRoute allow={["teacher"]}>
+            <TopicPreview />
           </ProtectedRoute>
         }
       />

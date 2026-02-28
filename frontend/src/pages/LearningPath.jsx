@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { apiJson } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import StudentLevelBadge from "../components/StudentLevelBadge";
+import ProgressComparison from "../components/ProgressComparison";
 
 function MarkdownLite({ text }) {
   const blocks = useMemo(() => {
@@ -244,6 +245,7 @@ export default function LearningPath() {
   const [levelDetails, setLevelDetails] = useState(null);
   const [showOnlyMine, setShowOnlyMine] = useState(false);
   const [finalExam, setFinalExam] = useState(null);
+  const [comparison, setComparison] = useState(null);
 
   const currentDay = useMemo(() => {
     return (planDays || []).find((d) => Number(d.day_index) === Number(selectedDay)) || null;
@@ -376,6 +378,14 @@ export default function LearningPath() {
     apiJson(`/v1/students/${userId}/level`)
       .then((d) => setLevelDetails(d || null))
       .catch(() => setLevelDetails(null));
+    const cid = Number(localStorage.getItem("active_classroom_id"));
+    if (!Number.isFinite(cid) || cid <= 0 || !userId) {
+      setComparison(null);
+      return;
+    }
+    apiJson(`/v1/students/${Number(userId)}/progress?classroomId=${cid}`)
+      .then((d) => setComparison(d || null))
+      .catch(() => setComparison(null));
   }, [userId]);
 
   useEffect(() => {
@@ -463,6 +473,12 @@ export default function LearningPath() {
         @keyframes fall { 0% { transform: translateY(-20px) rotate(0deg); } 100% { transform: translateY(180px) rotate(360deg); opacity: 0; } }
       `}</style>
 
+      {comparison ? (
+        <div style={{ marginBottom: 12 }}>
+          <ProgressComparison comparison={comparison} showTopics={false} />
+        </div>
+      ) : null}
+
       <div style={{ ...card, marginBottom: 12, position: "relative", overflow: "hidden" }}>
         {allDone && (
           <div className="confetti-wrap">
@@ -540,7 +556,7 @@ export default function LearningPath() {
                         </div>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-start" }}>
                           <button onClick={() => nav(`/topics/${task?.topic_id || ""}`)} disabled={!task?.topic_id}>📚 Học bài</button>
-                          <button onClick={() => nav(`/practice/${task?.topic_id || ""}`)} disabled={!task?.topic_id}>✏️ Làm bài tập</button>
+                          <button onClick={() => nav(`/practice/${task?.topic_id || ""}`)} disabled={!task?.topic_id}>📝 Làm bài tập</button>
                           <button onClick={() => { setSelectedDay(dayIndex); toggleTask(dayIndex, taskIndex, true); }}>✅ Đánh dấu hoàn thành</button>
                         </div>
                       </div>
