@@ -18,7 +18,7 @@ from app.models.document_chunk import DocumentChunk
 from app.models.document_topic import DocumentTopic
 from app.models.quiz import QuizLegacy
 from app.core.config import settings
-from app.services.document_pipeline import extract_and_chunk
+from app.services.document_pipeline import extract_and_chunk_with_report
 from app.services.topic_service import (
     extract_topics,
     assign_topic_chunk_ranges,
@@ -44,6 +44,17 @@ def _is_pdf(mime_type: str | None, filename: str | None) -> bool:
     fn = str(filename or '').lower()
     return (mt == 'application/pdf') or fn.endswith('.pdf')
 
+
+
+
+def _dynamic_topic_target(full_text: str, estimated_pages: int | None = None) -> float:
+    full_len = len(full_text or '')
+    page_est = int(estimated_pages or 0)
+    if page_est <= 0:
+        page_est = max(1, round(full_len / 2600)) if full_len > 0 else 0
+    target_by_len = round(full_len / 12000) if full_len > 0 else 12
+    target_by_page = round(page_est / 2.2) if page_est > 0 else 12
+    return float(max(12, min(60, max(target_by_len, target_by_page))))
 
 def _extract_topics_doc_auto(
     full_text: str,
@@ -131,12 +142,16 @@ def _extract_topics_doc_auto(
                 chap_title += 1
         bad_title_ratio = bad_title / max(1, n)
         chap_ratio = chap_title / max(1, n)
-        # Target: ~8-25 topics for textbooks (Thea-like), low small-topic ratio, decent average length.
-        target = 14.0
-        n_penalty = abs(n - target) / target
-        # Extra penalty if there are far too many topics (usually outline fragments).
-        too_many = 1.0 if n > 28 else 0.0
-        return (avg / 2200.0) - (2.4 * small) - (1.25 * n_penalty) - (1.6 * bad_title_ratio) - (1.0 * too_many) + (0.25 * chap_ratio)
+
+        full_len = len(full_text or '')
+        page_est = max(1, round(full_len / 2600)) if full_len > 0 else 0
+        target = _dynamic_topic_target(full_text, estimated_pages=page_est)
+
+        n_penalty = abs(n - target) / max(12.0, target)
+        long_doc = full_len >= 180_000 or page_est >= 70
+        too_many_threshold = 45 if long_doc else 28
+        too_many = 1.0 if n > too_many_threshold else 0.0
+        return (avg / 2200.0) - (2.2 * small) - (1.05 * n_penalty) - (1.55 * bad_title_ratio) - (0.6 * too_many) + (0.22 * chap_ratio)
 
     s_topic = _score(obj_topic)
     s_chap = _score(obj_chapter)
@@ -777,7 +792,7 @@ async def upload_document(
     ensure_user_exists(db, int(user_id), role="teacher")
 
     parsed_tags = _parse_tags(tags)
-    full_text, chunks = await extract_and_chunk(file)
+    full_text, chunks, pdf_report = await extract_and_chunk_with_report(file)
 
     doc = Document(
         user_id=user_id,
@@ -955,6 +970,7 @@ async def upload_document(
             'topics_reason': topics_reason,
             'topics_quality': topics_quality,
             'topics': topics_payload,
+            'pdf_report': pdf_report,
             **vector_info,
             'vector_status': vector_store.status(),
         },

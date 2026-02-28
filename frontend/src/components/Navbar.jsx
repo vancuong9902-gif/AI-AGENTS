@@ -1,36 +1,27 @@
-import { Link } from "react-router-dom";
-import { useAuth } from "../context/AuthContext";
+import { NavLink, useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 
 export default function Navbar() {
-  const { role, userId } = useAuth();
+  const { role, userId, logout } = useAuth();
+  const nav = useNavigate();
+  const student = [
+    ['/classrooms','Lớp học'], ['/assessments','Bài tổng hợp'], ['/learning-path','Learning Path'], ['/tutor','Tutor AI'], ['/analytics','Analytics'],
+  ];
+  const teacher = [
+    ['/upload','Upload'], ['/teacher/files','Thư viện tài liệu'], ['/teacher/classrooms','Lớp học'], ['/teacher/assessments','Quản lý bài'], ['/teacher/progress','Progress'], ['/teacher/analytics','Analytics'], ['/teacher/infra','Infra'],
+  ];
+  const items = role === 'teacher' ? teacher : role === 'student' ? student : [];
 
   return (
-    <nav style={{ display: "flex", gap: 16, alignItems: "center", padding: 12, borderBottom: "1px solid #eee" }}>
-      <Link to="/">Login</Link>
-      <span style={{ color: "#666" }}>ID: {userId ?? 1}</span>
-
-      {role === "student" && (
-        <>
-          <Link to="/classrooms">🏫 Lớp học</Link>
-          <Link to="/assessments">📝 Bài tổng hợp</Link>
-          <Link to="/learning-path">📌 Learning Path</Link>
-          <Link to="/tutor">🤖 Tutor (Hỏi đáp)</Link>
-          <Link to="/analytics">📊 Analytics</Link>
-        </>
-      )}
-
-      {role === "teacher" && (
-        <>
-          <Link to="/teacher/classrooms">🏫 Lớp học</Link>
-          <Link to="/upload">📤 Upload</Link>
-          <Link to="/teacher/assessments">👩‍🏫 Quản lý bài tổng hợp</Link>
-          <Link to="/teacher/progress">📈 Progress Dashboard</Link>
-          <Link to="/teacher/analytics">📊 Analytics Dashboard</Link>
-          <Link to="/teacher/infra">⚙️ Infra (Jobs/Drift)</Link>
-          <Link to="/teacher/files">📚 Thư viện file</Link>
-        </>
-      )}
-      <Link to="/health">Health</Link>
-    </nav>
+    <>
+      <div className='brand'>🎓 AI-Agents LMS</div>
+      <div className='nav-section'>
+        <NavLink className={({isActive})=>`nav-item ${isActive ? 'active' : ''}`} to='/'>Đăng nhập</NavLink>
+        {items.map(([to,label]) => <NavLink key={to} className={({isActive})=>`nav-item ${isActive ? 'active' : ''}`} to={to}>{label}</NavLink>)}
+        <NavLink className={({isActive})=>`nav-item ${isActive ? 'active' : ''}`} to='/health'>Health</NavLink>
+      </div>
+      <div style={{marginTop:16,fontSize:13,color:'var(--muted)'}}>Role: <b>{role || 'guest'}</b> · User ID: <b>{userId ?? 1}</b></div>
+      <button className='logout-btn' style={{marginTop:10}} onClick={()=>{ logout(); nav('/'); }}>Logout</button>
+    </>
   );
 }

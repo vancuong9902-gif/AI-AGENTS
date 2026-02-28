@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Tuple, Optional
 from fastapi import UploadFile
 
 from app.core.config import settings
-from app.services.text_repair import repair_ocr_spacing_line
+from app.services.text_repair import repair_ocr_spacing_line, repair_ocr_spacing_text, fix_eth_d
 
 
 # Postgres TEXT/VARCHAR cannot contain NUL (\x00) bytes.
@@ -23,6 +23,17 @@ def _sanitize_text(text: str) -> str:
     # Replace control chars (including NUL) with spaces, keep \t \n \r.
     text = _CTRL_RE.sub(" ", text)
     return text
+
+
+def _normalize_pipeline_text(text: str) -> str:
+    """Normalize extracted text for stable Vietnamese display/storage."""
+    if not text:
+        return ""
+    text = _sanitize_text(text)
+    text = unicodedata.normalize("NFKC", text)
+    text = fix_eth_d(text)
+    text = repair_ocr_spacing_text(text)
+    return _sanitize_text(text)
 
 
 # Some PDFs insert soft hyphens or glue single-letter variables into words.
@@ -104,7 +115,7 @@ def _clean_pdf_page_text(text: str) -> str:
         if any(pat.match(line) for pat in _PDF_FOOTER_PATTERNS):
             continue
         lines.append(line)
-    return "\n".join(lines).strip()
+    return _normalize_pipeline_text("\n".join(lines).strip())
 
 
 def _extract_text_pdf_ocr(data: bytes) -> Tuple[str, List[Dict[str, Any]]]:
@@ -182,7 +193,7 @@ def _extract_text_pdf_ocr(data: bytes) -> Tuple[str, List[Dict[str, Any]]]:
         for ch in _chunk_text(page_text):
             pages_out.append({"text": ch, "meta": {"page": idx + 1, "ocr": True, "ocr_backend": ocr_backend}})
 
-    full_text = _sanitize_text("\n\n".join(full_parts))
+    full_text = _normalize_pipeline_text("\n\n".join(full_parts))
     return full_text, pages_out
 
 
@@ -191,17 +202,44 @@ def _is_probable_toc(page_text: str) -> bool:
     if not page_text:
         return False
     low = page_text.lower()
-    if _TOC_HINT_RE.search(low):
-        return True
-    # If it contains many occurrences of "chương" and is mostly short lines, it is likely TOC
-    chuong = low.count("chương")
-    if chuong >= 3 and len(page_text) < 2500:
-        return True
-    # High density of numbers and dotted leaders often indicates TOC
+    lines = [ln.strip() for ln in page_text.splitlines() if ln.strip()]
+    if not lines:
+        return False
+    short_lines = sum(1 for ln in lines if len(ln) <= 80) / max(1, len(lines))
+    dotted_lines = sum(1 for ln in lines if _DOTS_LEADER_RE.search(ln)) / max(1, len(lines))
     digits = sum(ch.isdigit() for ch in page_text)
-    if digits / max(1, len(page_text)) > 0.22 and _DOTS_LEADER_RE.search(page_text):
+    digit_ratio = digits / max(1, len(page_text))
+    chapter_hits = low.count("chương") + low.count("chapter")
+    has_toc_hint = bool(_TOC_HINT_RE.search(low))
+
+    # Require stronger combined signals to reduce false positives from normal content lines.
+    if has_toc_hint and dotted_lines >= 0.18 and short_lines >= 0.55:
+        return True
+    if has_toc_hint and chapter_hits >= 3 and short_lines >= 0.55:
+        return True
+    if dotted_lines >= 0.30 and short_lines >= 0.65 and digit_ratio >= 0.08:
         return True
     return False
+
+
+def _candidate_page_coverage(chunks: List[Dict[str, Any]], total_pages: int | None = None) -> float:
+    pages = []
+    for ch in chunks or []:
+        meta = (ch or {}).get("meta") or {}
+        p = meta.get("page")
+        try:
+            if p is not None:
+                pages.append(int(p))
+        except Exception:
+            continue
+    if not pages:
+        return 0.0
+    unique = len(set(pages))
+    max_page = max(pages)
+    cov_pages = max(unique, max_page)
+    if total_pages and int(total_pages) > 0:
+        return min(1.0, cov_pages / float(total_pages))
+    return float(cov_pages)
 
 def _chunk_text(text: str, chunk_size: int = 900, overlap: int = 120) -> List[str]:
     """Smart chunking that avoids breaking across topic/section boundaries.
@@ -370,7 +408,7 @@ def _extract_text_pdf_pypdf(data: bytes) -> Tuple[str, List[Dict[str, Any]]]:
         for ch in _chunk_text(page_text):
             pages_out.append({"text": ch, "meta": {"page": idx + 1}})
 
-    full_text = _sanitize_text("\n\n".join(full_parts))
+    full_text = _normalize_pipeline_text("\n\n".join(full_parts))
     return full_text, pages_out
 
 
@@ -394,7 +432,7 @@ def _extract_text_pdf_pymupdf(data: bytes) -> Tuple[str, List[Dict[str, Any]]]:
         for ch in _chunk_text(page_text):
             pages_out.append({"text": ch, "meta": {"page": idx + 1}})
 
-    full_text = _sanitize_text("\n\n".join(full_parts))
+    full_text = _normalize_pipeline_text("\n\n".join(full_parts))
     return full_text, pages_out
 
 
@@ -446,7 +484,7 @@ def _extract_text_pdf_pymupdf_words(data: bytes) -> Tuple[str, List[Dict[str, An
         for ch in _chunk_text(page_text):
             pages_out.append({"text": ch, "meta": {"page": idx + 1}})
 
-    full_text = _sanitize_text("\n\n".join(full_parts))
+    full_text = _normalize_pipeline_text("\n\n".join(full_parts))
     return full_text, pages_out
 
 
@@ -464,6 +502,40 @@ def _extract_text_pdf_pdfplumber(data: bytes) -> Tuple[str, List[Dict[str, Any]]
     with pdfplumber.open(io.BytesIO(data)) as pdf:
         for idx, page in enumerate(pdf.pages):
             raw_text = page.extract_text() or ""
+
+            # Sparse text often indicates complex multi-column layouts; try alternate extractors.
+            sparse = len((raw_text or "").strip()) < 220
+            if sparse:
+                candidates = [raw_text or ""]
+                for kwargs in (
+                    {"use_text_flow": True},
+                    {"layout": True},
+                    {"x_tolerance": 1.5, "y_tolerance": 2.0},
+                    {"use_text_flow": True, "x_tolerance": 1.5, "y_tolerance": 2.0},
+                ):
+                    try:
+                        alt = page.extract_text(**kwargs) or ""
+                        if alt:
+                            candidates.append(alt)
+                    except Exception:
+                        continue
+
+                try:
+                    from app.services.text_quality import quality_score
+                except Exception:
+                    quality_score = None  # type: ignore
+
+                best = raw_text or ""
+                best_s = -1e9
+                for cand in candidates:
+                    cleaned = _clean_pdf_page_text(cand)
+                    q = float(quality_score(cleaned)) if quality_score else 0.0
+                    s = (0.65 * len(cleaned)) + (200.0 * q)
+                    if s > best_s:
+                        best_s = s
+                        best = cand
+                raw_text = best
+
             page_text = _clean_pdf_page_text(raw_text)
             if not page_text:
                 continue
@@ -473,12 +545,16 @@ def _extract_text_pdf_pdfplumber(data: bytes) -> Tuple[str, List[Dict[str, Any]]
             for ch in _chunk_text(page_text):
                 pages_out.append({"text": ch, "meta": {"page": idx + 1}})
 
-    full_text = _sanitize_text("\n\n".join(full_parts))
+    full_text = _normalize_pipeline_text("\n\n".join(full_parts))
     return full_text, pages_out
 
 
-def _pick_best_pdf_extraction(candidates: List[Tuple[str, str, List[Dict[str, Any]]]]) -> Optional[Tuple[str, List[Dict[str, Any]]]]:
-    """Pick the best extraction by text quality first, then by length."""
+def _pick_best_pdf_extraction(
+    candidates: List[Tuple[str, str, List[Dict[str, Any]]]],
+    *,
+    total_pages: int | None = None,
+) -> Optional[Tuple[str, List[Dict[str, Any]], Dict[str, Any]]]:
+    """Pick best extraction with completeness-aware scoring."""
     if not candidates:
         return None
 
@@ -488,20 +564,57 @@ def _pick_best_pdf_extraction(candidates: List[Tuple[str, str, List[Dict[str, An
         # If quality module is unavailable for some reason, fall back to longest text.
         quality_score = None  # type: ignore
 
-    scored = []
+    scored: List[Dict[str, Any]] = []
     for name, full_text, chunks in candidates:
         if quality_score:
             s = float(quality_score(full_text))
         else:
             s = 0.0
-        scored.append((s, len(full_text or ""), name, full_text, chunks))
+        scored.append(
+            {
+                "name": name,
+                "quality_score": s,
+                "char_len": len(full_text or ""),
+                "full_text": full_text,
+                "chunks": chunks,
+                "chunk_count": len(chunks or []),
+                "page_coverage": _candidate_page_coverage(chunks, total_pages=total_pages),
+            }
+        )
 
-    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
-    _, _, _, full_text, chunks = scored[0]
-    return full_text, chunks
+    best_cov = max((float(x["page_coverage"]) for x in scored), default=0.0)
+    best_len = max((int(x["char_len"]) for x in scored), default=1)
+    coverage_gate = float(getattr(settings, "PDF_EXTRACT_MIN_COVERAGE_RATIO", 0.83) or 0.83)
+    eligible = [x for x in scored if best_cov <= 0 or float(x["page_coverage"]) >= (best_cov * coverage_gate)]
+    if not eligible:
+        eligible = scored
+
+    for x in eligible:
+        q = float(x["quality_score"])
+        cov_ratio = float(x["page_coverage"]) / max(best_cov, 1e-9) if best_cov > 0 else 1.0
+        len_ratio = float(x["char_len"]) / max(1.0, float(best_len))
+        x["completeness_weighted_score"] = (0.38 * q) + (0.47 * cov_ratio) + (0.15 * len_ratio)
+
+    eligible.sort(key=lambda x: (x["completeness_weighted_score"], x["quality_score"], x["char_len"]), reverse=True)
+    chosen = eligible[0]
+    report = {
+        "chosen_extractor": chosen["name"],
+        "candidates": [
+            {
+                "name": x["name"],
+                "quality_score": round(float(x["quality_score"]), 4),
+                "char_len": int(x["char_len"]),
+                "page_coverage": round(float(x["page_coverage"]), 4),
+                "chunk_count": int(x["chunk_count"]),
+                "completeness_weighted_score": round(float(x.get("completeness_weighted_score", 0.0)), 4),
+            }
+            for x in scored
+        ],
+    }
+    return chosen["full_text"], chosen["chunks"], report
 
 
-def _extract_text_pdf(data: bytes) -> Tuple[str, List[Dict[str, Any]]]:
+def _extract_text_pdf_with_report(data: bytes) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
     """Extract PDF text with multiple strategies and pick best.
 
     Priority per user request:
@@ -511,6 +624,14 @@ def _extract_text_pdf(data: bytes) -> Tuple[str, List[Dict[str, Any]]]:
       4) OCR (only when text-layer quality is too low)
     """
     candidates: List[Tuple[str, str, List[Dict[str, Any]]]] = []
+    total_pages = None
+    try:
+        import fitz
+
+        doc = fitz.open(stream=data, filetype="pdf")
+        total_pages = len(doc)
+    except Exception:
+        total_pages = None
 
     # 1) pdfplumber (preferred)
     try:
@@ -545,15 +666,19 @@ def _extract_text_pdf(data: bytes) -> Tuple[str, List[Dict[str, Any]]]:
         except Exception:
             pass
 
-    picked = _pick_best_pdf_extraction(candidates)
+    picked = _pick_best_pdf_extraction(candidates, total_pages=total_pages)
     if not picked:
         # last resort OCR
         ocr_text, ocr_chunks = _extract_text_pdf_ocr(data)
         if ocr_text.strip():
-            return ocr_text, ocr_chunks
-        return "", []
+            return ocr_text, ocr_chunks, {
+                "chosen_extractor": "ocr",
+                "ocr_used": True,
+                "candidates": [{"name": "ocr", "quality_score": None, "char_len": len(ocr_text), "page_coverage": _candidate_page_coverage(ocr_chunks, total_pages=total_pages), "chunk_count": len(ocr_chunks)}],
+            }
+        return "", [], {"chosen_extractor": None, "ocr_used": False, "candidates": []}
 
-    best_text, best_chunks = picked
+    best_text, best_chunks, report = picked
 
     # OCR trigger when extracted text is likely garbled or too sparse
     try:
@@ -579,11 +704,19 @@ def _extract_text_pdf(data: bytes) -> Tuple[str, List[Dict[str, Any]]]:
         ocr_text, ocr_chunks = _extract_text_pdf_ocr(data)
         if ocr_text.strip():
             cand2 = candidates + [("ocr", ocr_text, ocr_chunks)]
-            picked2 = _pick_best_pdf_extraction(cand2)
+            picked2 = _pick_best_pdf_extraction(cand2, total_pages=total_pages)
             if picked2:
-                return picked2
+                txt2, chunks2, report2 = picked2
+                report2["ocr_used"] = bool(report2.get("chosen_extractor") == "ocr")
+                return txt2, chunks2, report2
 
-    return best_text, best_chunks
+    report["ocr_used"] = False
+    return best_text, best_chunks, report
+
+
+def _extract_text_pdf(data: bytes) -> Tuple[str, List[Dict[str, Any]]]:
+    text, chunks, _ = _extract_text_pdf_with_report(data)
+    return text, chunks
 
 
 def _extract_text_docx(data: bytes) -> Tuple[str, List[Dict[str, Any]]]:
@@ -623,7 +756,7 @@ def _extract_text_pptx(data: bytes) -> Tuple[str, List[Dict[str, Any]]]:
         for ch in _chunk_text(slide_text):
             chunks.append({"text": ch, "meta": {"slide": s_idx + 1}})
 
-    return _sanitize_text("\n\n".join(slide_texts)), chunks
+    return _normalize_pipeline_text("\n\n".join(slide_texts)), chunks
 
 
 def _extract_text_fallback(data: bytes) -> Tuple[str, List[Dict[str, Any]]]:
@@ -641,7 +774,8 @@ async def extract_and_chunk(file: UploadFile) -> Tuple[str, List[Dict[str, Any]]
     fname = (file.filename or "").lower()
 
     if ctype == "application/pdf" or fname.endswith(".pdf"):
-        return _extract_text_pdf(data)
+        text, chunks, _ = _extract_text_pdf_with_report(data)
+        return text, chunks
     if ctype in {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/msword",
@@ -654,3 +788,28 @@ async def extract_and_chunk(file: UploadFile) -> Tuple[str, List[Dict[str, Any]]
         return _extract_text_pptx(data)
 
     return _extract_text_fallback(data)
+
+
+async def extract_and_chunk_with_report(file: UploadFile) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any] | None]:
+    """Extract text/chunks and include additive extraction report for PDFs."""
+    data = await file.read()
+    ctype = (file.content_type or "").lower()
+    fname = (file.filename or "").lower()
+    if ctype == "application/pdf" or fname.endswith(".pdf"):
+        text, chunks, report = _extract_text_pdf_with_report(data)
+        return text, chunks, report
+
+    if ctype in {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/msword",
+    } or fname.endswith(".docx"):
+        text, chunks = _extract_text_docx(data)
+        return text, chunks, None
+    if ctype in {
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.ms-powerpoint",
+    } or fname.endswith(".pptx"):
+        text, chunks = _extract_text_pptx(data)
+        return text, chunks, None
+    text, chunks = _extract_text_fallback(data)
+    return text, chunks, None
