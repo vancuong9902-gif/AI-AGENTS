@@ -76,6 +76,40 @@ export default function AssessmentTake() {
     return buckets;
   }, [result]);
 
+  const groupedQuestions = useMemo(() => {
+    const questions = data?.questions || [];
+
+    const classifyByPoints = (q) => {
+      const points = Number(q?.max_points || 0);
+      if (points <= 2) return "easy";
+      if (points <= 5) return "medium";
+      return "hard";
+    };
+
+    const classify = (q) => {
+      const bloom = String(q?.bloom_level || "").toLowerCase();
+
+      if (["remember", "understand"].includes(bloom)) return "easy";
+      if (["apply", "analyze"].includes(bloom)) return "medium";
+      if (["evaluate", "create"].includes(bloom) || q?.type === "essay") return "hard";
+
+      return classifyByPoints(q);
+    };
+
+    const easy = [];
+    const medium = [];
+    const hard = [];
+
+    for (const q of questions) {
+      const bucket = classify(q);
+      if (bucket === "easy") easy.push(q);
+      else if (bucket === "medium") medium.push(q);
+      else hard.push(q);
+    }
+
+    return { easy, medium, hard };
+  }, [data]);
+
   const weakestTopic = useMemo(() => {
     const topicMap = {};
     for (const item of result?.answer_review || []) {
@@ -199,7 +233,7 @@ export default function AssessmentTake() {
             },
           });
           setPathAssigned(true);
-        } catch (_) {
+        } catch {
           setPathAssigned(false);
         }
       }
@@ -237,6 +271,82 @@ export default function AssessmentTake() {
       </div>
     );
   };
+
+  const sectionMeta = {
+    easy: {
+      id: "section-easy",
+      className: "easy",
+      title: "PHẦN I: CÂU HỎI CƠ BẢN",
+      label: "🟢 CƠ BẢN",
+      color: "#52c41a",
+      bg: "#f6ffed",
+      questions: groupedQuestions.easy,
+    },
+    medium: {
+      id: "section-medium",
+      className: "medium",
+      title: "PHẦN II: CÂU HỎI VẬN DỤNG",
+      label: "🟡 VẬN DỤNG",
+      color: "#fa8c16",
+      bg: "#fff7e6",
+      questions: groupedQuestions.medium,
+    },
+    hard: {
+      id: "section-hard",
+      className: "hard",
+      title: "PHẦN III: CÂU HỎI NÂNG CAO",
+      label: "🔴 NÂNG CAO",
+      color: "#f5222d",
+      bg: "#fff1f0",
+      questions: groupedQuestions.hard,
+    },
+  };
+
+  const renderQuestionCard = (q, orderNo) => (
+    <div
+      key={q.question_id}
+      style={{ background: "#fff", borderRadius: 12, padding: 12, boxShadow: "0 2px 10px rgba(0,0,0,0.06)" }}
+    >
+      <div style={{ fontWeight: 700, marginBottom: 6 }}>
+        Câu {orderNo} ({q.type === "mcq" ? "Trắc nghiệm" : "Tự luận"})
+        {Number(q?.estimated_minutes || 0) > 0 ? (
+          <span style={{ fontWeight: 500, color: "#666" }}> • ~{q.estimated_minutes} phút</span>
+        ) : null}
+      </div>
+      <div style={{ whiteSpace: "pre-wrap" }}>{q.stem}</div>
+
+      {q.type === "mcq" && (
+        <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+          {(q.options || []).map((op, i) => (
+            <label key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+              <input
+                type="radio"
+                name={`q_${q.question_id}`}
+                checked={(answers[q.question_id]?.answer_index ?? null) === i}
+                onChange={() => setMcq(q.question_id, i)}
+                disabled={!!result}
+              />
+              <span>{op}</span>
+            </label>
+          ))}
+        </div>
+      )}
+
+      {q.type === "essay" && (
+        <div style={{ marginTop: 10 }}>
+          <textarea
+            rows={5}
+            value={answers[q.question_id]?.answer_text ?? ""}
+            onChange={(e) => setEssay(q.question_id, e.target.value)}
+            placeholder="Nhập câu trả lời tự luận..."
+            style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd" }}
+            disabled={!!result}
+          />
+          <div style={{ color: "#666", marginTop: 6 }}>Thang điểm: {q.max_points || 10} (AI sẽ chấm theo rubric)</div>
+        </div>
+      )}
+    </div>
+  );
 
   if (loading) {
     return (
@@ -320,52 +430,65 @@ export default function AssessmentTake() {
         <div style={{ marginTop: 12, color: "#666" }}>Đã trả lời: {answeredCount}/{data?.questions?.length || 0}</div>
       )}
 
+      <div
+        style={{
+          position: "sticky",
+          top: 8,
+          zIndex: 5,
+          marginTop: 12,
+          background: "#fff",
+          border: "1px solid #eee",
+          borderRadius: 10,
+          padding: "8px 12px",
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 12,
+        }}
+      >
+        <a href={`#${sectionMeta.easy.id}`} style={{ color: sectionMeta.easy.color, fontWeight: 700, textDecoration: "none" }}>
+          {sectionMeta.easy.label} ({sectionMeta.easy.questions.length})
+        </a>
+        <a href={`#${sectionMeta.medium.id}`} style={{ color: sectionMeta.medium.color, fontWeight: 700, textDecoration: "none" }}>
+          {sectionMeta.medium.label} ({sectionMeta.medium.questions.length})
+        </a>
+        <a href={`#${sectionMeta.hard.id}`} style={{ color: sectionMeta.hard.color, fontWeight: 700, textDecoration: "none" }}>
+          {sectionMeta.hard.label} ({sectionMeta.hard.questions.length})
+        </a>
+      </div>
+
       <div style={{ display: "grid", gap: 14, marginTop: 12 }}>
-        {(data?.questions || []).map((q, idx) => (
-          <div
-            key={q.question_id}
-            style={{ background: "#fff", borderRadius: 12, padding: 12, boxShadow: "0 2px 10px rgba(0,0,0,0.06)" }}
-          >
-            <div style={{ fontWeight: 700, marginBottom: 6 }}>
-              Câu {idx + 1} ({q.type === "mcq" ? "Trắc nghiệm" : "Tự luận"})
-              {Number(q?.estimated_minutes || 0) > 0 ? (
-                <span style={{ fontWeight: 500, color: "#666" }}> • ~{q.estimated_minutes} phút</span>
-              ) : null}
+        {[
+          ["easy", sectionMeta.easy],
+          ["medium", sectionMeta.medium],
+          ["hard", sectionMeta.hard],
+        ].map(([sectionKey, section]) => (
+          <div key={sectionKey} id={section.id}>
+            <div
+              className={`section-header ${section.className}`}
+              style={{
+                background: section.bg,
+                border: `1px solid ${section.color}`,
+                color: section.color,
+                borderRadius: 4,
+                padding: "8px 12px",
+                margin: "16px 0",
+                fontWeight: 800,
+                display: "flex",
+                justifyContent: "space-between",
+                flexWrap: "wrap",
+                gap: 8,
+              }}
+            >
+              <span>{section.title} ({section.questions.length} câu)</span>
+              <span>{section.label}</span>
             </div>
-            <div style={{ whiteSpace: "pre-wrap" }}>{q.stem}</div>
 
-            {q.type === "mcq" && (
-              <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-                {(q.options || []).map((op, i) => (
-                  <label key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-                    <input
-                      type="radio"
-                      name={`q_${q.question_id}`}
-                      checked={(answers[q.question_id]?.answer_index ?? null) === i}
-                      onChange={() => setMcq(q.question_id, i)}
-                      disabled={!!result}
-                    />
-                    <span>{op}</span>
-                  </label>
-                ))}
-              </div>
-            )}
-
-            {q.type === "essay" && (
-              <div style={{ marginTop: 10 }}>
-                <textarea
-                  rows={5}
-                  value={answers[q.question_id]?.answer_text ?? ""}
-                  onChange={(e) => setEssay(q.question_id, e.target.value)}
-                  placeholder="Nhập câu trả lời tự luận..."
-                  style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd" }}
-                  disabled={!!result}
-                />
-                <div style={{ color: "#666", marginTop: 6 }}>
-                  Thang điểm: {q.max_points || 10} (AI sẽ chấm theo rubric)
-                </div>
-              </div>
-            )}
+            <div style={{ display: "grid", gap: 14 }}>
+              {section.questions.map((q) => {
+                const orderNo = (data?.questions || []).findIndex((it) => it.question_id === q.question_id) + 1;
+                return renderQuestionCard(q, orderNo);
+              })}
+            </div>
           </div>
         ))}
       </div>
