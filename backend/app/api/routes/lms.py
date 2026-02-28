@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import tempfile
 from collections import defaultdict
 from datetime import datetime, timezone
-import asyncio
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -756,7 +757,69 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
     }
 
 
+def _render_teacher_report_html(report: dict[str, object]) -> str:
+    students = report.get("students") or []
+    rows = []
+    for s in students:
+        ai = s.get("ai_evaluation") or {}
+        topic_scores = s.get("topic_scores") or {}
+        topic_text = ", ".join(f"{k}: {v}" for k, v in topic_scores.items()) or "N/A"
+        rows.append(
+            f"""
+            <tr>
+              <td>{s.get('name')}</td>
+              <td>{s.get('diagnostic_score')}</td>
+              <td>{s.get('final_score')}</td>
+              <td>{s.get('improvement_pct')}</td>
+              <td>{s.get('level')}</td>
+              <td>{topic_text}</td>
+              <td>{ai.get('summary', '')}</td>
+            </tr>
+            """
+        )
+
+    class_summary = report.get("class_summary") or {}
+    return f"""
+    <html>
+      <head>
+        <meta charset='utf-8' />
+        <title>Teacher Report</title>
+        <style>
+          body {{ font-family: Arial, sans-serif; margin: 24px; color: #1f2937; }}
+          h1 {{ margin-bottom: 4px; }}
+          .meta {{ color: #4b5563; margin-bottom: 16px; }}
+          .summary {{ background: #f3f4f6; padding: 12px; border-radius: 8px; margin-bottom: 16px; }}
+          table {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
+          th, td {{ border: 1px solid #e5e7eb; padding: 8px; vertical-align: top; }}
+          th {{ background: #f9fafb; text-align: left; }}
+        </style>
+      </head>
+      <body>
+        <h1>Báo cáo giáo viên - Lớp {report.get('classroom_id')}</h1>
+        <div class='meta'>Generated at: {report.get('generated_at')}</div>
+        <div class='summary'>
+          <b>Đánh giá tổng quan:</b> {class_summary.get('overall_assessment', '')}<br/>
+          <b>Avg improvement:</b> {class_summary.get('avg_improvement', 0)}<br/>
+          <b>Top performers:</b> {', '.join(class_summary.get('top_performers') or []) or 'N/A'}<br/>
+          <b>Needs attention:</b> {', '.join(class_summary.get('needs_attention') or []) or 'N/A'}
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Học sinh</th><th>Đầu vào</th><th>Cuối kỳ</th><th>Cải thiện (%)</th><th>Mức</th><th>Topic scores</th><th>AI nhận xét</th>
+            </tr>
+          </thead>
+          <tbody>
+            {''.join(rows)}
+          </tbody>
+        </table>
+      </body>
+    </html>
+    """
+
+
 @router.get("/lms/teacher/report/{classroom_id}/export")
+@router.get("/v1/lms/teacher/report/{classroom_id}/export")
 def export_teacher_report(
     request: Request,
     classroom_id: int,
@@ -764,8 +827,13 @@ def export_teacher_report(
     db: Session = Depends(get_db),
 ):
     export_format = str(format or "pdf").strip().lower()
+    report = build_teacher_report(db=db, classroom_id=int(classroom_id))
+
+    if export_format == "html":
+        return HTMLResponse(content=_render_teacher_report_html(report), media_type="text/html; charset=utf-8")
+
     if export_format != "pdf":
-        raise HTTPException(status_code=400, detail="Only pdf format is supported")
+        raise HTTPException(status_code=400, detail="Only html and pdf formats are supported")
 
     student_count = (
         db.query(ClassroomMember)
@@ -784,7 +852,13 @@ def export_teacher_report(
             "error": None,
         }
 
+    html = _render_teacher_report_html(report)
+    with tempfile.NamedTemporaryFile(prefix=f"classroom_{classroom_id}_", suffix=".html", delete=False, mode="w", encoding="utf-8") as f:
+        f.write(html)
+        html_path = f.name
+
     pdf_path = build_classroom_report_pdf(classroom_id=int(classroom_id), db=db)
+    Path(html_path).unlink(missing_ok=True)
     return FileResponse(pdf_path, media_type="application/pdf", filename=f"classroom_{classroom_id}_report.pdf")
 
 
