@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -23,11 +23,16 @@ class DocumentTopic(Base):
 
     topic_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
     keywords: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
+    needs_review: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    extraction_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
     # Optional chunk-range mapping (by chunk_index). Helps later: filter chunks for a topic.
     start_chunk_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     end_chunk_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    page_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    page_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
