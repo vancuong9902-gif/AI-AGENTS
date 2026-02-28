@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { apiJson } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
+import Result from "./Result";
 
 export default function AssessmentTake() {
   const { id } = useParams();
@@ -437,6 +438,29 @@ export default function AssessmentTake() {
     return (
       <div style={{ maxWidth: 900, margin: "0 auto", padding: 16 }}>
         <h2>Đang tải…</h2>
+      </div>
+    );
+  }
+
+  if (result) {
+    return (
+      <div style={{ maxWidth: 980, margin: "0 auto", padding: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+          <Link to="/assessments" style={{ textDecoration: "none" }}>
+            <button style={{ padding: "8px 12px" }}>⬅ Danh sách</button>
+          </Link>
+          <button onClick={load} style={{ padding: "8px 12px" }}>Làm lại</button>
+        </div>
+        <Result
+          result={result}
+          quizType={String(result?.assessment_kind || data?.kind || "").toLowerCase() === "final_exam" ? "final" : "diagnostic"}
+          diagnosticScore={Number((result?.score || 0) - (result?.improvement_vs_diagnostic || 0))}
+        />
+        {pathAssigned && (
+          <div style={{ marginTop: 12, padding: 10, borderRadius: 10, background: "#fffbe6", border: "1px solid #ffe58f" }}>
+            🎯 Dựa trên kết quả, hệ thống đã tạo lộ trình học tập phù hợp cho bạn!
+          </div>
+        )}
       </div>
     );
   }
