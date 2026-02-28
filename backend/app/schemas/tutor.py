@@ -29,7 +29,10 @@ class TutorChatData(BaseModel):
     was_answered: bool = True
     is_off_topic: bool = False
     refusal_message: Optional[str] = None
+    refusal_reason: Optional[str] = None
     off_topic_reason: Optional[str] = None
+    sources_used: List[str] = Field(default_factory=list)
+    confidence: float = 0.8
     suggested_topics: List[str] = Field(default_factory=list)
     follow_up_questions: List[str] = Field(default_factory=list)
     quick_check_mcq: List[Dict[str, Any]] = Field(default_factory=list)
