@@ -40,6 +40,51 @@ def build_personalized_content_plan(
     )
 
 
+def create_learning_plan(
+    db: Session,
+    *,
+    user_id: int,
+    classroom_id: int | None,
+    level: str,
+    weak_topics: List[str] | None = None,
+    teacher_id: int | None = None,
+) -> Dict[str, Any]:
+    """Create a lightweight learning plan payload from diagnostic results."""
+
+    from app.services.learning_plan_storage_service import save_teacher_plan
+
+    assigned_topic = next((str(t).strip() for t in (weak_topics or []) if str(t).strip()), None)
+    days_total = int(getattr(settings, "LEARNING_PLAN_DAYS", 7) or 7)
+    minutes_per_day = int(getattr(settings, "LEARNING_PLAN_MINUTES_PER_DAY", 35) or 35)
+
+    teacher_plan = build_teacher_learning_plan(
+        db,
+        user_id=int(user_id),
+        teacher_id=int(teacher_id or settings.DEFAULT_TEACHER_ID or 1),
+        level=str(level or "beginner"),
+        assigned_topic=assigned_topic,
+        modules=[],
+        days=days_total,
+        minutes_per_day=minutes_per_day,
+    )
+    payload = teacher_plan.model_dump()
+    payload["weak_topics"] = [str(t) for t in (weak_topics or []) if str(t).strip()]
+
+    row = save_teacher_plan(
+        db,
+        user_id=int(user_id),
+        teacher_id=int(teacher_id or settings.DEFAULT_TEACHER_ID or 1),
+        classroom_id=int(classroom_id) if classroom_id is not None else None,
+        assigned_topic=assigned_topic,
+        level=str(level or "beginner"),
+        days_total=int(teacher_plan.days_total or days_total),
+        minutes_per_day=int(teacher_plan.minutes_per_day or minutes_per_day),
+        teacher_plan=payload,
+    )
+
+    return {"plan_id": int(row.id), "assigned_topic": assigned_topic}
+
+
 def _mode(val: Optional[str], *, default: str = "auto") -> str:
     m = (val or default).strip().lower()
     if m in {"0", "false", "no"}:
