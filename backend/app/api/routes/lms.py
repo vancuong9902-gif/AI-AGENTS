@@ -156,11 +156,18 @@ def lms_generate_final(request: Request, payload: GenerateLmsQuizIn, db: Session
 
     placement_ids: list[int] = []
     try:
+        student_ids = [
+            int(r[0])
+            for r in db.query(ClassroomMember.user_id)
+            .filter(ClassroomMember.classroom_id == int(payload.classroom_id))
+            .all()
+        ] or [int(payload.teacher_id)]
+
         placement_rows = (
             db.query(Attempt.quiz_set_id)
             .join(QuizSet, QuizSet.id == Attempt.quiz_set_id)
             .filter(
-                Attempt.user_id == int(payload.teacher_id),
+                Attempt.user_id.in_(student_ids),
                 QuizSet.kind == "diagnostic_pre",
             )
             .distinct()
