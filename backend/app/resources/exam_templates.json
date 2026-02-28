@@ -1,0 +1,51 @@
+{
+  "templates": [
+    {
+      "template_id": "pretest_standard",
+      "name": "Bài test đầu vào (Chuẩn)",
+      "kind": "diagnostic_pre",
+      "metadata": {
+        "grade_level": 10,
+        "subject": "Tổng hợp",
+        "duration_minutes": 35,
+        "total_points": 100
+      },
+      "sections": [
+        {"type": "multiple_choice", "count": 15, "points_per_question": 3, "difficulty": "easy"},
+        {"type": "multiple_choice", "count": 10, "points_per_question": 3, "difficulty": "medium"},
+        {"type": "essay", "count": 2, "points_per_question": 20, "difficulty": "hard"}
+      ]
+    },
+    {
+      "template_id": "midterm_standard",
+      "name": "Bài giữa khóa (Chuẩn)",
+      "kind": "midterm",
+      "metadata": {
+        "grade_level": 10,
+        "subject": "Theo chủ đề",
+        "duration_minutes": 30,
+        "total_points": 100
+      },
+      "sections": [
+        {"type": "multiple_choice", "count": 12, "points_per_question": 4, "difficulty": "medium"},
+        {"type": "essay", "count": 2, "points_per_question": 26, "difficulty": "hard"}
+      ]
+    },
+    {
+      "template_id": "posttest_standard",
+      "name": "Bài test cuối khóa (Chuẩn)",
+      "kind": "diagnostic_post",
+      "metadata": {
+        "grade_level": 10,
+        "subject": "Theo chủ đề",
+        "duration_minutes": 45,
+        "total_points": 100
+      },
+      "sections": [
+        {"type": "multiple_choice", "count": 10, "points_per_question": 4, "difficulty": "medium"},
+        {"type": "multiple_choice", "count": 6, "points_per_question": 4, "difficulty": "hard"},
+        {"type": "essay", "count": 3, "points_per_question": 12, "difficulty": "hard"}
+      ]
+    }
+  ]
+}

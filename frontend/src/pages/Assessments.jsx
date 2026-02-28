@@ -1,0 +1,120 @@
+import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
+import { apiJson } from "../lib/api";
+
+export default function Assessments() {
+  const [classrooms, setClassrooms] = useState([]);
+  const [classroomId, setClassroomId] = useState(() => {
+    const v = localStorage.getItem("active_classroom_id");
+    const n = v ? Number(v) : null;
+    return Number.isFinite(n) && n > 0 ? n : null;
+  });
+
+  const [list, setList] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const classroomMap = useMemo(() => {
+    const m = new Map();
+    (classrooms || []).forEach((c) => m.set(Number(c.id), c));
+    return m;
+  }, [classrooms]);
+
+  const loadClassrooms = async () => {
+    try {
+      const rows = await apiJson("/classrooms");
+      const arr = Array.isArray(rows) ? rows : [];
+      setClassrooms(arr);
+      if (!classroomId && arr.length > 0) {
+        setClassroomId(Number(arr[0].id));
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const loadAssessments = async (cid = classroomId) => {
+    if (!cid) {
+      setList([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError("");
+    try {
+      const data = await apiJson(`/assessments?classroom_id=${Number(cid)}`);
+      setList(Array.isArray(data) ? data : []);
+    } catch (e) {
+      setError(e?.message || "Không load được danh sách");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadClassrooms();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (classroomId) {
+      localStorage.setItem("active_classroom_id", String(classroomId));
+      loadAssessments(classroomId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [classroomId]);
+
+  return (
+    <div style={{ maxWidth: 980, margin: "0 auto", padding: 16 }}>
+      <h2>📝 Bài tổng hợp (theo lớp)</h2>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ color: "#666" }}>Lớp:</span>
+          <select
+            value={classroomId || ""}
+            onChange={(e) => setClassroomId(e.target.value ? Number(e.target.value) : null)}
+            style={{ padding: 8, borderRadius: 10, border: "1px solid #ddd" }}
+          >
+            <option value="">-- Chọn lớp --</option>
+            {(classrooms || []).map((c) => (
+              <option key={c.id} value={c.id}>
+                #{c.id} • {c.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <button onClick={() => loadAssessments(classroomId)} disabled={!classroomId || loading} style={{ padding: "8px 12px" }}>
+          Refresh
+        </button>
+      </div>
+
+      {error ? <div style={{ marginTop: 12, background: "#fff5f5", border: "1px solid #ffd6d6", padding: 12, borderRadius: 12, color: "#8a1f1f" }}>{error}</div> : null}
+      {loading ? <div style={{ marginTop: 12, color: "#666" }}>Đang tải…</div> : null}
+
+      <div style={{ display: "grid", gap: 12, marginTop: 12 }}>
+        {list.map((it) => {
+          const cls = classroomMap.get(Number(it.classroom_id));
+          const classLabel = cls ? `#${cls.id} • ${cls.name}` : `#${it.classroom_id}`;
+          return (
+            <div key={it.assessment_id} style={{ background: "#fff", borderRadius: 12, padding: 12, boxShadow: "0 2px 10px rgba(0,0,0,0.06)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ fontWeight: 900 }}>{it.title}</div>
+                  <div style={{ color: "#666" }}>
+                    Lớp: {classLabel} • Kind: {it.kind} • Level: {it.level} • Created: {it.created_at}
+                  </div>
+                </div>
+                <Link to={`/assessments/${it.assessment_id}`} style={{ textDecoration: "none" }}>
+                  <button style={{ padding: "8px 12px" }}>Làm bài</button>
+                </Link>
+              </div>
+            </div>
+          );
+        })}
+
+        {!loading && (!classroomId ? <div style={{ color: "#666" }}>Chọn lớp để xem bài được giao.</div> : list.length === 0 ? <div style={{ color: "#666" }}>Chưa có bài nào được giao cho lớp này.</div> : null)}
+      </div>
+    </div>
+  );
+}

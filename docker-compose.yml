@@ -1,0 +1,106 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ai_agent
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ai_agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      internal:
+        aliases:
+          - db
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    networks:
+      - internal
+
+  backend:
+    restart: unless-stopped
+    build:
+      context: ./backend
+    env_file:
+      - ./backend/.env
+    environment:
+      APP_NAME: AI Learning Agent
+      ENV: dev
+      BACKEND_CORS_ORIGINS: '["http://localhost:5173","http://127.0.0.1:5173"]'
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/ai_agent
+      ASYNC_QUEUE_ENABLED: "true"
+      REDIS_URL: redis://redis:6379/0
+
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/api/health > /dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Dev-friendly: hot reload
+    volumes:
+      - ./backend:/app
+    networks:
+      - internal
+
+  worker:
+    restart: unless-stopped
+    build:
+      context: ./backend
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/ai_agent
+      ASYNC_QUEUE_ENABLED: "true"
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    command: ["bash","/app/worker_start.sh"]
+    volumes:
+      - ./backend:/app
+    networks:
+      - internal
+
+  frontend:
+    restart: unless-stopped
+    build:
+      context: ./frontend
+    environment:
+      # FE chạy trên browser, nên vẫn gọi về localhost:8000
+      VITE_API_BASE_URL: /api
+      VITE_BACKEND_PROXY_TARGET: http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    networks:
+      - internal
+
+networks:
+  internal:
+
+volumes:
+  pgdata:

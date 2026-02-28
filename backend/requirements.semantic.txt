@@ -1,0 +1,5 @@
+# Optional extras for semantic RAG (FAISS + embeddings)
+numpy>=1.26.0,<3.0.0
+# NOTE: faiss-cpu wheels may not be available on every Windows setup.
+# If pip fails, keep keyword mode (default) or install FAISS via conda.
+faiss-cpu>=1.8.0,<2.0.0

@@ -1,0 +1,33 @@
+services:
+  flowise:
+    image: flowiseai/flowise:latest
+    restart: unless-stopped
+    environment:
+      # Port Flowise runs on
+      PORT: 3000
+
+      # (Optional) App-level authentication
+      # FLOWISE_USERNAME: admin
+      # FLOWISE_PASSWORD: admin123
+
+      # Persist Flowise data locally (SQLite)
+      DATABASE_TYPE: sqlite
+      DATABASE_PATH: /root/.flowise
+      LOG_PATH: /root/.flowise/logs
+      BLOB_STORAGE_PATH: /root/.flowise/storage
+
+      # (Optional) CORS
+      # CORS_ORIGINS: '["http://localhost:5173"]'
+    ports:
+      - "3000:3000"
+    volumes:
+      - flowise_data:/root/.flowise
+    networks:
+      - internal
+
+networks:
+  internal:
+    external: true
+
+volumes:
+  flowise_data:

@@ -1,0 +1,179 @@
+{
+  "info": {
+    "name": "AI Learning Agent - Week2 E2E",
+    "_postman_id": "af1815b6-9ad4-4757-8962-9f3cd6890957",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Flow A - Upload -> RAG Search",
+      "item": [
+        {
+          "name": "POST /documents/upload",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Request-ID",
+                "value": "{{request_id}}",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "{{file_path}}"
+                },
+                {
+                  "key": "title",
+                  "type": "text",
+                  "value": "Demo doc"
+                },
+                {
+                  "key": "tags",
+                  "type": "text",
+                  "value": "demo,week2"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/documents/upload",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "documents",
+                "upload"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /rag/search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Request-ID",
+                "value": "{{request_id}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"Tóm tắt nội dung chính của tài liệu\",\n  \"top_k\": 5,\n  \"filters\": {\n    \"document_ids\": []\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/rag/search",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rag",
+                "search"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Flow B - Generate Quiz -> Submit -> Score",
+      "item": [
+        {
+          "name": "POST /quiz/generate",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Request-ID",
+                "value": "{{request_id}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": \"{{user_id}}\",\n  \"topic\": \"RAG\",\n  \"level\": \"intermediate\",\n  \"question_count\": 5,\n  \"rag\": {\n    \"query\": \"RAG là gì, dùng để làm gì?\",\n    \"top_k\": 6,\n    \"filters\": {\n      \"document_ids\": []\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/quiz/generate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "quiz",
+                "generate"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /quiz/{{quiz_id}}/submit",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Request-ID",
+                "value": "{{request_id}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": \"{{user_id}}\",\n  \"duration_sec\": 120,\n  \"answers\": [\n    {\n      \"question_id\": \"{{question_id_1}}\",\n      \"answer\": 1\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/quiz/{{quiz_id}}/submit",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "quiz",
+                "{{quiz_id}}",
+                "submit"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000"
+    },
+    {
+      "key": "request_id",
+      "value": "15cd8d9f-7860-4008-a1a3-ef33fd55b604"
+    },
+    {
+      "key": "file_path",
+      "value": "./sample.pdf"
+    },
+    {
+      "key": "user_id",
+      "value": "466cab05-eab0-4ac7-b5ac-5a819e56dbb3"
+    },
+    {
+      "key": "quiz_id",
+      "value": ""
+    },
+    {
+      "key": "question_id_1",
+      "value": ""
+    }
+  ]
+}

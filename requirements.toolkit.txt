@@ -1,0 +1,31 @@
+# Optional "AI Engineering Toolkit" extras
+# Install with:
+#   pip install -r requirements.toolkit.txt
+#
+# NOTE:
+# - This file is OPTIONAL. The project runs without these packages.
+# - Some libraries below pull in heavier deps and may require Python>=3.10.
+
+# Better PDF text extraction (already included in backend/requirements.txt, but listed here for convenience)
+PyMuPDF>=1.23.0
+pdfplumber>=0.10.3
+
+# OCR (optional) - for scanned/image-only PDFs
+Pillow>=10.0.0
+pytesseract>=0.3.10
+# EasyOCR is heavier (pulls in torch); use only if you prefer it over Tesseract.
+# easyocr>=1.7.1
+
+# RAG evaluation
+# DeepEval: unit tests / LLM-as-a-judge evaluations
+# Ragas: RAG-specific metrics (faithfulness, answer relevancy, context precision/recall)
+# You only need these if you're building an evaluation pipeline.
+# deepeval
+# (package name is case-insensitive; using lowercase is conventional)
+deepeval>=1.0.0
+ragas>=0.1.20
+
+# Common helpers used by eval stacks (often auto-installed, but helpful if your env is minimal)
+datasets>=2.18.0
+numpy>=1.24.0
+pandas>=2.0.0
