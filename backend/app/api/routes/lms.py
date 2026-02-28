@@ -12,9 +12,11 @@ from app.models.attempt import Attempt
 from app.models.classroom_assessment import ClassroomAssessment
 from app.models.document_topic import DocumentTopic
 from app.models.quiz_set import QuizSet
+from app.models.learner_profile import LearnerProfile
+from app.models.learning_plan import LearningPlan
 from app.models.session import Session as UserSession
 from app.services.assessment_service import generate_assessment, submit_assessment
-from app.services.lms_service import build_recommendations, classify_student_level, score_breakdown
+from app.services.lms_service import assign_learning_path, build_recommendations, classify_student_level, score_breakdown
 
 router = APIRouter(tags=["lms"])
 
@@ -58,6 +60,12 @@ class StartAttemptIn(BaseModel):
 
 class SubmitAttemptByIdIn(BaseModel):
     answers: list[dict] = Field(default_factory=list)
+
+
+class AssignLearningPathIn(BaseModel):
+    student_level: str
+    classroom_id: int
+    document_ids: list[int] = Field(default_factory=list)
 
 
 @router.post("/lms/teacher/select-topics")
@@ -251,6 +259,44 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
     }
 
 
+@router.post("/lms/student/{user_id}/assign-learning-path")
+def assign_student_path(
+    request: Request,
+    user_id: int,
+    payload: AssignLearningPathIn,
+    db: Session = Depends(get_db),
+):
+    result = assign_learning_path(
+        db,
+        user_id=int(user_id),
+        student_level=str(payload.student_level),
+        document_ids=[int(x) for x in (payload.document_ids or [])],
+        classroom_id=int(payload.classroom_id),
+    )
+    return {"request_id": request.state.request_id, "data": result, "error": None}
+
+
+@router.get("/lms/student/{user_id}/my-path")
+def get_student_path(request: Request, user_id: int, db: Session = Depends(get_db)):
+    profile = db.query(LearnerProfile).filter(LearnerProfile.user_id == int(user_id)).first()
+    plan = db.query(LearningPlan).filter(LearningPlan.user_id == int(user_id)).order_by(LearningPlan.id.desc()).first()
+    tasks = []
+    if plan and isinstance(plan.plan_json, dict):
+        tasks = plan.plan_json.get("tasks") or []
+
+    return {
+        "request_id": request.state.request_id,
+        "data": {
+            "student_level": profile.level if profile else None,
+            "plan": {
+                "plan_id": int(plan.id) if plan else None,
+                "tasks": tasks,
+            },
+        },
+        "error": None,
+    }
+
+
 @router.get("/students/{student_id}/recommendations")
 def student_recommendations(request: Request, student_id: int, db: Session = Depends(get_db)):
     latest = (
@@ -293,6 +339,25 @@ def lms_submit_attempt(request: Request, assessment_id: int, payload: SubmitAtte
     q = db.query(QuizSet).filter(QuizSet.id == int(assessment_id)).first()
     topics = [str(x) for x in (q.topic.split(",") if q and q.topic else []) if x.strip()]
     recommendations = build_recommendations(breakdown=breakdown, document_topics=topics)
+
+    try:
+        q_obj = db.query(QuizSet).filter(QuizSet.id == int(assessment_id)).first()
+        doc_ids: list[int] = []
+        if q_obj:
+            raw_doc_ids = getattr(q_obj, "document_ids_json", None)
+            if isinstance(raw_doc_ids, list):
+                doc_ids = [int(x) for x in raw_doc_ids if x]
+        if doc_ids and level:
+            path_result = assign_learning_path(
+                db,
+                user_id=int(payload.user_id),
+                student_level=level,
+                document_ids=doc_ids,
+                classroom_id=0,
+            )
+            base["assigned_learning_path"] = path_result
+    except Exception:
+        base["assigned_learning_path"] = None
 
     base["score_breakdown"] = breakdown
     base["student_level"] = level
