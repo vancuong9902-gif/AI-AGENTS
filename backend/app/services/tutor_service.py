@@ -262,62 +262,47 @@ def _suggest_on_topic_questions(topic: Optional[str], off_topic_q: str) -> List[
     ]
 
 
-def _ai_topic_relevance_check(question: str, topic: Optional[str]) -> Optional[bool]:
-    if not llm_available():
-        return None
+def _llm_offtopic_gate(*, question: str, topic: Optional[str], evidence_previews: List[str]) -> Dict[str, Any]:
+    default = {"status": "in_scope", "confidence": 0.0, "reason": "gate_disabled"}
+    if not (settings.TUTOR_LLM_OFFTOPIC_ENABLED and llm_available()):
+        return default
+
     scope = _topic_scope(topic)
+    payload = {
+        "question": question,
+        "topic_scope": scope,
+        "evidence_previews": [str(x).strip() for x in (evidence_previews or []) if str(x).strip()][:6],
+    }
     try:
         resp = chat_json(
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "Bạn là bộ lọc off-topic cho gia sư AI. "
-                        "Đánh giá câu hỏi có liên quan đến topic hay không. "
-                        "Chỉ trả lời JSON {\"answer\":\"YES\"|\"NO\"}."
+                        "Bạn là bộ lọc phạm vi cho AI Tutor. "
+                        "Dựa vào topic_scope và evidence_previews để xác định câu hỏi có nằm trong phạm vi hay không. "
+                        "Chỉ trả về JSON hợp lệ, dùng double quotes, đúng schema: "
+                        "{\"status\":\"in_scope|uncertain|out_of_scope\",\"confidence\":0.0,\"reason\":\"...\"}. "
+                        "Nếu thiếu bằng chứng hoặc câu hỏi mơ hồ thì chọn uncertain."
                     ),
                 },
-                {
-                    "role": "user",
-                    "content": f"Câu hỏi này có liên quan đến topic '{scope}' không? Trả lời YES hoặc NO.\nCâu hỏi: {question}",
-                },
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
             temperature=0.0,
-            max_tokens=20,
+            max_tokens=140,
         )
-        ans = str((resp or {}).get("answer") or "").strip().upper()
-        if ans in {"YES", "NO"}:
-            return ans == "YES"
+        status = str((resp or {}).get("status") or "").strip().lower()
+        if status not in {"in_scope", "uncertain", "out_of_scope"}:
+            return default
+        try:
+            confidence = float((resp or {}).get("confidence", 0.0) or 0.0)
+        except Exception:
+            confidence = 0.0
+        confidence = max(0.0, min(1.0, confidence))
+        reason = str((resp or {}).get("reason") or "").strip() or "llm_gate"
+        return {"status": status, "confidence": confidence, "reason": reason}
     except Exception:
-        return None
-    return None
-
-
-async def _is_question_on_topic(question: str, topic: str) -> bool:
-    if not llm_available():
-        topic_words = set(topic.lower().split())
-        question_words = set(question.lower().split())
-        return len(topic_words & question_words) > 0
-
-    try:
-        resp = chat_text(
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        f"Câu hỏi: \"{question}\"\n"
-                        f"Chủ đề học: \"{topic}\"\n"
-                        "Câu hỏi này có liên quan đến chủ đề học không?\n"
-                        "Trả lời chỉ: YES hoặc NO"
-                    ),
-                }
-            ],
-            max_tokens=5,
-            temperature=0,
-        )
-        return "yes" in str(resp or "").lower()
-    except Exception:
-        return False
+        return default
 
 
 def _normalize_follow_up_questions(topic: Optional[str], suggestions: List[str]) -> List[str]:
@@ -695,48 +680,6 @@ def tutor_chat(
         ).model_dump()
 
     scope = _topic_scope(topic)
-    if topic and topic.strip():
-        try:
-            on_topic = asyncio.run(_is_question_on_topic(q, scope))
-        except Exception:
-            on_topic = True
-        if not on_topic:
-            reason = "off_topic_quick_check"
-            summary = (q[:90] + "…") if len(q) > 90 else q
-            refusal_message = (
-                f"Xin lỗi, tôi chỉ có thể giải đáp về {scope}. "
-                f"Câu hỏi '{summary}' nằm ngoài chủ đề học hiện tại. "
-                f"Bạn có muốn hỏi về một khía cạnh nào của {scope} không?"
-            )
-            _log_tutor_flagged_question(db, user_id=int(user_id), question=q, topic=topic, reason=reason, suggested_topics=intent_suggestions)
-            return TutorChatData(
-                answer_md=refusal_message,
-                was_answered=False,
-                is_off_topic=True,
-                refusal_message=refusal_message,
-                refusal_reason=reason, off_topic_reason=reason,
-                suggested_topics=intent_suggestions,
-                follow_up_questions=_normalize_follow_up_questions(topic, []),
-                quick_check_mcq=[],
-                sources=[],
-                sources_used=[],
-                confidence=0.95,
-                retrieval={"note": "PRECHECK_OFF_TOPIC_QUICK"},
-            ).model_dump()
-
-    ai_relevance = _ai_topic_relevance_check(q, topic)
-    if ai_relevance is False:
-        reason = "off_topic_ai_check"
-        refusal_message = _build_off_topic_message(scope=scope, approved_topics=suggested_topics, suggestions=intent_suggestions)
-        _log_tutor_flagged_question(db, user_id=int(user_id), question=q, topic=topic, reason=reason, suggested_topics=intent_suggestions)
-        return TutorChatData(answer_md=refusal_message, was_answered=False, is_off_topic=True, refusal_message=refusal_message, refusal_reason=reason, off_topic_reason=reason, suggested_topics=intent_suggestions, follow_up_questions=_normalize_follow_up_questions(topic, []), quick_check_mcq=[], sources=[], sources_used=[], confidence=0.9, retrieval={"note": "PRECHECK_OFF_TOPIC_AI"}).model_dump()
-
-    if ai_relevance is None and is_clearly_off_topic(q):
-        reason = "clearly_off_topic_pattern"
-        refusal_message = _build_off_topic_message(scope=scope, approved_topics=suggested_topics, suggestions=intent_suggestions)
-        _log_tutor_flagged_question(db, user_id=int(user_id), question=q, topic=topic, reason=reason, suggested_topics=intent_suggestions)
-        return TutorChatData(answer_md=refusal_message, was_answered=False, is_off_topic=True, refusal_message=refusal_message, refusal_reason=reason, off_topic_reason=reason, suggested_topics=intent_suggestions, follow_up_questions=_normalize_follow_up_questions(topic, []), quick_check_mcq=[], sources=[], sources_used=[], confidence=0.85, retrieval={"note": "PRECHECK_OFF_TOPIC_PATTERN"}).model_dump()
-
     filters = {"document_ids": doc_ids} if doc_ids else {}
     query = f"{topic.strip()}: {q}" if topic and topic.strip() else q
     rag = corrective_retrieve_and_log(db=db, query=query, top_k=int(max(3, min(20, top_k))), filters=filters, topic=topic)
@@ -801,6 +744,50 @@ def tutor_chat(
     for c in chunks[: min(len(chunks), int(top_k))]:
         sources.append({"chunk_id": int(c.get("chunk_id")), "document_id": int(c.get("document_id")) if c.get("document_id") is not None else None, "document_title": c.get("document_title") or c.get("title"), "score": float(c.get("score", 0.0) or 0.0), "preview": _src_preview(c.get("text") or ""), "meta": c.get("meta") or {}})
     sources_used = _extract_sources_used(sources)
+    evidence_previews = [str((s or {}).get("preview") or "").strip() for s in sources[:6] if str((s or {}).get("preview") or "").strip()]
+    gate = _llm_offtopic_gate(question=q, topic=topic, evidence_previews=evidence_previews)
+    if gate.get("status") == "out_of_scope":
+        reason = str(gate.get("reason") or "llm_offtopic_out_of_scope")
+        refusal_message = (
+            f"Mình xin phép chưa trả lời câu này vì có vẻ nằm ngoài phạm vi tài liệu/chủ đề hiện tại ({scope}). "
+            f"Bạn có thể hỏi lại theo hướng trong phạm vi, ví dụ: '{_build_redirect_hint(topic)}'."
+        )
+        _log_tutor_flagged_question(db, user_id=int(user_id), question=q, topic=topic, reason=reason, suggested_topics=intent_suggestions)
+        return TutorChatData(
+            answer_md=refusal_message,
+            was_answered=False,
+            is_off_topic=True,
+            refusal_message=refusal_message,
+            refusal_reason=reason,
+            off_topic_reason=reason,
+            suggested_topics=intent_suggestions,
+            follow_up_questions=_suggest_on_topic_questions(topic, q),
+            quick_check_mcq=[],
+            sources=[],
+            sources_used=[],
+            confidence=float(gate.get("confidence", 0.0) or 0.0),
+            retrieval={**(rag.get("corrective") or {}), "llm_offtopic_gate": gate},
+        ).model_dump()
+    if gate.get("status") == "uncertain":
+        ask_message = (
+            f"Mình chưa chắc câu hỏi đang nhắm tới phần nào trong '{scope}'. "
+            f"Bạn giúp mình làm rõ hơn (nêu bài/chương/khái niệm cụ thể) để mình trả lời chính xác nhé."
+        )
+        return TutorChatData(
+            answer_md=ask_message,
+            was_answered=False,
+            is_off_topic=False,
+            refusal_message=None,
+            refusal_reason="llm_offtopic_uncertain",
+            off_topic_reason="llm_offtopic_uncertain",
+            suggested_topics=intent_suggestions,
+            follow_up_questions=_normalize_follow_up_questions(topic, []),
+            quick_check_mcq=[],
+            sources=[],
+            sources_used=[],
+            confidence=float(gate.get("confidence", 0.0) or 0.0),
+            retrieval={**(rag.get("corrective") or {}), "llm_offtopic_gate": gate},
+        ).model_dump()
 
     quick_mcq = []
     try:
