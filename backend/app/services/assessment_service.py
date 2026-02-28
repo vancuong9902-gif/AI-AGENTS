@@ -2377,6 +2377,9 @@ def generate_assessment(
             t2 = topics_cycle[(i + 1) % len(topics_cycle)]
             q["stem"] = f"Trong bối cảnh kết hợp {t1} và {t2}: {stem}"
 
+    if (kind or "").lower() in ("diagnostic_pre", "diagnostic_post"):
+        random.shuffle(generated)
+
     # -------------------------
     # Estimate time per question (minutes)
     # -------------------------
@@ -2519,6 +2522,101 @@ def generate_assessment(
             "excluded_count": int(len(_excluded_stems)),
             "topics_from_entry": dedup_topics_from_entry,
         },
+    }
+
+
+def generate_diagnostic_assessment(
+    db: Session,
+    *,
+    teacher_id: int,
+    classroom_id: int,
+    topic_ids: List[int],
+    difficulty_config: Optional[Dict[str, int]] = None,
+) -> Dict[str, Any]:
+    """Generate a classroom diagnostic assessment from selected topic ids."""
+
+    topic_id_list = [int(t) for t in (topic_ids or []) if int(t) > 0]
+    if not topic_id_list:
+        raise ValueError("topic_ids is required")
+
+    diff = difficulty_config or {}
+    easy = _cap_int(diff.get("easy"), default=5, lo=1, hi=10)
+    medium = _cap_int(diff.get("medium"), default=5, lo=1, hi=10)
+    hard = _cap_int(diff.get("hard"), default=5, lo=1, hi=10)
+
+    topic_rows = (
+        db.query(DocumentTopic)
+        .filter(DocumentTopic.id.in_(topic_id_list))
+        .all()
+    )
+    if not topic_rows:
+        raise ValueError("No valid topics found")
+
+    topics_covered: List[str] = []
+    document_ids: List[int] = []
+    for t in topic_rows:
+        topic_title = str(getattr(t, "teacher_edited_title", None) or getattr(t, "title", "")).strip()
+        if topic_title:
+            topics_covered.append(topic_title)
+        if getattr(t, "document_id", None) is not None:
+            document_ids.append(int(t.document_id))
+
+    topics_covered = list(dict.fromkeys(topics_covered))
+    document_ids = list(dict.fromkeys(document_ids))
+    if not topics_covered:
+        raise ValueError("No topic names found from topic_ids")
+
+    generated = generate_assessment(
+        db,
+        teacher_id=int(teacher_id),
+        classroom_id=int(classroom_id),
+        title="Diagnostic Assessment",
+        level="beginner",
+        easy_count=int(easy),
+        medium_count=int(medium),
+        hard_count=int(hard),
+        document_ids=document_ids,
+        topics=topics_covered,
+        kind="diagnostic_pre",
+        time_limit_minutes=None,
+    )
+
+    quiz_set_id = int(generated.get("assessment_id"))
+    quiz_set = db.query(QuizSet).filter(QuizSet.id == quiz_set_id).first()
+    if not quiz_set:
+        raise ValueError("Generated diagnostic quiz not found")
+
+    metadata = dict(getattr(quiz_set, "metadata_json", {}) or {})
+    metadata.update(
+        {
+            "type": "diagnostic",
+            "topic_ids": topic_id_list,
+            "topics_covered": topics_covered,
+            "difficulty_distribution": {"easy": int(easy), "medium": int(medium), "hard": int(hard)},
+        }
+    )
+    quiz_set.metadata_json = metadata
+    flag_modified(quiz_set, "metadata_json")
+
+    questions = db.query(Question).filter(Question.quiz_set_id == int(quiz_set_id)).all()
+    duration_seconds = int(sum(_heuristic_estimated_minutes({
+        "type": q.type,
+        "bloom_level": getattr(q, "bloom_level", None),
+        "stem": q.stem,
+        "max_points": int(getattr(q, "max_points", 0) or 0),
+    }, level=generated.get("level") or "beginner") for q in (questions or [])) * 60)
+    quiz_set.duration_seconds = max(60, duration_seconds)
+
+    db.add(quiz_set)
+    db.commit()
+
+    return {
+        "quiz_set_id": int(quiz_set_id),
+        "question_count": len(questions),
+        "duration_seconds": int(quiz_set.duration_seconds or 0),
+        "difficulty_distribution": {"easy": int(easy), "medium": int(medium), "hard": int(hard)},
+        "topics_covered": topics_covered,
+        "message": "Đã tạo bài kiểm tra đầu vào thành công",
     }
 
 
@@ -2909,9 +3007,39 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
         .first()
     )
 
+    answer_review = _build_answer_review(breakdown=bd, questions=questions, default_topic=str(quiz_set.topic or "tài liệu"))
+    assessment_kind = _normalize_assessment_kind(getattr(quiz_set, "kind", None))
+
+    learning_plan_created = False
+    student_level = None
+    if assessment_kind == "diagnostic_pre":
+        try:
+            from app.services.lms_service import classify_student_level
+            from app.services.learning_plan_service import create_learning_plan
+
+            student_level = classify_student_level(int(total_percent))
+            weak_topics = []
+            for item in (answer_review or []):
+                if item.get("is_correct"):
+                    continue
+                t = str(item.get("topic") or "").strip()
+                if t and t not in weak_topics:
+                    weak_topics.append(t)
+            lp = create_learning_plan(
+                db,
+                user_id=int(user_id),
+                classroom_id=int(getattr(classroom_link, "classroom_id", 0) or 0) or None,
+                level=str(student_level),
+                weak_topics=weak_topics[:5],
+                teacher_id=int(getattr(quiz_set, "user_id", 1) or 1),
+            )
+            learning_plan_created = bool(lp and lp.get("plan_id"))
+        except Exception:
+            learning_plan_created = False
+
     result = {
         "assessment_id": assessment_id,
-        "assessment_kind": _normalize_assessment_kind(getattr(quiz_set, "kind", None)),
+        "assessment_kind": assessment_kind,
         "classroom_id": int(getattr(classroom_link, "classroom_id", 0) or 0),
         "attempt_id": attempt.id,
         "duration_sec": int(getattr(attempt, "duration_sec", 0) or 0),
@@ -2925,8 +3053,10 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
         "max_points": total_points,
         "status": "submitted (essay pending)" if pending else "graded",
         "breakdown": bd,
-        "answer_review": _build_answer_review(breakdown=bd, questions=questions, default_topic=str(quiz_set.topic or "tài liệu")),
+        "answer_review": answer_review,
         "synced_diagnostic": synced_diagnostic,
+        "learning_plan_created": bool(learning_plan_created),
+        "student_level": student_level,
     }
     if _normalize_assessment_kind(getattr(quiz_set, "kind", None)) == "final_exam":
         result.update(_final_improvement_payload(db, user_id=int(user_id), final_attempt=attempt))
