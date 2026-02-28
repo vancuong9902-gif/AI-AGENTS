@@ -46,6 +46,11 @@ export default function TeacherAnalyticsDashboard() {
 
   const [studentId, setStudentId] = useState(initialStudentId);
   const [studentInput, setStudentInput] = useState(String(initialStudentId));
+  const [classId] = useState(() => {
+    const v = localStorage.getItem("teacher_active_classroom_id");
+    const n = v ? Number(v) : null;
+    return Number.isFinite(n) && n > 0 ? n : null;
+  });
   const [documents, setDocuments] = useState([]);
   const [documentId, setDocumentId] = useState(initialDocId);
   const [windowDays, setWindowDays] = useState(14);
@@ -127,6 +132,12 @@ export default function TeacherAnalyticsDashboard() {
     if (!Number.isFinite(n) || n <= 0) return;
     setStudentId(n);
     navigate(`/teacher/analytics/${n}${documentId ? `?document_id=${Number(documentId)}` : ""}`);
+  };
+
+
+  const openReportExport = (format) => {
+    if (!classId) return;
+    window.open(`/api/classrooms/${classId}/reports/latest/export?format=${format}`, "_blank");
   };
 
   const saveWeights = async () => {
@@ -219,6 +230,13 @@ export default function TeacherAnalyticsDashboard() {
         </select>
 
         <span style={{ color: "#888", fontSize: 13 }}>Đang xem: {docLabel} • Teacher ID: {userId ?? 1}</span>
+
+        <button onClick={() => openReportExport("pdf")} disabled={!classId} style={{ padding: "8px 12px" }}>
+          📥 Xuất báo cáo PDF
+        </button>
+        <button onClick={() => openReportExport("docx")} disabled={!classId} style={{ padding: "8px 12px" }}>
+          📝 Xuất Word
+        </button>
       </div>
 
       {error ? <div style={{ marginTop: 12, background: "#fff3f3", border: "1px solid #ffd0d0", padding: 12, borderRadius: 12 }}>{error}</div> : null}
