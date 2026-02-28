@@ -56,7 +56,8 @@ def test_teacher_report_includes_narrative_and_charts(monkeypatch):
     data = response.json()["data"]
     assert "ai_narrative" in data
     assert "weak_topics" in data
-    assert "progress_chart_data" in data
-    assert "avg_improvement" in data
+    assert "progress_chart" in data
+    assert data["summary"]["students"] >= 0
+    assert "avg_improvement" in data["summary"]
 
     app.dependency_overrides.clear()
