@@ -1831,6 +1831,184 @@ def generate_quiz_with_rag(db: Session, payload: QuizGenerateRequest) -> Dict[st
     return {"quiz_id": quiz_set.id, "topic": quiz_set.topic, "level": quiz_set.level, "questions": out_questions, "sources": sources_out}
 
 
+def _practice_bloom_targets(level: str) -> list[str]:
+    lvl = (level or "").strip().lower()
+    if lvl == "easy":
+        return ["remember", "understand"]
+    if lvl == "medium":
+        return ["apply", "analyze"]
+    return ["evaluate", "create"]
+
+
+def _practice_level_to_generator_level(level: str) -> str:
+    return {"easy": "beginner", "medium": "intermediate", "hard": "advanced"}.get((level or "").strip().lower(), "intermediate")
+
+
+def _build_practice_questions(*, topic: str, level: str, question_count: int, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    bloom_targets = _practice_bloom_targets(level)
+    gen_level = _practice_level_to_generator_level(level)
+    count = max(3, min(5, int(question_count or 0) or 5))
+
+    prompt = (
+        f"Generate {count} practice questions for topic [{topic}] at [{level}] difficulty. "
+        "Level mapping: easy=Bloom Remember/Understand (recall facts, explain concepts), "
+        "medium=Bloom Apply/Analyze (solve problems, compare), "
+        "hard=Bloom Evaluate/Create (critique, design, synthesize). "
+        "Each question must include explanation of correct answer."
+    )
+
+    generated: list[dict[str, Any]] = []
+    if llm_available():
+        try:
+            generated = _generate_mcq_with_llm(topic, gen_level, count, chunks, extra_system_hint=prompt)
+        except Exception:
+            generated = []
+
+    if not generated:
+        generated = _generate_mcq_from_chunks(topic, gen_level, count, chunks)
+
+    cleaned = clean_mcq_questions(generated, limit=count)
+    if not cleaned:
+        raise HTTPException(status_code=422, detail="Không thể tạo bộ bài tập cho topic này")
+
+    out: list[dict[str, Any]] = []
+    for i, q in enumerate(cleaned[:count]):
+        bloom = normalize_bloom_level(q.get("bloom_level"))
+        if bloom not in bloom_targets:
+            bloom = bloom_targets[i % len(bloom_targets)]
+        explanation = " ".join(str(q.get("explanation") or "").split()).strip() or "Xem lại khái niệm trọng tâm của topic để đối chiếu đáp án đúng."
+        out.append(
+            {
+                "type": "mcq",
+                "bloom_level": bloom,
+                "stem": q.get("stem"),
+                "options": q.get("options") or [],
+                "correct_index": int(q.get("correct_index") or 0),
+                "explanation": explanation,
+                "sources": q.get("sources") or [],
+            }
+        )
+    return out
+
+
+def get_or_create_practice_quiz_set_by_topic(*, db: Session, topic_id: int, level: str, user_id: int) -> dict[str, Any]:
+    ensure_user_exists(db, int(user_id), role="student")
+    lvl = (level or "").strip().lower()
+    if lvl not in {"easy", "medium", "hard"}:
+        raise HTTPException(status_code=422, detail="level must be easy|medium|hard")
+
+    topic = db.query(DocumentTopic).filter(DocumentTopic.id == int(topic_id)).first()
+    if not topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+
+    existing = (
+        db.query(QuizSet)
+        .filter(QuizSet.user_id == int(user_id), QuizSet.kind == "topic_practice", QuizSet.level == lvl)
+        .order_by(QuizSet.created_at.desc())
+        .all()
+    )
+    cached = None
+    for row in existing:
+        meta = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+        if int(meta.get("topic_id") or 0) == int(topic_id):
+            cached = row
+            break
+
+    if cached:
+        q_models = (
+            db.query(Question)
+            .filter(Question.quiz_set_id == int(cached.id))
+            .order_by(Question.order_no.asc())
+            .all()
+        )
+        if 3 <= len(q_models) <= 5:
+            return {
+                "quiz_set_id": int(cached.id),
+                "topic_id": int(topic_id),
+                "topic": str(topic.title),
+                "level": lvl,
+                "cached": True,
+                "questions": [
+                    {
+                        "question_id": int(q.id),
+                        "type": q.type,
+                        "bloom_level": normalize_bloom_level(q.bloom_level),
+                        "stem": q.stem,
+                        "options": q.options,
+                        "correct_index": int(q.correct_index),
+                        "explanation": q.explanation,
+                    }
+                    for q in q_models
+                ],
+            }
+
+    chunk_query = db.query(DocumentChunk).filter(DocumentChunk.document_id == int(topic.document_id))
+    if topic.start_chunk_index is not None and topic.end_chunk_index is not None:
+        chunk_query = chunk_query.filter(
+            DocumentChunk.chunk_index >= int(topic.start_chunk_index),
+            DocumentChunk.chunk_index <= int(topic.end_chunk_index),
+        )
+    chunks = chunk_query.order_by(DocumentChunk.chunk_index.asc()).limit(18).all()
+    chunk_payload = [
+        {"chunk_id": int(c.id), "text": str(c.text or ""), "document_id": int(c.document_id), "score": 1.0}
+        for c in chunks
+        if str(c.text or "").strip()
+    ]
+    if not chunk_payload:
+        raise HTTPException(status_code=422, detail="Topic chưa có nội dung để tạo bài tập")
+
+    questions = _build_practice_questions(topic=str(topic.title), level=lvl, question_count=5, chunks=chunk_payload)
+
+    quiz_set = QuizSet(
+        user_id=int(user_id),
+        kind="topic_practice",
+        topic=str(topic.title),
+        level=lvl,
+        duration_seconds=0,
+        metadata_json={"topic_id": int(topic_id), "mode": "learning_path_practice"},
+    )
+    db.add(quiz_set)
+    db.flush()
+
+    q_models: list[Question] = []
+    for order_no, q in enumerate(questions):
+        q_models.append(
+            Question(
+                quiz_set_id=int(quiz_set.id),
+                order_no=int(order_no),
+                type="mcq",
+                bloom_level=normalize_bloom_level(q.get("bloom_level")),
+                stem=str(q.get("stem") or ""),
+                options=list(q.get("options") or []),
+                correct_index=int(q.get("correct_index") or 0),
+                explanation=str(q.get("explanation") or ""),
+                sources=list(q.get("sources") or []),
+            )
+        )
+    db.add_all(q_models)
+    db.commit()
+
+    return {
+        "quiz_set_id": int(quiz_set.id),
+        "topic_id": int(topic_id),
+        "topic": str(topic.title),
+        "level": lvl,
+        "cached": False,
+        "questions": [
+            {
+                "question_id": int(q.id),
+                "type": q.type,
+                "bloom_level": normalize_bloom_level(q.bloom_level),
+                "stem": q.stem,
+                "options": q.options,
+                "correct_index": int(q.correct_index),
+                "explanation": q.explanation,
+            }
+            for q in q_models
+        ],
+    }
+
+
 def grade_and_store_attempt(db: Session, quiz_id: int, payload: QuizSubmitRequest) -> Dict[str, Any]:
     quiz_set = db.query(QuizSet).filter(QuizSet.id == quiz_id).first()
     if not quiz_set:

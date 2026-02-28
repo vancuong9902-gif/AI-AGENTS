@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { apiJson } from "../lib/api";
 
 const LEVELS = [
@@ -53,12 +53,14 @@ function resolveCorrectIndex(question) {
 export default function StudentPractice() {
   const { topicId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const userId = localStorage.getItem("user_id") || "anonymous";
   const storageKey = `practice_${topicId}_${userId}`;
 
   const [topicName, setTopicName] = useState(`Topic #${topicId}`);
-  const [activeLevel, setActiveLevel] = useState("easy");
+  const initialLevel = new URLSearchParams(location.search).get("level");
+  const [activeLevel, setActiveLevel] = useState(LEVELS.some((x) => x.key === initialLevel) ? initialLevel : "easy");
   const [questionsByLevel, setQuestionsByLevel] = useState({ easy: [], medium: [], hard: [] });
   const [loadingByLevel, setLoadingByLevel] = useState({ easy: false, medium: false, hard: false });
   const [errorByLevel, setErrorByLevel] = useState({ easy: "", medium: "", hard: "" });
@@ -107,8 +109,8 @@ export default function StudentPractice() {
     setErrorByLevel((prev) => ({ ...prev, [level]: "" }));
 
     try {
-      const data = await apiJson(`/quiz/practice?topic_id=${topicId}&level=${level}&count=5`);
-      const items = normalizeQuestions(data);
+      const data = await apiJson(`/quiz/by-topic?topic_id=${topicId}&level=${level}&user_id=${userId}`);
+      const items = normalizeQuestions(data?.questions || data);
       setQuestionsByLevel((prev) => ({ ...prev, [level]: items }));
     } catch (error) {
       setErrorByLevel((prev) => ({ ...prev, [level]: error?.message || "Không tải được câu hỏi" }));
@@ -135,15 +137,7 @@ export default function StudentPractice() {
     }, {});
   }, [feedbackByLevel, questionsByLevel]);
 
-  const unlockedLevels = useMemo(() => {
-    const easyDone = completedByLevel.easy?.done === completedByLevel.easy?.total && completedByLevel.easy?.total > 0;
-    const mediumDone = completedByLevel.medium?.done === completedByLevel.medium?.total && completedByLevel.medium?.total > 0;
-    return {
-      easy: true,
-      medium: easyDone,
-      hard: easyDone && mediumDone,
-    };
-  }, [completedByLevel]);
+  const unlockedLevels = useMemo(() => ({ easy: true, medium: true, hard: true }), []);
 
   function onSelectOption(level, questionId, optionIndex) {
     setAnswersByLevel((prev) => ({
