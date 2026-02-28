@@ -195,6 +195,8 @@ class Settings(BaseSettings):
     PDF_OCR_ZOOM: float = 2.5
     # If best text-layer score is below this, try OCR.
     PDF_OCR_TRIGGER_MIN_QUALITY_SCORE: float = 0.22
+    # Completeness guard: do not choose extraction outputs with much lower page coverage.
+    PDF_EXTRACT_MIN_COVERAGE_RATIO: float = 0.83
 
     # ===== Optional quality loops (LLM refine passes) =====
     # Quiz refine: off | auto | always
