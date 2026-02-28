@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import datetime as _dt
 import math
+import os
+import tempfile
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import func
@@ -13,6 +16,12 @@ from app.models.learner_profile import LearnerProfile
 from app.models.question import Question
 from app.models.quiz_set import QuizSet
 from app.models.retention_schedule import RetentionSchedule
+from app.models.classroom import Classroom, ClassroomMember
+from app.models.classroom_assessment import ClassroomAssessment
+from app.models.user import User
+from app.services.llm_service import chat_text, llm_available
+from app.services.lms_service import classify_student_level, generate_class_narrative, score_breakdown
+from app.services.vietnamese_font_fix import get_noto_sans_font_path
 
 
 # ==========================================================
@@ -668,3 +677,319 @@ def dashboard_topics(
         )
 
     return out
+
+
+def generate_student_ai_assessment(db: Session, user_id: int, entry_attempt: Any, final_attempt: Any) -> str:
+    user = db.query(User).filter(User.id == int(user_id)).first()
+    name = str(getattr(user, "full_name", "") or f"Học sinh #{int(user_id)}")
+    entry_score = float(getattr(entry_attempt, "score_percent", 0.0) or 0.0)
+    final_score = float(getattr(final_attempt, "score_percent", 0.0) or 0.0)
+    improvement = final_score - entry_score
+    level = classify_student_level(int(round(final_score)))
+
+    final_breakdown = score_breakdown(getattr(final_attempt, "breakdown_json", []) or [])
+    by_topic = final_breakdown.get("by_topic") if isinstance(final_breakdown.get("by_topic"), dict) else {}
+    ranked_topics = sorted(
+        [(str(t), float((s or {}).get("percent") or 0.0)) for t, s in by_topic.items()],
+        key=lambda x: x[1],
+    )
+    weak_topics = [t for t, _ in ranked_topics[:2]]
+    strong_topics = [t for t, _ in ranked_topics[-2:]][::-1]
+
+    if not llm_available():
+        fallback_map = {
+            "gioi": "Em có nền tảng rất tốt và khả năng xử lý bài nâng cao khá ổn định.",
+            "kha": "Em có năng lực học tập khá vững, cần tăng độ chắc ở một số phần kiến thức trọng tâm.",
+            "trung_binh": "Em đã nắm được các ý cơ bản nhưng cần luyện thêm để tăng độ chính xác và tốc độ làm bài.",
+            "yeu": "Em cần củng cố lại kiến thức nền và luyện theo lộ trình từng bước để tránh mất điểm ở câu cơ bản.",
+        }
+        progress_text = (
+            f"Em đã tiến bộ {improvement:.1f} điểm so với bài đầu kỳ."
+            if improvement >= 0
+            else f"Điểm hiện tại giảm {abs(improvement):.1f} so với đầu kỳ, cần rà soát lại thói quen học tập."
+        )
+        weak_text = ", ".join(weak_topics) if weak_topics else "một vài chủ đề nền tảng"
+        return (
+            f"{name}: {fallback_map.get(level, fallback_map['trung_binh'])} "
+            f"{progress_text} Điểm mạnh hiện tại là {', '.join(strong_topics) if strong_topics else 'các câu hỏi nhận biết-cơ bản'}. "
+            f"Em nên tập trung ôn lại {weak_text} và luyện 20-30 phút mỗi ngày với bài tập tăng dần độ khó."
+        )
+
+    system_prompt = (
+        "Bạn là giáo viên chủ nhiệm môn Toán. Viết nhận xét học sinh bằng tiếng Việt, 3-4 câu, ngắn gọn, tích cực và cụ thể. "
+        "Bắt buộc đề cập: điểm mạnh, điểm yếu, sự tiến bộ, lời khuyên hành động cụ thể. Không bịa dữ liệu."
+    )
+    user_prompt = (
+        f"Học sinh: {name}\n"
+        f"Điểm entry: {entry_score:.1f}\n"
+        f"Điểm final: {final_score:.1f}\n"
+        f"Mức tiến bộ: {improvement:.1f}\n"
+        f"Chủ đề mạnh: {', '.join(strong_topics) if strong_topics else 'chưa rõ'}\n"
+        f"Chủ đề yếu: {', '.join(weak_topics) if weak_topics else 'chưa rõ'}"
+    )
+    try:
+        return str(
+            chat_text(
+                [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+                temperature=0.35,
+                max_tokens=220,
+            )
+            or ""
+        ).strip()
+    except Exception:
+        return f"{name} đã đạt {final_score:.1f} điểm và thay đổi {improvement:+.1f} điểm so với đầu kỳ. Em nên tập trung luyện theo các chủ đề yếu để cải thiện ổn định hơn."
+
+
+def build_classroom_final_report(db: Session, classroom_id: int) -> Dict[str, Any]:
+    classroom = db.query(Classroom).filter(Classroom.id == int(classroom_id)).first()
+    class_name = str(getattr(classroom, "name", "")) or f"Lớp {int(classroom_id)}"
+
+    student_ids = [
+        int(r[0])
+        for r in db.query(ClassroomMember.user_id).filter(ClassroomMember.classroom_id == int(classroom_id)).all()
+    ]
+    assessment_ids = [
+        int(r[0])
+        for r in db.query(ClassroomAssessment.assessment_id)
+        .filter(ClassroomAssessment.classroom_id == int(classroom_id))
+        .all()
+    ]
+
+    attempts: List[Attempt] = []
+    if assessment_ids and student_ids:
+        attempts = (
+            db.query(Attempt)
+            .filter(Attempt.quiz_set_id.in_(assessment_ids), Attempt.user_id.in_(student_ids))
+            .order_by(Attempt.created_at.asc())
+            .all()
+        )
+    quiz_kind_map = {
+        int(qid): str(kind or "")
+        for qid, kind in db.query(QuizSet.id, QuizSet.kind).filter(QuizSet.id.in_(assessment_ids)).all()
+    } if assessment_ids else {}
+
+    per_student: Dict[int, Dict[str, Any]] = {uid: {"entry": None, "final": None} for uid in student_ids}
+    for at in attempts:
+        uid = int(at.user_id)
+        kind = quiz_kind_map.get(int(at.quiz_set_id), "")
+        if kind == "diagnostic_pre":
+            per_student[uid]["entry"] = at
+        elif kind == "diagnostic_post":
+            per_student[uid]["final"] = at
+
+    all_dates = [a.created_at for a in attempts if getattr(a, "created_at", None)]
+    period = {
+        "from": min(all_dates).isoformat() if all_dates else None,
+        "to": max(all_dates).isoformat() if all_dates else None,
+    }
+
+    entry_scores: List[float] = []
+    final_scores: List[float] = []
+    improved = 0
+    completed_both = 0
+    level_dist = {"gioi": 0, "kha": 0, "trung_binh": 0, "yeu": 0}
+    students: List[Dict[str, Any]] = []
+    topic_agg: Dict[str, Dict[str, float]] = {}
+
+    for uid in student_ids:
+        entry_attempt = per_student.get(uid, {}).get("entry")
+        final_attempt = per_student.get(uid, {}).get("final")
+        entry_score = float(getattr(entry_attempt, "score_percent", 0.0) or 0.0)
+        final_score = float(getattr(final_attempt, "score_percent", 0.0) or 0.0)
+        if entry_attempt:
+            entry_scores.append(entry_score)
+        if final_attempt:
+            final_scores.append(final_score)
+
+        if entry_attempt and final_attempt:
+            completed_both += 1
+            if final_score > entry_score:
+                improved += 1
+
+        level = classify_student_level(int(round(final_score)))
+        level_dist[level] = int(level_dist.get(level, 0) or 0) + 1
+
+        final_breakdown = score_breakdown(getattr(final_attempt, "breakdown_json", []) or []) if final_attempt else {}
+        weak_topics = [
+            str(t)
+            for t, info in sorted(
+                (final_breakdown.get("by_topic") or {}).items(), key=lambda x: float((x[1] or {}).get("percent") or 0.0)
+            )[:3]
+        ]
+
+        entry_topics = score_breakdown(getattr(entry_attempt, "breakdown_json", []) or []).get("by_topic", {}) if entry_attempt else {}
+        final_topics = (final_breakdown.get("by_topic") or {}) if final_breakdown else {}
+        for topic in set(list(entry_topics.keys()) + list(final_topics.keys())):
+            bucket = topic_agg.setdefault(str(topic), {"entry_sum": 0.0, "entry_n": 0.0, "final_sum": 0.0, "final_n": 0.0, "mastery_n": 0.0})
+            ep = float((entry_topics.get(topic) or {}).get("percent") or 0.0)
+            fp = float((final_topics.get(topic) or {}).get("percent") or 0.0)
+            if topic in entry_topics:
+                bucket["entry_sum"] += ep
+                bucket["entry_n"] += 1
+            if topic in final_topics:
+                bucket["final_sum"] += fp
+                bucket["final_n"] += 1
+                if fp >= 70.0:
+                    bucket["mastery_n"] += 1
+
+        students.append(
+            {
+                "user_id": int(uid),
+                "name": str(getattr(db.query(User).filter(User.id == int(uid)).first(), "full_name", "") or f"User #{uid}"),
+                "level": level,
+                "entry_score": round(entry_score, 2),
+                "final_score": round(final_score, 2),
+                "improvement": round(final_score - entry_score, 2),
+                "weak_topics": weak_topics,
+                "ai_assessment": generate_student_ai_assessment(db, uid, entry_attempt, final_attempt),
+            }
+        )
+
+    topic_analysis = []
+    for topic, vals in topic_agg.items():
+        entry_avg = float(vals["entry_sum"]) / max(1.0, float(vals["entry_n"]))
+        final_avg = float(vals["final_sum"]) / max(1.0, float(vals["final_n"]))
+        mastery_rate = (float(vals["mastery_n"]) / max(1.0, float(vals["final_n"]))) * 100.0
+        topic_analysis.append(
+            {
+                "topic": str(topic),
+                "avg_score_entry": round(entry_avg, 2),
+                "avg_score_final": round(final_avg, 2),
+                "mastery_rate": round(mastery_rate, 2),
+            }
+        )
+    topic_analysis.sort(key=lambda x: float(x.get("mastery_rate") or 0.0))
+
+    avg_entry = sum(entry_scores) / max(1, len(entry_scores))
+    avg_final = sum(final_scores) / max(1, len(final_scores))
+    improvement_rate = (improved / max(1, completed_both)) * 100.0
+
+    bloom_stub = [
+        {"student_id": s["user_id"], "bloom_accuracy": {"remember": s["final_score"]}}
+        for s in students
+    ]
+    class_narrative = generate_class_narrative(
+        total_students=len(student_ids),
+        level_dist=level_dist,
+        weak_topics=[{"topic": t["topic"]} for t in topic_analysis[:3]],
+        avg_improvement=avg_final - avg_entry,
+        per_student_data=bloom_stub,
+    )
+
+    return {
+        "report_title": f"Báo cáo tổng kết lớp học - {class_name}",
+        "period": period,
+        "class_stats": {
+            "total_students": len(student_ids),
+            "completed_both_tests": completed_both,
+            "avg_entry_score": round(avg_entry, 2),
+            "avg_final_score": round(avg_final, 2),
+            "improvement_rate": round(improvement_rate, 2),
+            "distribution": level_dist,
+        },
+        "topic_analysis": topic_analysis,
+        "students": students,
+        "ai_class_narrative": class_narrative,
+    }
+
+
+def export_classroom_final_report_pdf(report: Dict[str, Any], classroom_id: int) -> str:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.pdfgen import canvas
+
+    font_name = "Helvetica"
+    noto_path = get_noto_sans_font_path()
+    if noto_path and os.path.exists(noto_path):
+        try:
+            font_name = "NotoSans"
+            pdfmetrics.registerFont(TTFont(font_name, noto_path))
+        except Exception:
+            font_name = "Helvetica"
+
+    fd, output_path = tempfile.mkstemp(prefix=f"final_report_{int(classroom_id)}_", suffix=".pdf")
+    os.close(fd)
+    c = canvas.Canvas(output_path, pagesize=A4)
+    width, height = A4
+    y = height - 40
+
+    def _line(text: str, size: int = 11, step: int = 15) -> None:
+        nonlocal y
+        if y < 40:
+            c.showPage()
+            y = height - 40
+        c.setFont(font_name, size)
+        c.drawString(40, y, text)
+        y -= step
+
+    _line(str(report.get("report_title") or f"Báo cáo lớp {int(classroom_id)}"), 14, 20)
+    period = report.get("period") or {}
+    _line(f"Giai đoạn: {period.get('from') or 'N/A'} -> {period.get('to') or 'N/A'}")
+    stats = report.get("class_stats") or {}
+    _line(
+        f"Sĩ số: {int(stats.get('total_students') or 0)} | Hoàn thành đủ 2 bài: {int(stats.get('completed_both_tests') or 0)}"
+    )
+    _line(
+        f"Điểm TB Entry: {float(stats.get('avg_entry_score') or 0):.1f} | Điểm TB Final: {float(stats.get('avg_final_score') or 0):.1f}"
+    )
+    _line(f"Tỷ lệ cải thiện: {float(stats.get('improvement_rate') or 0):.1f}%")
+    _line("Nhận xét tổng quát:", 12, 16)
+    for paragraph in str(report.get("ai_class_narrative") or "").split(". "):
+        text = paragraph.strip()
+        if text:
+            _line(f"- {text}")
+
+    _line("Top chủ đề cần ưu tiên:", 12, 16)
+    for topic in (report.get("topic_analysis") or [])[:5]:
+        _line(
+            f"• {topic.get('topic')}: mastery {float(topic.get('mastery_rate') or 0):.1f}% | entry {float(topic.get('avg_score_entry') or 0):.1f} | final {float(topic.get('avg_score_final') or 0):.1f}"
+        )
+
+    _line("Danh sách học sinh:", 12, 16)
+    for st in report.get("students") or []:
+        _line(
+            f"- {st.get('name')} ({st.get('level')}): {float(st.get('entry_score') or 0):.1f} -> {float(st.get('final_score') or 0):.1f} ({float(st.get('improvement') or 0):+.1f})"
+        )
+
+    c.save()
+    return str(Path(output_path))
+
+
+def render_teacher_final_report_html(report: Dict[str, Any]) -> str:
+    template_path = Path(__file__).resolve().parent.parent / "resources" / "final_report_teacher_template.html"
+    template = template_path.read_text(encoding="utf-8")
+
+    topic_rows = "".join(
+        f"<tr><td>{t.get('topic')}</td><td>{t.get('avg_score_entry')}</td><td>{t.get('avg_score_final')}</td><td>{t.get('mastery_rate')}%</td></tr>"
+        for t in (report.get("topic_analysis") or [])
+    )
+    if topic_rows:
+        topic_rows = "<table><tr><th>Chủ đề</th><th>Entry</th><th>Final</th><th>Mastery</th></tr>" + topic_rows + "</table>"
+
+    student_rows = "".join(
+        f"<tr><td>{s.get('name')}</td><td>{s.get('level')}</td><td>{s.get('entry_score')}</td><td>{s.get('final_score')}</td><td>{s.get('improvement')}</td></tr>"
+        for s in (report.get("students") or [])
+    )
+    if student_rows:
+        student_rows = "<table><tr><th>Học sinh</th><th>Mức</th><th>Entry</th><th>Final</th><th>Tiến bộ</th></tr>" + student_rows + "</table>"
+
+    period = report.get("period") or {}
+    stats = report.get("class_stats") or {}
+    html = template
+    replacements = {
+        "{{ report_title }}": str(report.get("report_title") or "Báo cáo lớp học"),
+        "{{ period_from }}": str(period.get("from") or "N/A"),
+        "{{ period_to }}": str(period.get("to") or "N/A"),
+        "{{ total_students }}": str(stats.get("total_students") or 0),
+        "{{ completed_both_tests }}": str(stats.get("completed_both_tests") or 0),
+        "{{ avg_entry_score }}": str(stats.get("avg_entry_score") or 0),
+        "{{ avg_final_score }}": str(stats.get("avg_final_score") or 0),
+        "{{ improvement_rate }}": str(stats.get("improvement_rate") or 0),
+        "{{ topic_rows_html }}": topic_rows or "<p>Chưa có dữ liệu chủ đề.</p>",
+        "{{ student_rows_html }}": student_rows or "<p>Chưa có dữ liệu học sinh.</p>",
+        "{{ ai_class_narrative }}": str(report.get("ai_class_narrative") or ""),
+    }
+    for k, v in replacements.items():
+        html = html.replace(k, v)
+    return html

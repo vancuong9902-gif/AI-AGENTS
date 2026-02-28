@@ -25,6 +25,7 @@ from app.models.learner_profile import LearnerProfile
 from app.models.learning_plan import LearningPlan
 from app.infra.queue import enqueue
 from app.services.teacher_report_export_service import build_classroom_report_pdf
+from app.services.analytics_service import build_classroom_final_report, export_classroom_final_report_pdf
 from app.tasks.report_tasks import task_export_teacher_report_pdf
 from app.models.session import Session as UserSession
 from app.models.student_assignment import StudentAssignment
@@ -782,6 +783,21 @@ def export_teacher_report(
 
     pdf_path = build_classroom_report_pdf(classroom_id=int(classroom_id), db=db)
     return FileResponse(pdf_path, media_type="application/pdf", filename=f"classroom_{classroom_id}_report.pdf")
+
+
+@router.get("/lms/classroom/{classroom_id}/final-report")
+def classroom_final_report(request: Request, classroom_id: int, db: Session = Depends(get_db)):
+    report = build_classroom_final_report(db=db, classroom_id=int(classroom_id))
+    return {"request_id": request.state.request_id, "data": report, "error": None}
+
+
+@router.get("/lms/classroom/{classroom_id}/final-report/pdf")
+def classroom_final_report_pdf(request: Request, classroom_id: int, db: Session = Depends(get_db)):
+    _ = request
+    report = build_classroom_final_report(db=db, classroom_id=int(classroom_id))
+    pdf_path = export_classroom_final_report_pdf(report=report, classroom_id=int(classroom_id))
+    return FileResponse(pdf_path, media_type="application/pdf", filename=f"classroom_{classroom_id}_final_report.pdf")
+
 @router.get("/lms/students/{student_id}/assignments")
 def list_student_assignments(request: Request, student_id: int, classroom_id: int | None = None, db: Session = Depends(get_db)):
     q = db.query(StudentAssignment).filter(StudentAssignment.student_id == int(student_id))
