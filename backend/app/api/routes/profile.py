@@ -14,6 +14,7 @@ from app.services.user_service import ensure_user_exists
 from app.services.rag_service import retrieve_and_log, auto_document_ids_for_query
 from app.core.config import settings
 from app.services.llm_service import llm_available, chat_json, pack_chunks
+from app.services.lms_service import classify_student_level
 from app.schemas.profile import (
     DiagnosticQuestionOut,
     DiagnosticRequest,
@@ -679,6 +680,36 @@ def recommend_next(request: Request, user_id: int, topic: str, db: Session = Dep
 
     out = NextRecommendationData(topic=t, recommended_level=lvl, mastery=mastery, reason=reason).model_dump()
     return {"request_id": request.state.request_id, "data": out, "error": None}
+
+
+@router.get("/v1/students/{userId}/level")
+def student_level(request: Request, userId: int, db: Session = Depends(get_db)):
+    latest_diag = (
+        db.query(DiagnosticAttempt)
+        .filter(DiagnosticAttempt.user_id == int(userId), DiagnosticAttempt.stage == "pre")
+        .order_by(DiagnosticAttempt.created_at.desc())
+        .first()
+    )
+
+    score = None
+    if latest_diag:
+        score = int(getattr(latest_diag, "score_percent", 0) or 0)
+    else:
+        latest_attempt = (
+            db.query(Attempt)
+            .join(QuizSet, QuizSet.id == Attempt.quiz_set_id)
+            .filter(Attempt.user_id == int(userId), QuizSet.kind == "diagnostic_pre")
+            .order_by(Attempt.created_at.desc())
+            .first()
+        )
+        if latest_attempt:
+            score = int(getattr(latest_attempt, "score_percent", 0) or 0)
+
+    if score is None:
+        raise HTTPException(status_code=404, detail="Diagnostic attempt not found")
+
+    level = classify_student_level(score)
+    return {"request_id": request.state.request_id, "data": level, "error": None}
 
 
 @router.get("/profile/{user_id}/learning-path")

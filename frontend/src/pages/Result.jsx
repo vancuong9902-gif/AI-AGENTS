@@ -6,6 +6,7 @@ import Card from "../ui/Card";
 import Banner from "../ui/Banner";
 import Button from "../ui/Button";
 import PageHeader from "../ui/PageHeader";
+import StudentLevelBadge from "../components/StudentLevelBadge";
 
 function toArray(value) {
   return Array.isArray(value) ? value : [];
@@ -25,11 +26,12 @@ function formatDuration(sec) {
   return `${mm}m ${String(ss).padStart(2, "0")}s`;
 }
 
-function classifyStudent(scorePercent) {
-  if (scorePercent >= 85) return "Giỏi";
-  if (scorePercent >= 70) return "Khá";
-  if (scorePercent >= 50) return "Trung bình";
-  return "Yếu";
+function levelFromScore(scorePercent) {
+  const score = Math.max(0, Math.min(100, Math.round(toNumber(scorePercent, 0))));
+  if (score >= 85) return { label: "Giỏi", color: "green", emoji: "🌟", description: "Nắm vững kiến thức, sẵn sàng học nội dung nâng cao", learning_approach: "Tập trung vào bài tập khó và bài tập mở rộng" };
+  if (score >= 70) return { label: "Khá", color: "blue", emoji: "⭐", description: "Hiểu cơ bản, cần củng cố một số điểm", learning_approach: "Kết hợp ôn tập kiến thức yếu và học mới" };
+  if (score >= 50) return { label: "Trung Bình", color: "orange", emoji: "📚", description: "Cần ôn tập thêm trước khi học nội dung mới", learning_approach: "Tập trung vào kiến thức nền tảng" };
+  return { label: "Yếu", color: "red", emoji: "💪", description: "Cần hỗ trợ thêm – AI sẽ hướng dẫn từng bước", learning_approach: "Học lại từ đầu với hỗ trợ AI intensive" };
 }
 
 function normalizeQuestionRow(item, index) {
@@ -167,6 +169,8 @@ export default function Result() {
     return buckets;
   }, [data]);
 
+  const studentLevel = useMemo(() => levelFromScore(data?.scorePercent || 0), [data?.scorePercent]);
+
   const ctaConfig = useMemo(() => {
     if (resolvedQuizType === "diagnostic_pre") {
       return { label: "Bắt đầu học theo lộ trình cá nhân hoá", to: "/learning-path" };
@@ -194,7 +198,10 @@ export default function Result() {
         <>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
             <StatCard label="Điểm số" value={scoreText} />
-            <StatCard label="Phân loại" value={classifyStudent(data.scorePercent)} />
+            <Card style={{ padding: 16 }}>
+              <div style={{ fontSize: 13, color: "#64748b", marginBottom: 8 }}>Phân loại</div>
+              <StudentLevelBadge level={studentLevel} size="md" />
+            </Card>
             <StatCard label="Thời gian làm bài" value={formatDuration(data.durationSec)} />
             <StatCard label="Số câu đúng" value={`${data.correctCount}/${data.totalQuestions}`} />
           </div>

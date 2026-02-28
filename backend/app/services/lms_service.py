@@ -51,15 +51,59 @@ class MultiDimProfile:
     recommended_pace: str
 
 
-def classify_student_level(total_score: int) -> str:
+def classify_student_level(total_score: int) -> dict[str, Any]:
     score = max(0, min(100, int(total_score)))
-    if score >= 85:
-        return "gioi"
-    if score >= 70:
-        return "kha"
-    if score >= 50:
-        return "trung_binh"
-    return "yeu"
+    levels: dict[str, dict[str, Any]] = {
+        "gioi": {
+            "label": "Giỏi",
+            "label_en": "Advanced",
+            "min_score": 85,
+            "color": "green",
+            "emoji": "🌟",
+            "description": "Nắm vững kiến thức, sẵn sàng học nội dung nâng cao",
+            "learning_approach": "Tập trung vào bài tập khó và bài tập mở rộng",
+            "homework_difficulty": "hard",
+            "content_level": "advanced",
+        },
+        "kha": {
+            "label": "Khá",
+            "label_en": "Intermediate",
+            "min_score": 70,
+            "color": "blue",
+            "emoji": "⭐",
+            "description": "Hiểu cơ bản, cần củng cố một số điểm",
+            "learning_approach": "Kết hợp ôn tập kiến thức yếu và học mới",
+            "homework_difficulty": "medium",
+            "content_level": "standard",
+        },
+        "trung_binh": {
+            "label": "Trung Bình",
+            "label_en": "Beginner",
+            "min_score": 50,
+            "color": "orange",
+            "emoji": "📚",
+            "description": "Cần ôn tập thêm trước khi học nội dung mới",
+            "learning_approach": "Tập trung vào kiến thức nền tảng",
+            "homework_difficulty": "easy",
+            "content_level": "basic",
+        },
+        "yeu": {
+            "label": "Yếu",
+            "label_en": "Foundational",
+            "min_score": 0,
+            "color": "red",
+            "emoji": "💪",
+            "description": "Cần hỗ trợ thêm – AI sẽ hướng dẫn từng bước",
+            "learning_approach": "Học lại từ đầu với hỗ trợ AI intensive",
+            "homework_difficulty": "easy",
+            "content_level": "remedial",
+        },
+    }
+
+    for key in ["gioi", "kha", "trung_binh", "yeu"]:
+        if score >= int(levels[key]["min_score"]):
+            return {"level_key": key, "score": score, **levels[key]}
+    return {"level_key": "yeu", "score": score, **levels["yeu"]}
 
 
 def _safe_percent(value: Any) -> float:
@@ -180,7 +224,8 @@ def build_personalized_content_plan(
     document_topics: list[str] | list[dict[str, Any]],
 ) -> dict[str, Any]:
     overall_percent = _extract_overall_percent(quiz_attempt_result)
-    student_level = classify_student_level(int(round(overall_percent)))
+    student_level_obj = classify_student_level(int(round(overall_percent)))
+    student_level = str(student_level_obj["level_key"])
 
     topic_percents = _extract_topic_percents(quiz_attempt_result, document_topics)
     sorted_topics = sorted(topic_percents.items(), key=lambda x: (x[1], x[0]))
@@ -268,7 +313,7 @@ def classify_student_multidim(
     prev_attempts: list[Any] | None = None,
 ) -> MultiDimProfile:
     overall_percent = float(((breakdown or {}).get("overall") or {}).get("percent") or 0.0)
-    primary_level = classify_student_level(int(round(overall_percent)))
+    primary_level = str(classify_student_level(int(round(overall_percent)))["level_key"])
 
     by_difficulty = (breakdown or {}).get("by_difficulty") or {}
     easy_pct = float((by_difficulty.get("easy") or {}).get("percent") or 0.0)
@@ -297,7 +342,7 @@ def classify_student_multidim(
     topic_mastery: dict[str, str] = {}
     for topic, stats in ((breakdown or {}).get("by_topic") or {}).items():
         topic_pct = float((stats or {}).get("percent") or 0.0)
-        topic_mastery[str(topic)] = classify_student_level(int(round(topic_pct)))
+        topic_mastery[str(topic)] = str(classify_student_level(int(round(topic_pct)))["level_key"])
 
     consistency = _classify_consistency(prev_attempts or [])
     weak_topics = [t for t, lvl in topic_mastery.items() if lvl == "yeu"]
@@ -1042,7 +1087,8 @@ def teacher_report(db: Session, classroom_id: int) -> dict[str, Any]:
         final = final_scores.get(uid)
         base_score = final if final is not None else (entry if entry is not None else 0.0)
         level = classify_student_level(int(round(base_score)))
-        distribution[level] += 1
+        level_key = str(level["level_key"])
+        distribution[level_key] += 1
         improvement = round((final - entry), 2) if final is not None and entry is not None else None
         if entry is None and final is not None:
             level_change = "new"
@@ -1091,7 +1137,7 @@ def teacher_report(db: Session, classroom_id: int) -> dict[str, Any]:
                 "entry_score": round(entry, 2) if entry is not None else None,
                 "final_score": round(final, 2) if final is not None else None,
                 "improvement": improvement,
-                "level": level,
+                "level": level_key,
                 "level_change": level_change,
                 "strong_topics": strong_topics,
                 "weak_topics": weak_topics,
