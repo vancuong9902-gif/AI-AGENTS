@@ -40,6 +40,9 @@ from app.infra.queue import is_async_enabled, enqueue
 from app.tasks.index_tasks import task_index_document, task_rebuild_vector_index
 from app.services.user_service import ensure_user_exists
 from app.services.quiz_service import generate_quiz_with_rag
+from app.services.vietnamese_font_fix import detect_broken_vn_font, fix_vietnamese_encoding
+from app.services.text_quality import quality_score
+from app.services.text_repair import repair_ocr_spacing_text
 
 router = APIRouter(tags=['documents'])
 
@@ -431,9 +434,24 @@ def list_document_topics(request: Request, document_id: int, db: Session = Depen
                 item["has_more_practice"] = len(pv) > 900
         out.append(item)
     needs_review_count = sum(1 for x in out if bool(x.get('needs_review')))
+
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    raw_doc_text = str(getattr(doc, 'content', '') or '')
+    had_font_issues = bool(detect_broken_vn_font(raw_doc_text)) if raw_doc_text else False
+    repaired_text = repair_ocr_spacing_text(fix_vietnamese_encoding(raw_doc_text)) if raw_doc_text else ''
+    font_quality_score = float(quality_score(repaired_text if repaired_text else raw_doc_text)) if (raw_doc_text or repaired_text) else 0.0
+    repair_applied = bool(raw_doc_text and repaired_text and repaired_text != raw_doc_text)
+
     return {
         'request_id': request.state.request_id,
-        'data': {'document_id': document_id, 'topics': out, 'needs_review_count': needs_review_count},
+        'data': {
+            'document_id': document_id,
+            'topics': out,
+            'needs_review_count': needs_review_count,
+            'font_quality_score': round(font_quality_score, 4),
+            'had_font_issues': had_font_issues,
+            'repair_applied': repair_applied,
+        },
         'error': None,
     }
 

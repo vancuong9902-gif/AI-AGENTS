@@ -164,3 +164,8 @@ def fix_vietnamese_font_encoding(text: str) -> str:
 
     result = _fallback_tesseract(result)
     return unicodedata.normalize("NFC", result)
+
+
+def fix_vietnamese_encoding(text: str) -> str:
+    """Backward-compatible alias used by pipeline/services."""
+    return fix_vietnamese_font_encoding(text)
