@@ -10,6 +10,8 @@ from fastapi import UploadFile
 
 from app.core.config import settings
 from app.services.text_repair import repair_ocr_spacing_line, repair_ocr_spacing_text, fix_eth_d
+from app.services.text_quality import quality_score
+from app.services.vietnamese_font_fix import fix_vietnamese_encoding
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +39,16 @@ def _normalize_pipeline_text(text: str) -> str:
     text = fix_eth_d(text)
     text = repair_ocr_spacing_text(text)
     return _sanitize_text(text)
+
+
+def process_extracted_text(raw_text: str) -> str:
+    """Apply mandatory Vietnamese font/spacing repair before LLM-facing stages."""
+    text = fix_vietnamese_encoding(raw_text or "")
+    text = repair_ocr_spacing_text(text)
+    score = quality_score(text)
+    if score < 0.4:
+        raise ValueError(f"Text quality too low after repair: {score:.2f}")
+    return text
 
 
 # Some PDFs insert soft hyphens or glue single-letter variables into words.
@@ -832,6 +844,8 @@ async def extract_and_chunk(file: UploadFile) -> Tuple[str, List[Dict[str, Any]]
 
     if ctype == "application/pdf" or fname.endswith(".pdf"):
         text, chunks, _ = _extract_text_pdf_with_report(data)
+        text = process_extracted_text(text)
+        chunks = [{**ch, "text": repair_ocr_spacing_text(fix_vietnamese_encoding(str(ch.get("text") or "")))} for ch in chunks]
         return text, chunks
     if ctype in {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -854,6 +868,8 @@ async def extract_and_chunk_with_report(file: UploadFile) -> Tuple[str, List[Dic
     fname = (file.filename or "").lower()
     if ctype == "application/pdf" or fname.endswith(".pdf"):
         text, chunks, report = _extract_text_pdf_with_report(data)
+        text = process_extracted_text(text)
+        chunks = [{**ch, "text": repair_ocr_spacing_text(fix_vietnamese_encoding(str(ch.get("text") or "")))} for ch in chunks]
         return text, chunks, report
 
     if ctype in {

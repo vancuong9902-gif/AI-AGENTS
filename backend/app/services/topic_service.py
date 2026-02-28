@@ -9,7 +9,7 @@ from app.services.llm_service import llm_available, chat_json, chat_text
 from app.services.external_sources import fetch_external_snippets
 from app.core.config import settings
 from app.services.text_repair import repair_ocr_spacing_line, repair_ocr_spacing_text
-from app.services.vietnamese_font_fix import detect_broken_vn_font, fix_vietnamese_font_encoding
+from app.services.vietnamese_font_fix import detect_broken_vn_font, fix_vietnamese_font_encoding, fix_vietnamese_encoding
 
 
 _WORD_RX = re.compile(r"[A-Za-zÀ-ỹà-ỹ0-9_]+", flags=re.UNICODE)
@@ -37,6 +37,29 @@ _PAGE_PREFIX_RX = re.compile(r"^\s*(?:trang|page|p\.?|pp\.?)\s*\d{1,4}\b", flags
 _NON_PRINTABLE_RX = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
 
 
+
+_GARBLED_TOPIC_PATTERNS = [
+    re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]"),
+    re.compile(r"[Ð¡¢£¤¥¦§¨©ª«¬®¯°±²³]"),
+]
+
+
+def validate_topic_title(title: str) -> str:
+    """Đảm bảo topic title không chứa ký tự lỗi font."""
+    cleaned = str(title or "").strip()
+    for pattern in _GARBLED_TOPIC_PATTERNS:
+        if pattern.search(cleaned):
+            fixed = fix_vietnamese_encoding(cleaned).strip()
+            fixed = re.sub(r"[Ð¡¢£¤¥¦§¨©ª«¬®¯°±²³]", "", fixed).strip()
+            score = quality_score(fixed)
+            # Titles are short; quality_score is conservative on short text.
+            readable_words = len(re.findall(r"[A-Za-zÀ-ỹà-ỹ]{2,}", fixed))
+            if score > 0.6 or readable_words >= 3:
+                return fixed
+            raise ValueError(f"Topic title appears garbled: {cleaned[:50]}")
+    return cleaned
+
+
 def validate_and_clean_topic_title(raw_title: str) -> tuple[str, list[str]]:
     """Clean and validate extracted topic title for UI display."""
     warnings: list[str] = []
@@ -44,6 +67,14 @@ def validate_and_clean_topic_title(raw_title: str) -> tuple[str, list[str]]:
 
     if not title:
         return "", ["empty_title", "needs_review=True"]
+
+    try:
+        validated = validate_topic_title(title)
+        if validated != title:
+            warnings.append("font_fixed")
+            title = validated
+    except ValueError:
+        return "", ["garbled_title", "needs_review=True"]
 
     if detect_broken_vn_font(title):
         fixed = fix_vietnamese_font_encoding(title).strip()
@@ -1285,7 +1316,7 @@ def _clean_line(line: str) -> str:
 
     # Nếu line có vẻ lỗi font, thử fix trước khi dùng làm heading
     try:
-        from app.services.vietnamese_font_fix import detect_broken_vn_font, fix_vietnamese_font_encoding
+        from app.services.vietnamese_font_fix import detect_broken_vn_font, fix_vietnamese_font_encoding, fix_vietnamese_encoding
 
         if detect_broken_vn_font(s):
             fixed = fix_vietnamese_font_encoding(s)

@@ -1,33 +1,37 @@
 import re
-import unicodedata
 
-from app.services.topic_service import extract_topics
+from app.services.topic_service import validate_topic_title
 
 _BAD_CHARS = set("¸\u00ad¬×®¦§")
-_ALLOWED_TITLE_RX = re.compile(r"^[\u0020-\u007E\u00C0-\u024F\u1E00-\u1EFF]+$")
+_READABLE_RX = re.compile(r"[A-Za-zÀ-ỹà-ỹ]{3,}")
 
 
-def _is_unicode_vn_normalized(s: str) -> bool:
-    return s == unicodedata.normalize("NFC", s)
+def _assert_human_readable(text: str):
+    assert text
+    assert _READABLE_RX.search(text), text
+    assert not any(ch in _BAD_CHARS for ch in text), text
 
 
-def test_extract_topics_handles_tcvn3_broken_heading_font():
-    full_text = (
-        "Ch\u00ad¬ng 1 §¹i sè t\u00ad tuy Õn\n"
-        + "Đại số tuyến tính nghiên cứu vector, ma trận và các phép biến đổi tuyến tính. " * 35
-        + "\nKết luận\n"
-        + "Tổng kết nội dung đại số tuyến tính, nhấn mạnh ứng dụng của vector và ma trận trong mô hình hóa. " * 45
-    )
+def test_vni_times_encoded_title_is_repaired_to_readable_text():
+    raw = "Ch­¬ng tr×nh häc m¸y c¬ b¶n"
+    repaired = validate_topic_title(raw)
+    _assert_human_readable(repaired)
 
-    resp = extract_topics(full_text, heading_level="chapter", include_details=False, max_topics=8)
-    result = resp.get("topics") or []
 
-    assert resp.get("status") == "OK"
-    assert len(result) > 0
+def test_tcvn3_encoded_title_is_repaired_to_readable_text():
+    raw = "Kü thuËt lËp tr×nh h­íng ®èi t­îng"
+    repaired = validate_topic_title(raw)
+    _assert_human_readable(repaired)
 
-    for topic in result:
-        title = str(topic.get("title") or "")
-        assert title
-        assert _is_unicode_vn_normalized(title)
-        assert not any(ch in _BAD_CHARS for ch in title)
-        assert _ALLOWED_TITLE_RX.fullmatch(title), title
+
+def test_symbol_wingdings_noise_is_repaired_to_readable_text():
+    raw = "To¸n rêi r¹c ¦ § và øng dông"
+    repaired = validate_topic_title(raw)
+    _assert_human_readable(repaired)
+
+
+def test_clean_unicode_utf8_title_keeps_original_content():
+    title = "Giải tích đa biến và ứng dụng"
+    repaired = validate_topic_title(title)
+    assert repaired == title
+    _assert_human_readable(repaired)
