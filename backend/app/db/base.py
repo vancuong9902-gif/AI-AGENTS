@@ -25,3 +25,5 @@ from app.models.notification import Notification
 
 from app.models.notification import Notification, NotificationType
 
+
+from app.models.quiz_session import QuizSession

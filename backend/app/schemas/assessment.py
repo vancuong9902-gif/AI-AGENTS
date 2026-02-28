@@ -57,6 +57,7 @@ class AssessmentAnswer(BaseModel):
 
 class AssessmentSubmitRequest(BaseModel):
     user_id: int
+    # Deprecated: duration is now enforced server-side.
     duration_sec: int = 0
     answers: List[AssessmentAnswer]
 
