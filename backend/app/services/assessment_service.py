@@ -56,14 +56,50 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[\.\?!\n])\s+")
 _TOPIC_IN_STEM_RE = re.compile(r"'([^']+)'|\"([^\"]+)\"|“([^”]+)”")
 
 
-def _is_dup(stem: str, excluded_stems: set[str] | None = None, similarity_threshold: float = 0.75) -> bool:
+_TRAILING_PUNCT_RE = re.compile(r"[\s\?\!\.,;:]+$")
+
+
+def _normalize_stem_for_dedup(stem: str, *, max_chars: int = 120) -> str:
+    """Normalize question stem so duplicate checks are stable across paraphrases."""
+    s = " ".join(str(stem or "").strip().lower().split())
+    s = _TRAILING_PUNCT_RE.sub("", s)
+    if max_chars > 0:
+        s = s[:max_chars]
+    return s
+
+
+def _is_dup(stem: str, excluded_stems: set[str] | None = None, similarity_threshold: float = 0.72) -> bool:
     """Return True when stem is too similar to any excluded stem."""
     if not excluded_stems or not stem:
         return False
-    s = stem.lower().strip()
+    s = _normalize_stem_for_dedup(stem)
     if not s:
         return False
-    return any(SequenceMatcher(None, s, ex).ratio() >= float(similarity_threshold) for ex in excluded_stems if ex)
+    return any(
+        SequenceMatcher(None, s, _normalize_stem_for_dedup(ex)).ratio() >= float(similarity_threshold)
+        for ex in excluded_stems
+        if ex
+    )
+
+
+def get_used_question_stems(db: Session, *, user_id: int, kinds: list[str]) -> set[str]:
+    """Load normalized stems from prior attempts of selected quiz kinds."""
+    kind_list = [str(k or "").strip().lower() for k in (kinds or []) if str(k or "").strip()]
+    if not kind_list:
+        return set()
+
+    rows = (
+        db.query(Question.stem)
+        .join(QuizSet, QuizSet.id == Question.quiz_set_id)
+        .join(Attempt, Attempt.quiz_set_id == QuizSet.id)
+        .filter(Attempt.user_id == int(user_id), QuizSet.kind.in_(kind_list))
+        .all()
+    )
+    return {
+        _normalize_stem_for_dedup(str(r[0] or ""))
+        for r in rows
+        if r and _normalize_stem_for_dedup(str(r[0] or ""))
+    }
 
 
 _TOK_RE = re.compile(r"[\wÀ-ỹ]+", re.UNICODE)
@@ -314,7 +350,7 @@ def _infer_topic_from_stem(stem: str, fallback: str = "tài liệu") -> str:
 
 def _is_assessment_kind(kind: str) -> bool:
     # Legacy note: previously had kind="assessment" (treated as "midterm")
-    return (kind or "").strip().lower() in ("midterm", "diagnostic_pre", "diagnostic_post", "assessment", "entry_test")
+    return (kind or "").strip().lower() in ("midterm", "diagnostic_pre", "diagnostic_post", "assessment", "entry_test", "final_exam")
 
 
 def _normalize_assessment_kind(kind: str | None) -> str:
@@ -323,6 +359,8 @@ def _normalize_assessment_kind(kind: str | None) -> str:
         return "midterm"
     if k in ("midterm", "diagnostic_pre", "diagnostic_post", "entry_test"):
         return k
+    if k == "final_exam":
+        return "final_exam"
     # Default: treat unknown as "midterm" (in-course)
     return "midterm"
 
@@ -1701,6 +1739,7 @@ def generate_assessment(
     excluded_question_ids: List[int] | None = None,
     similarity_threshold: float = 0.75,
     time_limit_minutes: int | None = None,
+    attempt_user_id: int | None = None,
 ) -> Dict[str, Any]:
     total_q = int(easy_count) + int(medium_count) + int(hard_count)
 
@@ -1716,10 +1755,37 @@ def generate_assessment(
         rows = db.query(Question.stem).filter(
             Question.quiz_set_id.in_([int(x) for x in exclude_quiz_ids])
         ).all()
-        _excluded_stems.update({str(r[0] or "").lower().strip() for r in rows if r[0]})
+        _excluded_stems.update({_normalize_stem_for_dedup(str(r[0] or "")) for r in rows if r[0]})
     if _excluded_question_ids:
         qrows = db.query(Question.stem).filter(Question.id.in_(list(_excluded_question_ids))).all()
-        _excluded_stems.update({str(r[0] or "").lower().strip() for r in qrows if r[0]})
+        _excluded_stems.update({_normalize_stem_for_dedup(str(r[0] or "")) for r in qrows if r[0]})
+
+    dedup_topics_from_entry: list[str] = []
+    if kind == "final_exam":
+        history_user_id = int(attempt_user_id if attempt_user_id is not None else teacher_id)
+        prior_stems = get_used_question_stems(db, user_id=history_user_id, kinds=["diagnostic_pre", "entry_test"])
+        _excluded_stems.update(prior_stems)
+        if len(prior_stems) > 20:
+            logging.getLogger(__name__).warning(
+                "Large excluded stem set for final_exam: %s stems for user_id=%s",
+                len(prior_stems),
+                history_user_id,
+            )
+        topic_rows = (
+            db.query(QuizSet.metadata_json)
+            .join(Attempt, Attempt.quiz_set_id == QuizSet.id)
+            .filter(Attempt.user_id == history_user_id, QuizSet.kind.in_(["diagnostic_pre", "entry_test"]))
+            .all()
+        )
+        topic_seen: set[str] = set()
+        for row in topic_rows:
+            meta = row[0] if row else {}
+            if isinstance(meta, dict):
+                for t in (meta.get("topics_covered") or []):
+                    tt = str(t or "").strip()
+                    if tt:
+                        topic_seen.add(tt)
+        dedup_topics_from_entry = sorted(topic_seen)
 
     def _is_dup_local(stem: str) -> bool:
         return _is_dup(stem, _excluded_stems, similarity_threshold)
@@ -2111,8 +2177,13 @@ def generate_assessment(
     quiz_set.generation_seed = __import__("hashlib").sha256(json.dumps(seed_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
     topics_covered = [t.strip() for t in (topics or []) if (t or "").strip()]
     quiz_metadata: Dict[str, Any] = {}
-    if kind == "entry_test":
+    if kind in {"entry_test", "diagnostic_pre"}:
         quiz_metadata["topics_covered"] = topics_covered
+    if kind == "final_exam":
+        quiz_metadata["deduplication_info"] = {
+            "excluded_count": int(len(_excluded_stems)),
+            "topics_from_entry": dedup_topics_from_entry,
+        }
 
     computed_total_minutes = 0
     try:
@@ -2205,6 +2276,10 @@ def generate_assessment(
         "filtered_duplicates": int(filtered_count),
         "semantic_filtered_duplicates": int(semantic_filtered),
         "semantic_filter_mode": semantic_mode,
+        "deduplication_info": {
+            "excluded_count": int(len(_excluded_stems)),
+            "topics_from_entry": dedup_topics_from_entry,
+        },
     }
 
 
