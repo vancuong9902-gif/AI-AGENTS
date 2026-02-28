@@ -101,15 +101,30 @@ def _clean_pdf_page_text(text: str) -> str:
     text = _sanitize_text(text)
     # Normalize line endings
     text = text.replace("\r\n", "\n").replace("\r", "\n")
+    raw_lines = [ln.strip() for ln in text.split("\n") if ln and ln.strip()]
+    has_toc_hint = bool(_TOC_HINT_RE.search(text))
+    dotted_density = (
+        sum(1 for ln in raw_lines if _DOTS_LEADER_RE.search(ln)) / max(1, len(raw_lines))
+        if raw_lines
+        else 0.0
+    )
+    short_density = (
+        sum(1 for ln in raw_lines if len(ln) <= 80) / max(1, len(raw_lines))
+        if raw_lines
+        else 0.0
+    )
+    strict_toc_lines = has_toc_hint and dotted_density >= 0.22 and short_density >= 0.55
+
     lines = []
-    for raw in text.split("\n"):
+    for raw in raw_lines:
         line = raw.strip()
         if not line:
             continue
         line = _fix_joined_variables(line)
         line = repair_ocr_spacing_line(line)
-        # Drop leader-dot lines common in TOC
-        if _DOTS_LEADER_RE.search(line) and len(line) < 120:
+        # Drop TOC leader-dot lines only in strong TOC contexts.
+        # Keep normal prose lines containing "...".
+        if strict_toc_lines and _DOTS_LEADER_RE.search(line) and len(line) < 140:
             continue
         # Drop headers/footers
         if any(pat.match(line) for pat in _PDF_FOOTER_PATTERNS):
@@ -727,7 +742,7 @@ def _extract_text_docx(data: bytes) -> Tuple[str, List[Dict[str, Any]]]:
 
     doc = DocxDocument(io.BytesIO(data))
     text = "\n".join([p.text for p in doc.paragraphs if p.text and p.text.strip()])
-    text = _sanitize_text(text)
+    text = _normalize_pipeline_text(text)
     chunks = [{"text": ch, "meta": {}} for ch in _chunk_text(text)]
     return text, chunks
 
@@ -761,7 +776,7 @@ def _extract_text_pptx(data: bytes) -> Tuple[str, List[Dict[str, Any]]]:
 
 def _extract_text_fallback(data: bytes) -> Tuple[str, List[Dict[str, Any]]]:
     # Try utf-8; if binary, ignore errors.
-    text = _sanitize_text(data.decode("utf-8", errors="ignore"))
+    text = _normalize_pipeline_text(data.decode("utf-8", errors="ignore"))
     chunks = [{"text": ch, "meta": {}} for ch in _chunk_text(text)]
     return text, chunks
 

@@ -1,16 +1,17 @@
 .app-shell { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
-.sidebar { background: var(--surface); border-right: 1px solid var(--border); padding: 16px; }
-.brand { font-weight: 800; margin-bottom: 16px; }
+.sidebar { background: var(--surface); border-right: 1px solid var(--border); padding: 16px; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
+.brand { font-weight: 800; margin-bottom: 14px; }
 .nav-section { display: grid; gap: 6px; }
-.nav-item { padding: 10px 12px; border-radius: 12px; color: var(--muted); }
+.nav-item { padding: 10px 12px; border-radius: 12px; color: var(--muted); font-weight: 500; }
 .nav-item.active, .nav-item:hover { background: var(--primary-soft); color: var(--text); }
 .main-wrap { display: grid; grid-template-rows: auto 1fr; min-width: 0; }
-.topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 18px; display: flex; justify-content: space-between; align-items: center; }
-.page-content { padding: 20px; }
+.topbar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 18px; }
+.topbar-inner { width: min(1100px, calc(100vw - 32px)); margin-inline: auto; display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.page-content { padding: 20px 0 28px; }
 .user-pill { background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px; font-size: 13px; }
 .logout-btn { border: 1px solid var(--border); background: var(--surface); padding: 8px 12px; border-radius: 10px; cursor: pointer; }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow); }
+
 @media (max-width: 960px) {
   .app-shell { grid-template-columns: 1fr; }
-  .sidebar { border-right: none; border-bottom: 1px solid var(--border); }
+  .sidebar { border-right: none; border-bottom: 1px solid var(--border); height: auto; position: static; }
 }

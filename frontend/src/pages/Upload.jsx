@@ -6,6 +6,7 @@ import Button from '../ui/Button';
 import Input from '../ui/Input';
 import Badge from '../ui/Badge';
 import Spinner from '../ui/Spinner';
+import { Accordion, AccordionItem } from '../ui/Accordion';
 
 export default function Upload() {
   const [file, setFile] = useState(null);
@@ -41,12 +42,9 @@ export default function Upload() {
     setHint('Đang tải lên và xử lý tài liệu...');
 
     try {
-      const data = await apiJson('/documents/upload', {
-        method: 'POST',
-        body: formData,
-      });
+      const data = await apiJson('/documents/upload', { method: 'POST', body: formData });
       setResult(data || null);
-      setHint('Tải lên thành công. Bạn có thể vào Thư viện để xem chi tiết.');
+      setHint('Tải lên thành công.');
     } catch (err) {
       setError(err?.message || 'Upload thất bại, vui lòng thử lại.');
       setHint('');
@@ -55,109 +53,111 @@ export default function Upload() {
     }
   };
 
-  const extractorName = result?.pdf_report?.chosen_extractor || result?.pdf_report?.extractor_chosen || 'N/A';
-
   return (
-    <div style={{ maxWidth: 980, margin: '0 auto', display: 'grid', gap: 16 }}>
-      <Card>
-        <h2 style={{ marginTop: 0, marginBottom: 8 }}>Tải lên tài liệu giáo viên</h2>
-        <p style={{ marginTop: 0, opacity: 0.8 }}>
-          Hỗ trợ định dạng <b>.pdf</b>, <b>.docx</b>, <b>.pptx</b>. Tags nhập theo dạng: <i>python, chương 1</i>.
-        </p>
+    <div className='container grid-12'>
+      <Card className='span-12'>
+        <h1>Upload tài liệu</h1>
+        <p style={{ color: 'var(--muted)' }}>Hỗ trợ PDF/DOCX/PPTX. Với PDF dài, hệ thống sẽ ưu tiên coverage để tránh thiếu nội dung.</p>
+      </Card>
 
+      <Card className='span-6'>
+        <h2 style={{ marginBottom: 10 }}>Biểu mẫu tải lên</h2>
         <form onSubmit={handleUpload} style={{ display: 'grid', gap: 12 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 }}>
-            <label style={{ display: 'grid', gap: 6 }}>
-              <span>Tiêu đề tài liệu</span>
-              <Input
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="Ví dụ: Python cơ bản - Chương 1"
-              />
-            </label>
+          <Input label='Tiêu đề tài liệu' helper='Nên đặt theo môn/chương để dễ tìm.' value={title} onChange={(e) => setTitle(e.target.value)} placeholder='Ví dụ: Python cơ bản - Chương 1' />
+          <Input label='Tags' helper='Nhập danh sách, ngăn cách bằng dấu phẩy.' value={tags} onChange={(e) => setTags(e.target.value)} placeholder='python, chương 1, căn bản' />
+          <Input
+            label='Tệp tài liệu'
+            helper='Kích thước lớn có thể xử lý lâu hơn.'
+            type='file'
+            accept='.pdf,.docx,.pptx'
+            onChange={(e) => {
+              setFile(e.target.files?.[0] || null);
+              setError('');
+              setResult(null);
+              setHint('');
+            }}
+          />
 
-            <label style={{ display: 'grid', gap: 6 }}>
-              <span>Tags</span>
-              <Input
-                value={tags}
-                onChange={(e) => setTags(e.target.value)}
-                placeholder="python, chuong 1"
-              />
-            </label>
-          </div>
-
-          <label style={{ display: 'grid', gap: 6 }}>
-            <span>Chọn tệp</span>
-            <Input
-              type="file"
-              accept=".pdf,.docx,.pptx"
-              onChange={(e) => {
-                setFile(e.target.files?.[0] || null);
-                setError('');
-                setResult(null);
-                setHint('');
-              }}
-            />
-          </label>
-
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-            <Button variant="primary" type="submit" disabled={submitDisabled}>
-              {uploading ? 'Đang tải lên...' : 'Tải lên'}
-            </Button>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <Button variant='primary' type='submit' disabled={submitDisabled}>{uploading ? 'Đang tải lên...' : 'Tải lên'}</Button>
             {uploading ? <Spinner /> : null}
-            {!file ? <Badge>Chưa chọn file</Badge> : <Badge tone="success">{file.name}</Badge>}
-            {parsedTags.length ? <Badge tone="success">{parsedTags.length} tag</Badge> : null}
+            {!file ? <Badge>Chưa chọn file</Badge> : <Badge tone='success'>{file.name}</Badge>}
+            {parsedTags.length ? <Badge tone='info'>{parsedTags.length} tags</Badge> : null}
           </div>
-          {!file ? <p style={{ margin: 0, opacity: 0.8 }}>Hãy chọn tệp để bật nút “Tải lên”.</p> : null}
-          {uploading ? <p style={{ margin: 0, opacity: 0.8 }}>Đang tải lên và xử lý tài liệu, vui lòng chờ...</p> : null}
         </form>
-
         {hint ? <p style={{ marginBottom: 0 }}>{hint}</p> : null}
-        {error ? <p style={{ color: '#b91c1c', marginBottom: 0 }}>Lỗi: {error}</p> : null}
+        {error ? <p style={{ color: 'var(--danger)', marginBottom: 0 }}>Lỗi: {error}</p> : null}
+      </Card>
+
+      <Card className='span-6'>
+        <h2 style={{ marginBottom: 10 }}>Hướng dẫn xử lý khi topics chưa tốt</h2>
+        <ul>
+          <li>Nếu <b>topics_status ≠ OK</b>: thử Regenerate topics trong Thư viện.</li>
+          <li>Nếu coverage thấp: kiểm tra lại PDF scan, cân nhắc OCR tốt hơn.</li>
+          <li>Nếu quá ít topic: ưu tiên file có heading rõ hoặc tải bản chất lượng cao hơn.</li>
+        </ul>
+        <Link to='/teacher/files' style={{ color: 'var(--primary)', fontWeight: 600 }}>Mở Thư viện tài liệu →</Link>
       </Card>
 
       {result ? (
-        <Card>
-          <h3 style={{ marginTop: 0 }}>Kết quả tải lên</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
-            <div><b>Document ID:</b> {result?.document_id ?? 'N/A'}</div>
-            <div><b>Tên file:</b> {result?.filename || file?.name || 'N/A'}</div>
-            <div><b>Tags:</b> {(result?.tags || parsedTags).length ? (result?.tags || parsedTags).join(', ') : 'N/A'}</div>
-            <div><b>Số trang:</b> {result?.pdf_report?.page_count ?? 'N/A'}</div>
-            <div><b>Extractor:</b> {extractorName}</div>
+        <Card className='span-12'>
+          <h2>Kết quả upload</h2>
+          <div className='grid-12' style={{ marginTop: 10 }}>
+            <div className='span-4'><b>Document ID:</b> {result?.document_id ?? 'N/A'}</div>
+            <div className='span-4'><b>Filename:</b> {result?.filename || file?.name || 'N/A'}</div>
+            <div className='span-4'><b>Chunk count:</b> {result?.chunk_count ?? 'N/A'}</div>
           </div>
 
-          <div style={{ marginTop: 12, display: 'grid', gap: 8 }}>
-            <b>PDF report tóm tắt</b>
-            <div><b>Chunk count:</b> {result?.chunk_count ?? result?.pdf_report?.chunk_count ?? 'N/A'}</div>
-            <div><b>Page coverage:</b> {result?.pdf_report?.page_coverage ?? 'N/A'}</div>
-            <div><b>Candidates:</b> {(result?.pdf_report?.candidates || []).length}</div>
-            {result?.pdf_report?.candidates?.length ? (
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                  <thead>
-                    <tr>
-                      <th align="left">Candidate</th>
-                      <th align="left">Page coverage</th>
-                      <th align="left">Chunk count</th>
-                    </tr>
-                  </thead>
+          <Card style={{ marginTop: 12 }}>
+            <h3>PDF extraction report</h3>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
+              <Badge tone='info'>Extractor: {result?.pdf_report?.chosen_extractor || 'N/A'}</Badge>
+              <Badge tone={result?.pdf_report?.ocr_used ? 'warning' : 'success'}>OCR: {result?.pdf_report?.ocr_used ? 'BẬT' : 'Tắt'}</Badge>
+              <Badge>Candidates: {(result?.pdf_report?.candidates || []).length}</Badge>
+            </div>
+            {(result?.pdf_report?.candidates || []).length ? (
+              <div style={{ overflowX: 'auto', marginTop: 10 }}>
+                <table className='data-table'>
+                  <thead><tr><th>Candidate</th><th>Quality</th><th>Coverage</th><th>Chars</th><th>Chunks</th></tr></thead>
                   <tbody>
-                    {result.pdf_report.candidates.map((candidate) => (
-                      <tr key={candidate.name}>
-                        <td>{candidate.name}</td>
-                        <td>{candidate.page_coverage ?? '-'}</td>
-                        <td>{candidate.chunk_count ?? '-'}</td>
+                    {(result?.pdf_report?.candidates || []).map((c) => (
+                      <tr key={c.name}>
+                        <td>{c.name}</td>
+                        <td>{c.quality_score ?? '-'}</td>
+                        <td>{c.page_coverage ?? '-'}</td>
+                        <td>{c.char_len ?? '-'}</td>
+                        <td>{c.chunk_count ?? '-'}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
             ) : null}
-          </div>
+          </Card>
 
           <div style={{ marginTop: 14 }}>
-            <Link to="/teacher/files">Xem thư viện tài liệu</Link>
+            <h3>Topics ({(result?.topics || []).length})</h3>
+            {(result?.topics_status && result?.topics_status !== 'OK') ? (
+              <p style={{ color: 'var(--warning)' }}>Topics status: {result?.topics_status} {result?.topics_reason ? `- ${result?.topics_reason}` : ''}</p>
+            ) : null}
+            <Accordion>
+              {(result?.topics || []).map((topic, index) => (
+                <AccordionItem
+                  key={topic.topic_id || `${topic.title}-${index}`}
+                  title={`${index + 1}. ${topic.display_title || topic.title}`}
+                  right={topic.quiz_ready ? <Badge tone='success'>Quiz-ready</Badge> : <Badge>Ít dữ liệu</Badge>}
+                >
+                  <p>{topic.summary || 'Chưa có tóm tắt.'}</p>
+                  <div><b>Keywords:</b> {(topic.keywords || []).join(', ') || 'N/A'}</div>
+                  <div><b>Outline:</b> {(topic.outline || []).join(' • ') || 'N/A'}</div>
+                  <div><b>Key points:</b> {(topic.key_points || []).join(' • ') || 'N/A'}</div>
+                  <div><b>Definitions:</b> {(topic.definitions || []).join(' • ') || 'N/A'}</div>
+                  <div><b>Examples:</b> {(topic.examples || []).join(' • ') || 'N/A'}</div>
+                  <div><b>Formulas:</b> {(topic.formulas || []).join(' • ') || 'N/A'}</div>
+                  {topic.content_preview ? <p style={{ marginBottom: 0, color: 'var(--muted)' }}>{topic.content_preview}</p> : null}
+                </AccordionItem>
+              ))}
+            </Accordion>
           </div>
         </Card>
       ) : null}
