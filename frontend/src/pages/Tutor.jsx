@@ -16,14 +16,12 @@ export default function Tutor() {
   const selectedDoc = (docs || []).find((d) => String(d.document_id) === String(docId));
   const currentTopic = (topic || "").trim() || selectedDoc?.title || "tài liệu hiện tại";
 
-  // Load teacher documents so the student can scope Tutor to the right materials.
   useEffect(() => {
     (async () => {
       try {
         const data = await apiJson("/documents");
         const arr = data?.documents || [];
         setDocs(arr);
-        // default to most recent document (optional)
         if (!docId && Array.isArray(arr) && arr.length > 0) {
           const saved = localStorage.getItem("active_document_id");
           if (saved) setDocId(saved);
@@ -36,9 +34,9 @@ export default function Tutor() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const ask = async () => {
-    const q = (question || "").trim();
-    if (!q) return;
+  const ask = async (overrideQuestion) => {
+    const q = (overrideQuestion ?? question || "").trim();
+    if (!q || loading) return;
     setError("");
     setLoading(true);
     setMessages((prev) => [...prev, { role: "user", text: q }]);
@@ -57,7 +55,8 @@ export default function Tutor() {
       });
 
       const answer = data?.answer || data?.answer_md || "(Không có câu trả lời)";
-      const isOffTopic = data?.off_topic === true;
+      const isOffTopic = data?.is_off_topic === true;
+      const isOffTopic = data?.is_off_topic === true || data?.off_topic === true;
       setMessages((prev) => [...prev, { role: "assistant", text: answer, meta: data, offTopic: isOffTopic }]);
     } catch (e) {
       const msg = e?.message || "Tutor lỗi";
@@ -68,6 +67,13 @@ export default function Tutor() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const confidenceText = (value) => {
+    const c = Number(value ?? 0.8);
+    if (c >= 0.8) return "";
+    if (c >= 0.5) return "Thông tin này có thể cần xác minh thêm";
+    return "Tôi không chắc chắn, vui lòng tham khảo tài liệu gốc";
   };
 
   return (
@@ -115,11 +121,15 @@ export default function Tutor() {
           placeholder="Nhập câu hỏi..."
           style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", flex: "1 1 420px" }}
         />
-        <button onClick={ask} disabled={loading} style={{ padding: "10px 14px" }}>
+        <button onClick={() => ask()} disabled={loading} style={{ padding: "10px 14px" }}>
           {loading ? "Đang hỏi…" : "Gửi"}
         </button>
       </div>
-      <div style={{ marginTop: 8, color: "#6c757d", fontSize: 14 }}>💡 Chỉ hỏi về nội dung trong tài liệu: {currentTopic}</div>
+      <div style={{ marginTop: 10 }}>
+        <span style={{ background: "#e8f5e9", color: "#2e7d32", padding: "6px 10px", borderRadius: 999, fontSize: 13, fontWeight: 700 }}>
+          🎯 Đang học: {currentTopic}
+        </span>
+      </div>
 
       {error && (
         <div style={{ marginTop: 12, background: "#fff3f3", border: "1px solid #ffd0d0", padding: 12, borderRadius: 12 }}>
@@ -129,23 +139,55 @@ export default function Tutor() {
 
       <div style={{ marginTop: 16, display: "grid", gap: 12 }}>
         {messages.map((m, idx) => {
+          const warn = m.role === "assistant" && m.offTopic;
+          const confidenceMsg = m.role === "assistant" ? confidenceText(m.meta?.confidence) : "";
           if (m.role === "assistant" && m.offTopic) {
             const topicScope = m.meta?.topic_scope || currentTopic;
             const redirectHint = m.meta?.redirect_hint || `Mình muốn hỏi về ${topicScope}`;
+            const followUps = Array.isArray(m.meta?.follow_up_questions) ? m.meta.follow_up_questions.slice(0, 3) : [];
 
             return (
               <div
                 key={idx}
                 style={{
+                  position: "relative",
                   background: "#fff3cd",
-                  borderLeft: "4px solid #ffc107",
+                  border: "1px solid #f0c75e",
                   padding: 12,
-                  borderRadius: 8,
+                  borderRadius: 10,
                   margin: "8px 0",
                 }}
               >
-                <div style={{ fontWeight: 900, marginBottom: 6 }}>⚠️ Câu hỏi ngoài phạm vi</div>
+                <div style={{ position: "absolute", top: 8, right: 10, fontSize: 18 }}>⚠️</div>
+                <div style={{ fontWeight: 900, marginBottom: 6 }}>Câu hỏi ngoài phạm vi</div>
                 <div style={{ whiteSpace: "pre-wrap" }}>{m.text}</div>
+                {followUps.length > 0 && (
+                  <div style={{ marginTop: 10 }}>
+                    <div style={{ fontWeight: 800, marginBottom: 8 }}>Thay vào đó, bạn có muốn hỏi về:</div>
+                    <div style={{ display: "grid", gap: 8 }}>
+                      {followUps.map((fq, i) => (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => {
+                            setQuestion(fq);
+                            questionInputRef.current?.focus();
+                          }}
+                          style={{
+                            textAlign: "left",
+                            borderRadius: 8,
+                            border: "1px solid #f0c75e",
+                            background: "#fff9e8",
+                            padding: "8px 10px",
+                            cursor: "pointer",
+                          }}
+                        >
+                          {fq}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <div style={{ marginTop: 10 }}>
                   <button
                     type="button"
@@ -161,66 +203,43 @@ export default function Tutor() {
               </div>
             );
           }
-
           return (
             <div
               key={idx}
               style={{
-                background: m.role === "user" ? "#f7f7ff" : "#fff",
+                background: warn ? "#fff8db" : m.role === "user" ? "#f7f7ff" : "#fff",
                 borderRadius: 12,
                 padding: 12,
                 boxShadow: "0 2px 10px rgba(0,0,0,0.06)",
+                border: warn ? "1px solid #ffdf80" : "none",
               }}
             >
-            <div style={{ fontWeight: 900, marginBottom: 6 }}>{m.role === "user" ? "Bạn" : "Tutor"}</div>
-            <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontFamily: "inherit" }}>{m.text}</pre>
+              <div style={{ fontWeight: 900, marginBottom: 6 }}>{m.role === "user" ? "Bạn" : warn ? "⚠️ Tutor" : "Tutor"}</div>
+              <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontFamily: "inherit" }}>{m.text}</pre>
 
-            {m.role === "assistant" && m.meta?.sources?.length > 0 && (
-              <details style={{ marginTop: 10 }}>
-                <summary style={{ cursor: "pointer" }}>Nguồn (chunks)</summary>
-                <div style={{ display: "grid", gap: 10, marginTop: 8 }}>
-                  {m.meta.sources.slice(0, 6).map((s) => (
-                    <div key={s.chunk_id} style={{ border: "1px solid #eee", borderRadius: 10, padding: 10 }}>
-                      <div style={{ fontWeight: 800 }}>
-                        {s.document_title || `Doc ${s.document_id ?? ""}`} • chunk {s.chunk_id}
-                      </div>
-                      <div style={{ color: "#666", marginTop: 4 }}>{s.preview}</div>
-                    </div>
-                  ))}
-                </div>
-              </details>
-            )}
+              {m.role === "assistant" && m.meta?.sources_used?.length > 0 && (
+                <div style={{ marginTop: 8, color: "#777", fontSize: 13 }}>📚 Dựa trên: {m.meta.sources_used.join(", ")}</div>
+              )}
 
-            {m.role === "assistant" && m.meta?.follow_up_questions?.length > 0 && (
-              <div style={{ marginTop: 10 }}>
-                <div style={{ fontWeight: 900 }}>Gợi ý hỏi thêm</div>
-                <ul style={{ marginTop: 6 }}>
-                  {m.meta.follow_up_questions.map((q, i) => (
-                    <li key={i}>{q}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
+              {confidenceMsg && <div style={{ marginTop: 8, color: "#9c6b00", fontSize: 13 }}>{confidenceMsg}</div>}
 
-            {m.role === "assistant" && m.meta?.quick_check_mcq?.length > 0 && (
-              <div style={{ marginTop: 10 }}>
-                <div style={{ fontWeight: 900 }}>Tự kiểm tra nhanh</div>
-                {m.meta.quick_check_mcq.map((q, i) => (
-                  <div key={i} style={{ marginTop: 8, border: "1px solid #eee", borderRadius: 10, padding: 10 }}>
-                    <div style={{ fontWeight: 800 }}>{q.stem}</div>
-                    <ol style={{ marginTop: 6 }}>
-                      {(q.options || []).map((op, j) => (
-                        <li key={j}>{op}</li>
-                      ))}
-                    </ol>
-                    <div style={{ color: "#666" }}>
-                      Đáp án: <b>{(q.correct_index ?? -1) + 1}</b>
-                      {q.explanation ? ` • ${q.explanation}` : ""}
-                    </div>
+              {m.role === "assistant" && m.meta?.follow_up_questions?.length > 0 && (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ fontWeight: 900, marginBottom: 6 }}>Gợi ý hỏi thêm</div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {m.meta.follow_up_questions.map((q, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => ask(q)}
+                        style={{ borderRadius: 999, border: "1px solid #d6d6d6", background: "#fafafa", padding: "6px 10px", cursor: "pointer" }}
+                      >
+                        {q}
+                      </button>
+                    ))}
                   </div>
-                ))}
-              </div>
-            )}
+                </div>
+              )}
             </div>
           );
         })}

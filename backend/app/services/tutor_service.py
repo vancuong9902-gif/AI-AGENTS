@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import re
@@ -21,7 +22,7 @@ from app.services.user_service import ensure_user_exists
 from app.services.corrective_rag import corrective_retrieve_and_log
 from app.services.rag_service import auto_document_ids_for_query
 from app.services.text_quality import filter_chunks_by_quality
-from app.services.llm_service import llm_available, chat_json, pack_chunks
+from app.services.llm_service import llm_available, chat_json, chat_text, pack_chunks
 from app.services.quiz_service import clean_mcq_questions, _generate_mcq_from_chunks
 from app.services.topic_service import build_topic_details
 
@@ -31,19 +32,108 @@ except Exception:  # pragma: no cover
     redis = None  # type: ignore
 
 
-OFF_TOPIC_PATTERNS = [
-    r"thời tiết|nhiệt độ|dự báo",
-    r"ăn gì|nhà hàng|quán|món",
-    r"phim|nhạc|ca sĩ|diễn viên",
-    r"giá cổ phiếu|tỷ giá|bitcoin",
-    r"tình yêu|yêu đương|người yêu",
-    r"chính trị|bầu cử|tổng thống",
-]
-
 TUTOR_REFUSAL_TEMPLATE = (
     "Xin lỗi, tôi chỉ có thể hỗ trợ các câu hỏi liên quan đến [{scope}]. "
     "Câu hỏi này nằm ngoài phạm vi tôi có thể giải đáp. Bạn có muốn hỏi về [{scope}] không?"
 )
+
+TUTOR_SYSTEM_PROMPT = """Bạn là gia sư AI thông minh, kiên nhẫn và chuyên nghiệp.
+
+PHẠM VI HOẠT ĐỘNG:
+- Chỉ trả lời câu hỏi liên quan đến: {topic_scope}
+- Chỉ dựa trên tài liệu học được cung cấp trong CONTEXT bên dưới
+- KHÔNG bịa thêm thông tin không có trong tài liệu
+
+CÁCH TRẢ LỜI:
+- Ngắn gọn, rõ ràng, dễ hiểu (tối đa 300 từ)
+- Dùng ví dụ cụ thể khi có thể
+- Nếu câu hỏi phức tạp: chia thành các bước nhỏ
+- Luôn hỏi lại: "Bạn còn câu hỏi nào về [topic] không?"
+
+NẾU CÂU HỎI NGOÀI PHẠM VI:
+Trả lời lịch sự: "Xin lỗi, tôi chỉ có thể giải đáp về [topic_scope].
+Câu hỏi '[user_question_summary]' nằm ngoài chủ đề học hiện tại.
+Bạn có muốn hỏi về một khía cạnh nào của [topic_scope] không?"
+
+KHÔNG ĐƯỢC:
+- Làm bài kiểm tra thay cho học sinh
+- Cung cấp đáp án trực tiếp cho bài tập đang kiểm tra
+- Trả lời về chủ đề không liên quan (thời tiết, tin tức, code không liên quan...)
+
+CONTEXT (Tài liệu học):
+{rag_context}
+"""
+
+class OffTopicDetector:
+    """Multi-layer off-topic detection cho Tutor AI."""
+
+    ALWAYS_REJECT_PATTERNS = [
+        r"hãy\s+làm\s+(bài|giúp|thay)",
+        r"cho\s+tôi\s+đáp\s+án\s+câu",
+        r"(thời\s*tiết|tin\s*tức|bóng\s*đá|giải\s*trí)",
+        r"(hack|crack|bypass|cheat)",
+        r"(viết\s+code|lập\s+trình)",
+    ]
+
+    def check(self, question: str, topic: str, rag_results: dict) -> dict:
+        for pattern in self.ALWAYS_REJECT_PATTERNS:
+            if re.search(pattern, question or "", re.IGNORECASE):
+                return {
+                    "is_off_topic": True,
+                    "reason": "keyword_blacklist",
+                    "confidence": 0.99,
+                    "layer": 1,
+                }
+
+        best_relevance = self._get_rag_relevance(rag_results)
+        if best_relevance < 0.1:
+            return {
+                "is_off_topic": True,
+                "reason": "low_rag_relevance",
+                "confidence": 1 - best_relevance,
+                "layer": 2,
+            }
+
+        if 0.1 <= best_relevance < 0.3 and llm_available():
+            llm_verdict = self._llm_topic_check(question=question, topic=topic)
+            if not llm_verdict:
+                return {
+                    "is_off_topic": True,
+                    "reason": "llm_classification",
+                    "confidence": 0.85,
+                    "layer": 3,
+                }
+
+        return {
+            "is_off_topic": False,
+            "reason": None,
+            "confidence": best_relevance,
+            "layer": 0,
+        }
+
+    def _get_rag_relevance(self, rag_results: dict) -> float:
+        corr = rag_results.get("corrective") or {}
+        attempts = corr.get("attempts") or []
+        if attempts:
+            return float(attempts[-1].get("best_relevance", 0.0) or 0.0)
+        return 0.0
+
+    def _llm_topic_check(self, question: str, topic: str) -> bool:
+        prompt = (
+            f"Phân loại câu hỏi sau:\n"
+            f"Câu hỏi: \"{(question or '')[:200]}\"\n"
+            f"Chủ đề học: \"{topic or ''}\"\n\n"
+            "Câu hỏi có liên quan đến chủ đề học KHÔNG?\n"
+            "Trả lời: YES (có liên quan) hoặc NO (không liên quan)"
+        )
+        try:
+            resp = chat_text(messages=[{"role": "user", "content": prompt}], max_tokens=10, temperature=0)
+        except Exception:
+            return True
+        return "yes" in (resp or "").lower()
+
+
+_off_topic_detector = OffTopicDetector()
 
 _LOCAL_SESSION_STORE: Dict[str, Dict[str, Any]] = {}
 
@@ -86,11 +176,6 @@ def _save_tutor_session(user_id: int, data: Dict[str, Any], ttl_sec: int = 60 * 
             cli.setex(key, int(ttl_sec), json.dumps(payload, ensure_ascii=False))
         except Exception:
             pass
-
-
-def is_clearly_off_topic(question: str) -> bool:
-    q_lower = (question or "").lower()
-    return any(re.search(p, q_lower) for p in OFF_TOPIC_PATTERNS)
 
 
 def _suggest_topics(db: Session, *, document_ids: Optional[List[int]], top_k: int = 3) -> List[str]:
@@ -154,6 +239,26 @@ def _build_off_topic_message(*, scope: str, approved_topics: List[str], suggesti
     return TUTOR_REFUSAL_TEMPLATE.format(scope=scope)
 
 
+def _suggest_on_topic_questions(topic: Optional[str], off_topic_q: str) -> List[str]:
+    scope = (topic or "chủ đề học hiện tại").strip()
+    if not scope:
+        scope = "chủ đề học hiện tại"
+
+    topic_lower = scope.lower()
+    if "phương trình bậc hai" in topic_lower:
+        return [
+            "Công thức nghiệm của phương trình bậc hai là gì?",
+            "Khi nào phương trình bậc hai vô nghiệm?",
+            "Ứng dụng của phương trình bậc hai trong thực tế?",
+        ]
+
+    return [
+        f"Khái niệm cốt lõi của '{scope}' là gì?",
+        f"Những lỗi thường gặp khi học '{scope}' là gì?",
+        f"Bạn có thể cho một ví dụ áp dụng của '{scope}' không?",
+    ]
+
+
 def _ai_topic_relevance_check(question: str, topic: Optional[str]) -> Optional[bool]:
     if not llm_available():
         return None
@@ -183,6 +288,56 @@ def _ai_topic_relevance_check(question: str, topic: Optional[str]) -> Optional[b
     except Exception:
         return None
     return None
+
+
+async def _is_question_on_topic(question: str, topic: str) -> bool:
+    if not llm_available():
+        topic_words = set(topic.lower().split())
+        question_words = set(question.lower().split())
+        return len(topic_words & question_words) > 0
+
+    try:
+        resp = chat_text(
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"Câu hỏi: \"{question}\"\n"
+                        f"Chủ đề học: \"{topic}\"\n"
+                        "Câu hỏi này có liên quan đến chủ đề học không?\n"
+                        "Trả lời chỉ: YES hoặc NO"
+                    ),
+                }
+            ],
+            max_tokens=5,
+            temperature=0,
+        )
+        return "yes" in str(resp or "").lower()
+    except Exception:
+        return False
+
+
+def _normalize_follow_up_questions(topic: Optional[str], suggestions: List[str]) -> List[str]:
+    out = [str(x).strip() for x in (suggestions or []) if str(x).strip()]
+    scope = _topic_scope(topic)
+    defaults = [
+        f"Bạn muốn mình tóm tắt nhanh ý chính của {scope} không?",
+        f"Bạn muốn mình đưa thêm ví dụ áp dụng của {scope} không?",
+        f"Bạn còn câu hỏi nào về {scope} không?",
+    ]
+    for q in defaults:
+        if q not in out:
+            out.append(q)
+    return out[:3]
+
+
+def _extract_sources_used(sources: List[Dict[str, Any]]) -> List[str]:
+    names: List[str] = []
+    for s in sources or []:
+        title = str((s or {}).get("document_title") or "").strip()
+        if title and title not in names:
+            names.append(title)
+    return names[:5]
 
 
 def _extract_referenced_topic(question: str) -> str:
@@ -451,7 +606,19 @@ def tutor_chat(
         session["practice"] = {"active": True, "topic": p_topic, "score": int(practice.get("score", 0) or 0), "asked": int(practice.get("asked", 0) or 0) + 1, "awaiting_answer": True, "current_question": stem}
         session["recent_questions"] = (recent_questions + [q])[-5:]
         _save_tutor_session(int(user_id), session)
-        return TutorChatData(answer_md=(f"🎯 **Practice with Tutor**\n\nCâu hỏi: {stem}\n\nBạn hãy trả lời, mình sẽ chấm và giải thích ngay."), was_answered=True, is_off_topic=False, refusal_message=None, suggested_topics=intent_suggestions, follow_up_questions=[], quick_check_mcq=[], sources=[], retrieval={"mode": "practice_start"}).model_dump()
+        return TutorChatData(
+            answer_md=(f"🎯 **Practice with Tutor**\n\nCâu hỏi: {stem}\n\nBạn hãy trả lời, mình sẽ chấm và giải thích ngay."),
+            was_answered=True,
+            is_off_topic=False,
+            refusal_message=None,
+            suggested_topics=intent_suggestions,
+            follow_up_questions=_normalize_follow_up_questions(topic, []),
+            quick_check_mcq=[],
+            sources=[],
+            sources_used=[],
+            confidence=0.9,
+            retrieval={"mode": "practice_start"},
+        ).model_dump()
 
     if practice.get("active") and practice.get("awaiting_answer"):
         p_topic = str(practice.get("topic") or topic or "chủ đề hiện tại")
@@ -472,24 +639,96 @@ def tutor_chat(
             f"📊 Mini-session hiện tại: **{score}/{asked}**.\n"
             f"Bạn có thể yêu cầu: *'Hãy đặt câu hỏi để kiểm tra tôi về topic {p_topic}'* để làm câu tiếp theo."
         )
-        return TutorChatData(answer_md=ans, was_answered=True, is_off_topic=False, refusal_message=None, suggested_topics=[p_topic], follow_up_questions=[], quick_check_mcq=[], sources=[], retrieval={"mode": "practice_grade", "score": score, "asked": asked}).model_dump()
+        return TutorChatData(
+            answer_md=ans,
+            was_answered=True,
+            is_off_topic=False,
+            refusal_message=None,
+            suggested_topics=[p_topic],
+            follow_up_questions=_normalize_follow_up_questions(p_topic, []),
+            quick_check_mcq=[],
+            sources=[],
+            sources_used=[],
+            confidence=0.85,
+            retrieval={"mode": "practice_grade", "score": score, "asked": asked},
+        ).model_dump()
+
+    scope = _topic_scope(topic)
+    if topic and topic.strip():
+        try:
+            on_topic = asyncio.run(_is_question_on_topic(q, scope))
+        except Exception:
+            on_topic = True
+        if not on_topic:
+            reason = "off_topic_quick_check"
+            summary = (q[:90] + "…") if len(q) > 90 else q
+            refusal_message = (
+                f"Xin lỗi, tôi chỉ có thể giải đáp về {scope}. "
+                f"Câu hỏi '{summary}' nằm ngoài chủ đề học hiện tại. "
+                f"Bạn có muốn hỏi về một khía cạnh nào của {scope} không?"
+            )
+            _log_tutor_flagged_question(db, user_id=int(user_id), question=q, topic=topic, reason=reason, suggested_topics=intent_suggestions)
+            return TutorChatData(
+                answer_md=refusal_message,
+                was_answered=False,
+                is_off_topic=True,
+                refusal_message=refusal_message,
+                refusal_reason=reason, off_topic_reason=reason,
+                suggested_topics=intent_suggestions,
+                follow_up_questions=_normalize_follow_up_questions(topic, []),
+                quick_check_mcq=[],
+                sources=[],
+                sources_used=[],
+                confidence=0.95,
+                retrieval={"note": "PRECHECK_OFF_TOPIC_QUICK"},
+            ).model_dump()
 
     ai_relevance = _ai_topic_relevance_check(q, topic)
     if ai_relevance is False:
         reason = "off_topic_ai_check"
-        refusal_message = _build_off_topic_message(scope=_topic_scope(topic), approved_topics=suggested_topics, suggestions=intent_suggestions)
+        refusal_message = _build_off_topic_message(scope=scope, approved_topics=suggested_topics, suggestions=intent_suggestions)
         _log_tutor_flagged_question(db, user_id=int(user_id), question=q, topic=topic, reason=reason, suggested_topics=intent_suggestions)
-        return TutorChatData(answer_md=refusal_message, was_answered=False, is_off_topic=True, refusal_message=refusal_message, off_topic_reason=reason, suggested_topics=intent_suggestions, follow_up_questions=[], quick_check_mcq=[], sources=[], retrieval={"note": "PRECHECK_OFF_TOPIC_AI"}).model_dump()
+        return TutorChatData(answer_md=refusal_message, was_answered=False, is_off_topic=True, refusal_message=refusal_message, refusal_reason=reason, off_topic_reason=reason, suggested_topics=intent_suggestions, follow_up_questions=_normalize_follow_up_questions(topic, []), quick_check_mcq=[], sources=[], sources_used=[], confidence=0.9, retrieval={"note": "PRECHECK_OFF_TOPIC_AI"}).model_dump()
 
     if ai_relevance is None and is_clearly_off_topic(q):
         reason = "clearly_off_topic_pattern"
-        refusal_message = _build_off_topic_message(scope=_topic_scope(topic), approved_topics=suggested_topics, suggestions=intent_suggestions)
+        refusal_message = _build_off_topic_message(scope=scope, approved_topics=suggested_topics, suggestions=intent_suggestions)
         _log_tutor_flagged_question(db, user_id=int(user_id), question=q, topic=topic, reason=reason, suggested_topics=intent_suggestions)
-        return TutorChatData(answer_md=refusal_message, was_answered=False, is_off_topic=True, refusal_message=refusal_message, off_topic_reason=reason, suggested_topics=intent_suggestions, follow_up_questions=[], quick_check_mcq=[], sources=[], retrieval={"note": "PRECHECK_OFF_TOPIC_PATTERN"}).model_dump()
+        return TutorChatData(answer_md=refusal_message, was_answered=False, is_off_topic=True, refusal_message=refusal_message, refusal_reason=reason, off_topic_reason=reason, suggested_topics=intent_suggestions, follow_up_questions=_normalize_follow_up_questions(topic, []), quick_check_mcq=[], sources=[], sources_used=[], confidence=0.85, retrieval={"note": "PRECHECK_OFF_TOPIC_PATTERN"}).model_dump()
 
     filters = {"document_ids": doc_ids} if doc_ids else {}
     query = f"{topic.strip()}: {q}" if topic and topic.strip() else q
     rag = corrective_retrieve_and_log(db=db, query=query, top_k=int(max(3, min(20, top_k))), filters=filters, topic=topic)
+
+    off_topic_check = _off_topic_detector.check(question=q, topic=topic or "", rag_results=rag)
+    if off_topic_check["is_off_topic"]:
+        topic_label = topic or "chủ đề học hiện tại"
+        refusal = (
+            f"Xin lỗi bạn, câu hỏi này nằm ngoài phạm vi tôi có thể giải đáp trong buổi học này. "
+            f"Tôi chuyên hỗ trợ về '{topic_label}'. "
+            f"Bạn có muốn hỏi về một khía cạnh cụ thể của '{topic_label}' không? "
+            f"Tôi sẵn sàng giải thích chi tiết!"
+        )
+        _log_tutor_flagged_question(
+            db,
+            user_id=int(user_id),
+            question=q,
+            topic=topic,
+            reason=str(off_topic_check.get("reason") or "off_topic"),
+            suggested_topics=intent_suggestions,
+        )
+        return TutorChatData(
+            answer_md=refusal,
+            was_answered=False,
+            is_off_topic=True,
+            refusal_message=refusal,
+            off_topic_reason=str(off_topic_check.get("reason") or "off_topic"),
+            suggested_topics=intent_suggestions,
+            follow_up_questions=_suggest_on_topic_questions(topic, q),
+            quick_check_mcq=[],
+            sources=[],
+            retrieval={**(rag.get("corrective") or {}), "off_topic_check": off_topic_check},
+        ).model_dump()
 
     corr = rag.get("corrective") or {}
     attempts = corr.get("attempts") or []
@@ -505,7 +744,7 @@ def tutor_chat(
     if (not chunks) or has_low_relevance:
         reason = "no_retrieved_chunks" if not chunks else f"low_relevance:{best_rel:.3f}"
         _log_tutor_flagged_question(db, user_id=int(user_id), question=q, topic=topic, reason=reason, suggested_topics=intent_suggestions)
-        return TutorChatData(answer_md="Tôi không tìm thấy thông tin này trong tài liệu học. Vui lòng hỏi giáo viên.", was_answered=False, is_off_topic=False, refusal_message=None, off_topic_reason=reason, suggested_topics=intent_suggestions, follow_up_questions=[], quick_check_mcq=[], sources=[], retrieval={**corr, "note": "POSTCHECK_OFF_TOPIC"}).model_dump()
+        return TutorChatData(answer_md="Tôi không tìm thấy thông tin này trong tài liệu học. Vui lòng hỏi giáo viên.", was_answered=False, is_off_topic=False, refusal_message=None, refusal_reason=reason, off_topic_reason=reason, suggested_topics=intent_suggestions, follow_up_questions=_normalize_follow_up_questions(topic, []), quick_check_mcq=[], sources=[], sources_used=[], confidence=0.35, retrieval={**corr, "note": "POSTCHECK_OFF_TOPIC"}).model_dump()
 
     good, bad = filter_chunks_by_quality(chunks, min_score=float(settings.OCR_MIN_QUALITY_SCORE))
     bad_ratio = float(len(bad)) / float(max(1, len(chunks)))
@@ -514,12 +753,13 @@ def tutor_chat(
             "Mình chưa thể trả lời chắc chắn vì phần tài liệu mình truy xuất được đang bị **lỗi OCR / rời rạc** (chữ bị vỡ, thiếu dấu, sai dòng).\n\n"
             "Bạn có thể upload lại file .docx/PDF có text layer, hoặc dán 10–30 dòng liên quan để mình giải thích tốt hơn."
         )
-        return TutorChatData(answer_md=msg, was_answered=False, is_off_topic=False, refusal_message=None, off_topic_reason="ocr_quality_too_low", suggested_topics=intent_suggestions, follow_up_questions=[], quick_check_mcq=[], sources=[], retrieval={**(rag.get("corrective") or {}), "note": "OCR_QUALITY_TOO_LOW"}).model_dump()
+        return TutorChatData(answer_md=msg, was_answered=False, is_off_topic=False, refusal_message=None, refusal_reason="ocr_quality_too_low", off_topic_reason="ocr_quality_too_low", suggested_topics=intent_suggestions, follow_up_questions=_normalize_follow_up_questions(topic, []), quick_check_mcq=[], sources=[], sources_used=[], confidence=0.3, retrieval={**(rag.get("corrective") or {}), "note": "OCR_QUALITY_TOO_LOW"}).model_dump()
     chunks = good
 
     sources = []
     for c in chunks[: min(len(chunks), int(top_k))]:
         sources.append({"chunk_id": int(c.get("chunk_id")), "document_id": int(c.get("document_id")) if c.get("document_id") is not None else None, "document_title": c.get("document_title") or c.get("title"), "score": float(c.get("score", 0.0) or 0.0), "preview": _src_preview(c.get("text") or ""), "meta": c.get("meta") or {}})
+    sources_used = _extract_sources_used(sources)
 
     quick_mcq = []
     try:
@@ -535,31 +775,22 @@ def tutor_chat(
 
     if llm_available():
         packed = pack_chunks(chunks, max_chunks=min(4, len(chunks)), max_chars_per_chunk=750, max_total_chars=2800)
-        scope = _topic_scope(topic)
-        sys = (
-            "SYSTEM INSTRUCTION:\n"
-            f"- Bạn là gia sư AI chuyên về chủ đề: {scope}.\n"
-            "- CHỈ trả lời các câu hỏi liên quan đến chủ đề trên và tài liệu học được cung cấp.\n"
-            "- Nếu câu hỏi KHÔNG liên quan đến chủ đề hoặc tài liệu, hãy từ chối lịch sự bằng cách trả lời:\n"
-            f"  'Xin lỗi, tôi chỉ có thể hỗ trợ các câu hỏi liên quan đến [{scope}]. Câu hỏi này nằm ngoài phạm vi tôi có thể giải đáp. Bạn có muốn hỏi về [{scope}] không?'\n"
-            "- Không được bịa thêm thông tin ngoài tài liệu.\n"
-            "- Câu trả lời phải trích dẫn chunk theo định dạng [chunk_id:<id>].\n"
-            "- Nếu không thấy bằng chứng phù hợp trong các chunk, trả lời đúng câu: 'Tôi không tìm thấy thông tin này trong tài liệu học. Vui lòng hỏi giáo viên.'\n"
-            "- Nếu chủ đề đã giải thích trong session_history.explained_topics thì tránh lặp lại định nghĩa dài, chỉ nhắc nhanh và đi vào phần mới."
-        )
-        user = {"question": q, "topic": (topic or "").strip() or None, "session_history": {"recent_questions": recent_questions[-5:], "explained_topics": explained_topics[-8:]}, "evidence_chunks": packed, "output_format": {"answer_md": "markdown", "follow_up_questions": ["string"], "quick_check_mcq": []}}
+        rag_context = "\n\n".join([f"[chunk_id:{c.get('chunk_id')}] {str(c.get('text') or '')}" for c in packed])
+        sys = TUTOR_SYSTEM_PROMPT.format(topic_scope=scope, rag_context=rag_context, user_question_summary=(q[:90] + "…") if len(q) > 90 else q)
+        user = {"question": q, "topic": (topic or "").strip() or None, "session_history": {"recent_questions": recent_questions[-5:], "explained_topics": explained_topics[-8:]}, "output_format": {"answer_md": "markdown", "follow_up_questions": ["string", "string", "string"]}}
         try:
             resp = chat_json(messages=[{"role": "system", "content": sys}, {"role": "user", "content": json.dumps(user, ensure_ascii=False)}], temperature=0.25, max_tokens=1200)
             if isinstance(resp, dict) and (resp.get("answer_md") or "").strip():
                 answer_md = prev_note + str(resp.get("answer_md") or "").strip()
-                fu = [str(x).strip() for x in (resp.get("follow_up_questions") or []) if str(x).strip()]
+                fu = _normalize_follow_up_questions(topic, [str(x).strip() for x in (resp.get("follow_up_questions") or []) if str(x).strip()])
                 answer_md = _append_topic_aware_section(answer_md, topic=topic, follow_ups=fu, homework_links=_related_homework_links(db, user_id=int(user_id), topic=topic))
                 if topic:
                     explained_topics = (explained_topics + [topic])[-8:]
                 session["recent_questions"] = (recent_questions + [q])[-5:]
                 session["explained_topics"] = explained_topics
                 _save_tutor_session(int(user_id), session)
-                return TutorChatData(answer_md=answer_md, was_answered=True, is_off_topic=False, refusal_message=None, off_topic_reason=None, suggested_topics=intent_suggestions, follow_up_questions=fu[:3], quick_check_mcq=(quick_mcq[:2]), sources=sources, retrieval=rag.get("corrective") or {}).model_dump()
+                confidence = min(0.98, max(0.5, 0.6 + (best_rel * 0.4)))
+                return TutorChatData(answer_md=answer_md, was_answered=True, is_off_topic=False, refusal_message=None, refusal_reason=None, off_topic_reason=None, suggested_topics=intent_suggestions, follow_up_questions=fu, quick_check_mcq=(quick_mcq[:2]), sources=sources, sources_used=sources_used, confidence=confidence, retrieval=rag.get("corrective") or {}).model_dump()
         except Exception:
             pass
 
@@ -575,13 +806,14 @@ def tutor_chat(
         if bullets
         else "Mình **chưa đủ thông tin trong tài liệu** để trả lời chắc chắn câu này."
     )
-    answer_md = _append_topic_aware_section(prev_note + answer_md, topic=topic, follow_ups=[], homework_links=_related_homework_links(db, user_id=int(user_id), topic=topic))
+    fu = _normalize_follow_up_questions(topic, [])
+    answer_md = _append_topic_aware_section(prev_note + answer_md, topic=topic, follow_ups=fu, homework_links=_related_homework_links(db, user_id=int(user_id), topic=topic))
     if topic:
         explained_topics = (explained_topics + [topic])[-8:]
     session["recent_questions"] = (recent_questions + [q])[-5:]
     session["explained_topics"] = explained_topics
     _save_tutor_session(int(user_id), session)
-    return TutorChatData(answer_md=answer_md, was_answered=bool(bullets), is_off_topic=False, refusal_message=None, off_topic_reason=None if bullets else "insufficient_context", suggested_topics=intent_suggestions, follow_up_questions=[], quick_check_mcq=quick_mcq, sources=sources, retrieval=rag.get("corrective") or {}).model_dump()
+    return TutorChatData(answer_md=answer_md, was_answered=bool(bullets), is_off_topic=False, refusal_message=None, refusal_reason=None if bullets else "insufficient_context", off_topic_reason=None if bullets else "insufficient_context", suggested_topics=intent_suggestions, follow_up_questions=fu, quick_check_mcq=quick_mcq, sources=sources, sources_used=sources_used, confidence=0.55 if bullets else 0.4, retrieval=rag.get("corrective") or {}).model_dump()
 
 
 def tutor_generate_questions(

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiJson } from "../lib/api";
 import { FaSchool, FaSearch, FaUsers } from "react-icons/fa";
+import { useAuth } from "../context/AuthContext";
 
 function Card({ children, style }) {
   return (
@@ -20,6 +21,7 @@ function Card({ children, style }) {
 }
 
 export default function StudentClassrooms() {
+  const { userId } = useAuth();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -32,6 +34,7 @@ export default function StudentClassrooms() {
     const n = v ? Number(v) : null;
     return Number.isFinite(n) && n > 0 ? n : null;
   });
+  const [eligibilityByClassroom, setEligibilityByClassroom] = useState({});
 
   const refresh = async () => {
     setError(null);
@@ -40,6 +43,16 @@ export default function StudentClassrooms() {
       const data = await apiJson("/classrooms");
       setRows(Array.isArray(data) ? data : []);
       const arr = Array.isArray(data) ? data : [];
+      await Promise.all(
+        arr.map(async (item) => {
+          try {
+            const out = await apiJson(`/v1/lms/final-exam/eligibility?classroomId=${item.id}&userId=${userId}`);
+            setEligibilityByClassroom((prev) => ({ ...prev, [item.id]: out }));
+          } catch {
+            setEligibilityByClassroom((prev) => ({ ...prev, [item.id]: { is_eligible: false } }));
+          }
+        })
+      );
       // default active classroom
       if (!activeId && arr.length > 0) {
         const cid = Number(arr[0].id);
@@ -199,6 +212,21 @@ export default function StudentClassrooms() {
               >
                 Làm bài tổng hợp
               </Link>
+              {eligibilityByClassroom[c.id]?.is_eligible ? (
+                <Link
+                  to={`/final-exam/${c.id}`}
+                  style={{
+                    padding: "10px 12px",
+                    borderRadius: 12,
+                    background: "#0f172a",
+                    color: "#fff",
+                    textDecoration: "none",
+                    fontWeight: 1000,
+                  }}
+                >
+                  📝 Thi Cuối Kỳ
+                </Link>
+              ) : null}
             </div>
           </Card>
         ))}

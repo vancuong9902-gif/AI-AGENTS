@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import tempfile
+import time
+import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -31,6 +34,8 @@ from app.services.analytics_service import build_classroom_final_report, export_
 from app.tasks.report_tasks import task_export_teacher_report_pdf
 from app.models.session import Session as UserSession
 from app.models.student_assignment import StudentAssignment
+from app.models.diagnostic_attempt import DiagnosticAttempt
+from app.models.learning_plan import LearningPlan, LearningPlanHomeworkSubmission, LearningPlanTaskCompletion
 from app.models.notification import Notification
 from app.models.user import User
 from app.services.assessment_service import generate_assessment, submit_assessment
@@ -45,16 +50,27 @@ from app.services.lms_service import (
     persist_multidim_profile,
     generate_student_evaluation_report,
     per_student_bloom_analysis,
+    get_student_progress_comparison,
     get_student_homework_results,
     resolve_student_name,
     score_breakdown,
     assign_topic_materials,
     assign_learning_path,
     teacher_report as build_teacher_report,
+    generate_full_teacher_report,
 )
 
 
 router = APIRouter(tags=["lms"])
+_report_cache: dict[int, dict] = {}
+_report_cache_time: dict[int, float] = {}
+
+_templates = Environment(
+    loader=FileSystemLoader(str(Path(__file__).resolve().parents[2] / "templates")),
+    autoescape=select_autoescape(["html", "xml"]),
+)
+
+_FINAL_EXAM_JOBS: dict[str, dict] = {}
 
 
 class TeacherTopicSelectionIn(BaseModel):
@@ -109,6 +125,226 @@ class AssignPathByQuizIn(BaseModel):
     user_id: int
     quiz_id: int
     classroom_id: int = 0
+
+
+def _count_plan_tasks(plan_json: dict | None) -> tuple[int, int]:
+    days = (plan_json or {}).get("days") if isinstance(plan_json, dict) else []
+    if not isinstance(days, list):
+        return 0, 0
+
+    total = 0
+    homework_total = 0
+    for day in days:
+        tasks = day.get("tasks") if isinstance(day, dict) else []
+        if not isinstance(tasks, list):
+            tasks = []
+        for task in tasks:
+            total += 1
+            task_type = str((task or {}).get("type") or "").lower()
+            if task_type == "homework":
+                homework_total += 1
+    return total, homework_total
+
+
+def _final_exam_eligibility_payload(db: Session, *, classroom_id: int, user_id: int) -> dict:
+    has_diagnostic_pre = (
+        db.query(DiagnosticAttempt.id)
+        .filter(
+            DiagnosticAttempt.user_id == int(user_id),
+            DiagnosticAttempt.stage == "pre",
+            DiagnosticAttempt.attempt_id.isnot(None),
+        )
+        .first()
+        is not None
+    )
+
+    latest_plan = (
+        db.query(LearningPlan)
+        .filter(
+            LearningPlan.user_id == int(user_id),
+            LearningPlan.classroom_id == int(classroom_id),
+        )
+        .order_by(LearningPlan.created_at.desc())
+        .first()
+    )
+
+    if not latest_plan:
+        latest_plan = (
+            db.query(LearningPlan)
+            .filter(LearningPlan.user_id == int(user_id))
+            .order_by(LearningPlan.created_at.desc())
+            .first()
+        )
+
+    learning_progress_pct = 0.0
+    homework_progress_pct = 0.0
+    completed_tasks = 0
+    total_tasks = 0
+
+    if latest_plan:
+        total_tasks, total_homework_tasks = _count_plan_tasks(latest_plan.plan_json or {})
+        done_rows = (
+            db.query(LearningPlanTaskCompletion.day_index, LearningPlanTaskCompletion.task_index)
+            .filter(
+                LearningPlanTaskCompletion.plan_id == int(latest_plan.id),
+                LearningPlanTaskCompletion.completed.is_(True),
+            )
+            .all()
+        )
+        completed_tasks = len({(int(r.day_index), int(r.task_index)) for r in done_rows})
+        learning_progress_pct = round((completed_tasks / total_tasks) * 100, 1) if total_tasks > 0 else 0.0
+
+        homework_done = (
+            db.query(func.count(LearningPlanHomeworkSubmission.id))
+            .filter(
+                LearningPlanHomeworkSubmission.plan_id == int(latest_plan.id),
+                LearningPlanHomeworkSubmission.user_id == int(user_id),
+            )
+            .scalar()
+            or 0
+        )
+        if total_homework_tasks > 0:
+            homework_progress_pct = round(min(1.0, float(homework_done) / float(total_homework_tasks)) * 100, 1)
+
+    if homework_progress_pct == 0.0:
+        assignment_total = (
+            db.query(func.count(StudentAssignment.id))
+            .filter(
+                StudentAssignment.student_id == int(user_id),
+                StudentAssignment.classroom_id == int(classroom_id),
+                StudentAssignment.assignment_type.in_(["exercise", "quiz_practice", "essay_case_study"]),
+            )
+            .scalar()
+            or 0
+        )
+        assignment_completed = (
+            db.query(func.count(StudentAssignment.id))
+            .filter(
+                StudentAssignment.student_id == int(user_id),
+                StudentAssignment.classroom_id == int(classroom_id),
+                StudentAssignment.assignment_type.in_(["exercise", "quiz_practice", "essay_case_study"]),
+                StudentAssignment.status == "completed",
+            )
+            .scalar()
+            or 0
+        )
+        if assignment_total > 0:
+            homework_progress_pct = round((assignment_completed / assignment_total) * 100, 1)
+
+    conditions = [
+        {
+            "label": "Đã làm bài kiểm tra đầu vào",
+            "met": bool(has_diagnostic_pre),
+            "detail": "Đã hoàn thành" if has_diagnostic_pre else "Bạn cần hoàn thành bài kiểm tra đầu vào trước.",
+        },
+        {
+            "label": "Hoàn thành 70% lộ trình học",
+            "met": float(learning_progress_pct) >= 70.0,
+            "progress_pct": float(learning_progress_pct),
+            "detail": f"{completed_tasks}/{total_tasks} nhiệm vụ" if total_tasks > 0 else "Chưa có lộ trình học được giao.",
+        },
+        {
+            "label": "Hoàn thành 80% bài tập",
+            "met": float(homework_progress_pct) >= 80.0,
+            "progress_pct": float(homework_progress_pct),
+            "detail": "Tiến độ bài tập trong lớp hiện tại.",
+        },
+    ]
+
+    blocking = next((cond["label"] for cond in conditions if not cond.get("met")), None)
+    return {
+        "is_eligible": blocking is None,
+        "conditions": conditions,
+        "blocking_condition": blocking,
+    }
+
+
+@router.get("/v1/lms/final-exam/eligibility")
+def final_exam_eligibility(
+    request: Request,
+    classroomId: int = Query(...),
+    userId: int = Query(...),
+    db: Session = Depends(get_db),
+):
+    payload = _final_exam_eligibility_payload(db, classroom_id=int(classroomId), user_id=int(userId))
+    return {"request_id": request.state.request_id, "data": payload, "error": None}
+
+
+@router.post("/v1/lms/final-exam/generate")
+def final_exam_generate_job(
+    request: Request,
+    classroomId: int = Query(...),
+    userId: int = Query(...),
+    db: Session = Depends(get_db),
+):
+    eligibility = _final_exam_eligibility_payload(db, classroom_id=int(classroomId), user_id=int(userId))
+    if not eligibility["is_eligible"]:
+        raise HTTPException(status_code=403, detail={"code": "PREREQUISITE_NOT_MET", **eligibility})
+
+    topic_rows = db.query(DocumentTopic.id, func.coalesce(DocumentTopic.teacher_edited_title, DocumentTopic.title)).filter(DocumentTopic.status == "approved").all()
+    topics = [str(r[1]) for r in topic_rows if r and r[1]]
+
+    req = GenerateLmsQuizIn(
+        teacher_id=1,
+        classroom_id=int(classroomId),
+        topics=topics,
+        title="Final Test",
+        easy_count=4,
+        medium_count=4,
+        hard_count=2,
+    )
+    response = _generate_assessment_lms(request=request, db=db, payload=req, kind="diagnostic_post")
+    data = response.get("data") or {}
+
+    quiz_id = int(data.get("assessment_id") or data.get("quiz_id") or 0)
+    duration_seconds = 45 * 60
+    if quiz_id > 0:
+        quiz = db.query(QuizSet).filter(QuizSet.id == quiz_id).first()
+        if quiz:
+            duration_seconds = int(getattr(quiz, "duration_seconds", duration_seconds) or duration_seconds)
+
+    job_id = str(uuid.uuid4())
+    _FINAL_EXAM_JOBS[job_id] = {
+        "started_at": time.time(),
+        "status": "processing",
+        "topics_count": len(set(topics)),
+        "result": {
+            "quiz_id": quiz_id,
+            "assessment_id": quiz_id,
+            "duration_seconds": int(duration_seconds),
+            "questions": data.get("questions") or [],
+            "topic_count": len(set(topics)),
+            "difficulty": {
+                "easy": int(req.easy_count),
+                "medium": int(req.medium_count),
+                "hard": int(req.hard_count),
+            },
+        },
+    }
+    return {"request_id": request.state.request_id, "data": {"jobId": job_id}, "error": None}
+
+
+@router.get("/v1/lms/final-exam/status")
+def final_exam_generate_status(request: Request, jobId: str = Query(...), db: Session = Depends(get_db)):
+    _ = db  # keep dependency parity and future DB-based jobs.
+    job = _FINAL_EXAM_JOBS.get(str(jobId))
+    if not job:
+        raise HTTPException(status_code=404, detail="Final exam generation job not found")
+
+    elapsed = max(0.0, time.time() - float(job.get("started_at") or time.time()))
+    progress = min(100, int((elapsed / 12.0) * 100))
+    status = "completed" if progress >= 100 else "processing"
+    job["status"] = status
+
+    response = {
+        "jobId": str(jobId),
+        "status": status,
+        "progress": progress,
+        "topics_count": int(job.get("topics_count") or 0),
+    }
+    if status == "completed":
+        response["result"] = job.get("result") or {}
+    return {"request_id": request.state.request_id, "data": response, "error": None}
 
 
 @router.post("/lms/teacher/select-topics")
@@ -390,7 +626,7 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
                     "quiz_set_id": int(quiz_id),
                     "score": int(base.get("total_score_percent") or base.get("score_percent") or 0),
                     "breakdown": base.get("breakdown") or [],
-                    "student_level": classify_student_level(int(base.get("total_score_percent") or base.get("score_percent") or 0)),
+                    "student_level": classify_student_level(int(base.get("total_score_percent") or base.get("score_percent") or 0))["level_key"],
                     "document_ids": [int(quiz.source_query_id)] if getattr(quiz, "source_query_id", None) else [],
                 },
                 trace_id=getattr(request.state, "request_id", None),
@@ -501,7 +737,7 @@ def assign_path_by_quiz(
     result = assign_learning_path(
         db,
         user_id=int(payload.user_id),
-        student_level=level,
+        student_level=str(level["level_key"]),
         document_ids=doc_ids,
         classroom_id=int(payload.classroom_id or 0),
     )
@@ -573,6 +809,12 @@ def student_recommendations(request: Request, student_id: int, db: Session = Dep
         for r in recs
     ]
     return {"request_id": request.state.request_id, "data": {"student_id": student_id, "recommendations": recs, "assignments": assignments}, "error": None}
+
+
+@router.get("/students/{user_id}/progress")
+def student_progress_comparison(request: Request, user_id: int, classroomId: int = Query(..., ge=1), db: Session = Depends(get_db)):
+    data = get_student_progress_comparison(user_id=int(user_id), classroom_id=int(classroomId), db=db)
+    return {"request_id": request.state.request_id, "data": data, "error": None}
 
 
 
@@ -676,7 +918,7 @@ def lms_submit_attempt(request: Request, assessment_id: int, payload: SubmitAtte
             path_result = assign_learning_path(
                 db,
                 user_id=int(payload.user_id),
-                student_level=level,
+                student_level=str(level["level_key"]),
                 document_ids=[int(x) for x in doc_ids],
             )
             base["assigned_learning_path"] = path_result
@@ -693,7 +935,7 @@ def lms_submit_attempt(request: Request, assessment_id: int, payload: SubmitAtte
                 db,
                 student_id=int(payload.user_id),
                 classroom_id=int(getattr(q, "classroom_id", 0) or 0),
-                student_level=level,
+                student_level=str(level["level_key"]),
                 weak_topics=breakdown.get("weak_topics") or [],
                 document_id=int(doc_ids[0]),
             )
@@ -749,7 +991,13 @@ def get_multidim_profile(request: Request, user_id: int, db: Session = Depends(g
 
 @router.get("/lms/teacher/report/{classroom_id}")
 def teacher_report(request: Request, classroom_id: int, db: Session = Depends(get_db)):
-    report = build_teacher_report(db=db, classroom_id=int(classroom_id))
+    classroom_id = int(classroom_id)
+    if classroom_id in _report_cache and time.time() - _report_cache_time.get(classroom_id, 0) < 1800:
+        report = _report_cache[classroom_id]
+    else:
+        report = generate_full_teacher_report(classroom_id=classroom_id, db=db)
+        _report_cache[classroom_id] = report
+        _report_cache_time[classroom_id] = time.time()
     return {
         "request_id": request.state.request_id,
         "data": report,
@@ -823,43 +1071,31 @@ def _render_teacher_report_html(report: dict[str, object]) -> str:
 def export_teacher_report(
     request: Request,
     classroom_id: int,
-    format: str = Query("pdf"),
+    format: str = Query("html"),
     db: Session = Depends(get_db),
 ):
-    export_format = str(format or "pdf").strip().lower()
-    report = build_teacher_report(db=db, classroom_id=int(classroom_id))
+    export_format = str(format or "html").strip().lower()
+    classroom_id = int(classroom_id)
+    if classroom_id in _report_cache and time.time() - _report_cache_time.get(classroom_id, 0) < 1800:
+        report = _report_cache[classroom_id]
+    else:
+        report = generate_full_teacher_report(classroom_id=classroom_id, db=db)
+        _report_cache[classroom_id] = report
+        _report_cache_time[classroom_id] = time.time()
 
     if export_format == "html":
-        return HTMLResponse(content=_render_teacher_report_html(report), media_type="text/html; charset=utf-8")
+        template = _templates.get_template("teacher_report.html")
+        rendered = template.render(report=report, generated_date=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"))
+        return HTMLResponse(content=rendered, media_type="text/html; charset=utf-8")
 
-    if export_format != "pdf":
-        raise HTTPException(status_code=400, detail="Only html and pdf formats are supported")
-
-    student_count = (
-        db.query(ClassroomMember)
-        .filter(ClassroomMember.classroom_id == int(classroom_id))
-        .count()
-    )
-    if student_count > 30:
-        job = enqueue(task_export_teacher_report_pdf, int(classroom_id), queue_name="default")
+    if export_format == "json":
         return {
             "request_id": request.state.request_id,
-            "data": {
-                "queued": True,
-                "job_id": job.get("job_id"),
-                "note": "Lớp đông hơn 30 học sinh, báo cáo được tạo ở background task.",
-            },
+            "data": report,
             "error": None,
         }
 
-    html = _render_teacher_report_html(report)
-    with tempfile.NamedTemporaryFile(prefix=f"classroom_{classroom_id}_", suffix=".html", delete=False, mode="w", encoding="utf-8") as f:
-        f.write(html)
-        html_path = f.name
-
-    pdf_path = build_classroom_report_pdf(classroom_id=int(classroom_id), db=db)
-    Path(html_path).unlink(missing_ok=True)
-    return FileResponse(pdf_path, media_type="application/pdf", filename=f"classroom_{classroom_id}_report.pdf")
+    raise HTTPException(status_code=400, detail="Only html and json formats are supported")
 
 
 @router.get("/lms/classroom/{classroom_id}/final-report")
