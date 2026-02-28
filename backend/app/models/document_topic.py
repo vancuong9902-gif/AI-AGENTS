@@ -39,6 +39,7 @@ class DocumentTopic(Base):
     teacher_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     is_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false", index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true", index=True)
     confirmed_by_teacher: Mapped[bool] = mapped_column(Boolean, nullable=True, default=False, server_default="false")
 
     start_chunk_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -48,3 +49,4 @@ class DocumentTopic(Base):
     quick_check_quiz_id: Mapped[int | None] = mapped_column(ForeignKey("quiz_sets.id"), nullable=True, index=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
