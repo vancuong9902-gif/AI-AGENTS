@@ -4,13 +4,17 @@ import random
 import string
 from typing import Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_teacher, require_user
+from app.models.attempt import Attempt
 from app.models.classroom import Classroom, ClassroomMember
+from app.models.classroom_assessment import ClassroomAssessment
 from app.models.learning_plan import LearningPlan, LearningPlanHomeworkSubmission, LearningPlanTaskCompletion
+from app.models.quiz_set import QuizSet
 from app.models.user import User
 from app.schemas.classrooms import (
     AssignLearningPlanRequest,
@@ -22,6 +26,8 @@ from app.schemas.classrooms import (
 )
 from app.services.learning_plan_service import build_teacher_learning_plan
 from app.services.learning_plan_storage_service import save_teacher_plan
+from app.services.lms_service import analyze_topic_weak_points, classify_student_level, generate_class_narrative, resolve_student_name, score_breakdown
+from app.services.report_exporter import export_class_report_docx, export_class_report_pdf, make_export_path
 from app.services.user_service import ensure_user_exists
 
 
@@ -184,6 +190,87 @@ def _homework_stats(db: Session, plan_id: int, user_id: int) -> Tuple[Optional[f
     return float(avg), float(last) if last is not None else None
 
 
+def _build_latest_report_data(db: Session, classroom_id: int) -> dict:
+    assessment_ids = [
+        int(r[0])
+        for r in db.query(ClassroomAssessment.assessment_id)
+        .filter(ClassroomAssessment.classroom_id == int(classroom_id))
+        .all()
+    ]
+    attempts = db.query(Attempt).filter(Attempt.quiz_set_id.in_(assessment_ids)).all() if assessment_ids else []
+    quiz_kind_map = {
+        int(qid): str(kind or "")
+        for qid, kind in db.query(QuizSet.id, QuizSet.kind).filter(QuizSet.id.in_(assessment_ids)).all()
+    } if assessment_ids else {}
+
+    members = db.query(ClassroomMember).filter(ClassroomMember.classroom_id == int(classroom_id)).all()
+    student_ids = sorted({int(m.user_id) for m in members})
+    pre_scores: dict[int, float] = {}
+    post_scores: dict[int, float] = {}
+    all_breakdowns: list[dict] = []
+
+    for at in attempts:
+        uid = int(at.user_id)
+        br = score_breakdown(at.breakdown_json or [])
+        all_breakdowns.append(br)
+        pct = float((br.get("overall") or {}).get("percent") or 0.0)
+        kind = quiz_kind_map.get(int(at.quiz_set_id), "")
+        if kind == "diagnostic_pre":
+            pre_scores[uid] = pct
+        elif kind == "diagnostic_post":
+            post_scores[uid] = pct
+
+    students = []
+    level_dist = {"gioi": 0, "kha": 0, "trung_binh": 0, "yeu": 0}
+    deltas: list[float] = []
+    improved_count = 0
+
+    for uid in student_ids:
+        entry = float(pre_scores.get(uid, 0.0))
+        final = float(post_scores.get(uid, 0.0))
+        delta = final - entry
+        level = classify_student_level(int(round(final if final > 0 else entry)))
+        level_dist[level] = int(level_dist.get(level, 0)) + 1
+        deltas.append(delta)
+        if delta > 0:
+            improved_count += 1
+        students.append(
+            {
+                "name": resolve_student_name(uid, db),
+                "entry_score": entry,
+                "final_score": final,
+                "level": level,
+            }
+        )
+
+    weak_topics_raw = analyze_topic_weak_points(all_breakdowns) if all_breakdowns else []
+    weak_topics = [
+        {
+            "topic": str(item.get("topic") or "N/A"),
+            "avg_pct": float(item.get("avg_pct") or 0.0),
+            "suggestion": f"Ôn tập trọng tâm chủ đề {item.get('topic') or 'này'} bằng 3-5 bài luyện ngắn.",
+        }
+        for item in weak_topics_raw[:5]
+    ]
+
+    avg_delta = sum(deltas) / max(1, len(deltas)) if deltas else 0.0
+    narrative = generate_class_narrative(
+        total_students=len(students),
+        level_dist=level_dist,
+        weak_topics=weak_topics[:3],
+        avg_improvement=avg_delta,
+        per_student_data=[],
+    )
+
+    return {
+        "narrative": narrative,
+        "level_dist": level_dist,
+        "weak_topics": weak_topics,
+        "students": students,
+        "improvement": {"avg_delta": avg_delta, "improved_count": improved_count},
+    }
+
+
 @router.get("/teacher/classrooms/{classroom_id}/dashboard")
 def classroom_dashboard(
     request: Request,
@@ -299,3 +386,36 @@ def assign_learning_plan_to_classroom(
         created.append({"user_id": int(uid), "plan_id": int(row.id)})
 
     return {"request_id": request.state.request_id, "data": {"created": created}, "error": None}
+
+
+@router.get("/classrooms/{classroom_id}/reports/latest/export")
+def export_latest_classroom_report(
+    classroom_id: int,
+    format: str = Query("pdf"),
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    classroom = db.query(Classroom).filter(Classroom.id == int(classroom_id)).first()
+    if not classroom or int(classroom.teacher_id) != int(teacher.id):
+        raise HTTPException(status_code=404, detail="Classroom not found")
+
+    report_data = _build_latest_report_data(db=db, classroom_id=int(classroom_id))
+    export_format = str(format or "pdf").strip().lower()
+    class_name = str(classroom.name or f"#{classroom_id}")
+    teacher_name = str(getattr(teacher, "full_name", None) or getattr(teacher, "email", None) or f"Teacher {teacher.id}")
+
+    if export_format == "pdf":
+        out_path = make_export_path(classroom_id=int(classroom_id), extension="pdf")
+        export_class_report_pdf(report_data, out_path, class_name=class_name, teacher_name=teacher_name)
+        return FileResponse(out_path, media_type="application/pdf", filename=f"classroom_{classroom_id}_latest_report.pdf")
+
+    if export_format == "docx":
+        out_path = make_export_path(classroom_id=int(classroom_id), extension="docx")
+        export_class_report_docx(report_data, out_path, class_name=class_name, teacher_name=teacher_name)
+        return FileResponse(
+            out_path,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            filename=f"classroom_{classroom_id}_latest_report.docx",
+        )
+
+    raise HTTPException(status_code=400, detail="format must be pdf or docx")
