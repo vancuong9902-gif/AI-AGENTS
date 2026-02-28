@@ -27,6 +27,7 @@ from app.models.classroom_assessment import ClassroomAssessment
 from app.models.classroom import ClassroomMember, Classroom
 from app.models.diagnostic_attempt import DiagnosticAttempt
 from app.models.learner_profile import LearnerProfile
+from app.models.policy_decision_log import PolicyDecisionLog
 from app.services.rag_service import retrieve_and_log, auto_document_ids_for_query
 from app.services.corrective_rag import corrective_retrieve_and_log
 from app.services.text_quality import filter_chunks_by_quality
@@ -393,6 +394,40 @@ def _level_from_total(total_percent: int, *, essay_percent: int | None = None, g
     if gate_essay and lvl == "advanced" and essay_percent is not None and int(essay_percent) < 30:
         return "intermediate"
     return lvl
+
+
+def _diagnostic_pre_level(total_percent: int) -> str:
+    """Classification policy for entry diagnostic submissions."""
+    score = max(0, min(100, int(total_percent or 0)))
+    if score >= 80:
+        return "advanced"
+    if score >= 50:
+        return "intermediate"
+    return "beginner"
+
+
+def _learning_materials_for_level(*, level: str, weak_topics: list[str], teacher_topic: str) -> list[dict[str, Any]]:
+    topic_pool = [t for t in (weak_topics or []) if str(t or "").strip()]
+    if not topic_pool:
+        topic_pool = [str(teacher_topic or "chủ đề tổng quan").strip()]
+
+    materials: list[dict[str, Any]] = []
+    if level == "advanced":
+        for t in topic_pool[:4]:
+            materials.append({"topic": t, "material_type": "advanced", "priority": "high", "reason": "Điểm đầu vào cao, ưu tiên nội dung nâng cao."})
+        materials.append({"topic": str(teacher_topic or "mở rộng").strip(), "material_type": "project", "priority": "medium", "reason": "Bổ sung bài tập vận dụng sâu, bỏ qua bài cơ bản."})
+        return materials
+
+    if level == "beginner":
+        for t in topic_pool[:3]:
+            materials.append({"topic": t, "material_type": "basic", "priority": "high", "reason": "Cần củng cố kiến thức nền tảng trước."})
+            materials.append({"topic": t, "material_type": "remedial_exercise", "priority": "high", "reason": "Tăng số lượng bài tập bổ trợ cho mức beginner."})
+        return materials
+
+    for t in topic_pool[:5]:
+        materials.append({"topic": t, "material_type": "core", "priority": "high", "reason": "Mức intermediate học đầy đủ nội dung cốt lõi."})
+        materials.append({"topic": t, "material_type": "practice", "priority": "medium", "reason": "Bổ sung luyện tập để ổn định năng lực."})
+    return materials
 
 
 def _split_scores_from_breakdown(breakdown: list[dict]) -> dict:
@@ -2787,6 +2822,13 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
         except Exception:
             synced_diagnostic = None
 
+    # Diagnostic attempts must always sync into learner profile immediately after submit.
+    if synced_diagnostic is None and (quiz_set.kind or "").lower() in ("diagnostic_pre", "diagnostic_post"):
+        try:
+            synced_diagnostic = sync_diagnostic_from_attempt(db, quiz_set=quiz_set, attempt=attempt)
+        except Exception:
+            synced_diagnostic = None
+
     if penalty_applied:
         attempt.score_percent = max(0, int(round(int(attempt.score_percent or 0) * 0.9)))
         db.add(attempt)
@@ -3099,7 +3141,7 @@ def get_latest_submission(db: Session, *, assessment_id: int, student_id: int) -
 
 
 def sync_diagnostic_from_attempt(db: Session, *, quiz_set: QuizSet, attempt: Attempt) -> Optional[Dict[str, Any]]:
-    """If quiz_set.kind is diagnostic_pre/post and attempt is fully graded, write diagnostic_attempts + update learner_profile."""
+    """Sync diagnostic attempt, classify learner, create plan, notify student, and log policy decisions."""
     kind = (quiz_set.kind or "").lower()
     if kind not in ("diagnostic_pre", "diagnostic_post"):
         return None
@@ -3112,36 +3154,26 @@ def sync_diagnostic_from_attempt(db: Session, *, quiz_set: QuizSet, attempt: Att
     essay_percent = int(split["essay_percent"])
     total_percent = int(split["total_percent"])
 
-    gate = True
-    if pending:
-        gate = False
+    level = _diagnostic_pre_level(total_percent) if kind == "diagnostic_pre" else _level_from_total(
+        total_percent,
+        essay_percent=essay_percent,
+        gate_essay=not bool(pending),
+    )
 
-    level = _level_from_total(total_percent, essay_percent=essay_percent, gate_essay=gate)
-
-    # Teacher topic (assessment title) is still stored for UI context,
-    # but we ALSO keep per-topic mastery (inferred from each question's stem/topic)
-    # so Learning Path can be more personalized.
     teacher_topic = (quiz_set.topic or "").strip() or "chủ đề"
-
     mastery_by_topic = _topic_mastery_from_breakdown(breakdown)
-    # Ensure we always have at least 1 entry.
     if not mastery_by_topic:
         mastery_by_topic = {teacher_topic.lower(): float(total_percent) / 100.0}
 
-    # Weak topics = mastery < 0.6 (cap for UI)
-    weak_topics = [t for t, v in (mastery_by_topic or {}).items() if float(v) < 0.6]
-    weak_topics = weak_topics[:8]
-
+    weak_topics = [t for t, v in (mastery_by_topic or {}).items() if float(v) < 0.6][:8]
     stage = "pre" if kind == "diagnostic_pre" else "post"
 
-    # Upsert learner profile
     profile = db.query(LearnerProfile).filter(LearnerProfile.user_id == attempt.user_id).first()
     if not profile:
         profile = LearnerProfile(user_id=attempt.user_id, level=level, mastery_json={})
         db.add(profile)
         db.flush()
 
-    # Merge mastery
     merged = dict(profile.mastery_json or {})
     for t, v in mastery_by_topic.items():
         merged[t] = float(v)
@@ -3150,17 +3182,14 @@ def sync_diagnostic_from_attempt(db: Session, *, quiz_set: QuizSet, attempt: Att
         merged["overall_post"] = float(total_percent) / 100.0
     profile.mastery_json = merged
 
-    # Update level only for pre-test
     if stage == "pre":
         profile.level = level
 
-    # Upsert diagnostic_attempt
     existing = (
         db.query(DiagnosticAttempt)
         .filter(DiagnosticAttempt.user_id == attempt.user_id, DiagnosticAttempt.assessment_id == quiz_set.id)
         .first()
     )
-    # Preserve any previous auto-assigned plan id (avoid generating multiple plans for the same diagnostic).
     prev_plan_id = None
     if existing and isinstance(existing.mastery_json, dict):
         prev_plan_id = (existing.mastery_json or {}).get("plan_id")
@@ -3201,9 +3230,6 @@ def sync_diagnostic_from_attempt(db: Session, *, quiz_set: QuizSet, attempt: Att
     db.commit()
     db.refresh(diag_row)
 
-    # -------------------------
-    # Auto-assign learning plan right after PRE diagnostic (placement test)
-    # -------------------------
     plan_id: int | None = None
     classroom_id: int | None = None
     try:
@@ -3219,43 +3245,44 @@ def sync_diagnostic_from_attempt(db: Session, *, quiz_set: QuizSet, attempt: Att
             from app.models.learning_plan import LearningPlan
             from app.services.learning_plan_service import build_teacher_learning_plan
             from app.services.learning_plan_storage_service import save_teacher_plan
+            from app.services.notification_service import create_notification
 
-            # Find classroom context (first mapping).
-            try:
-                row = (
-                    db.query(ClassroomAssessment.classroom_id)
-                    .filter(ClassroomAssessment.assessment_id == int(quiz_set.id))
-                    .limit(1)
-                    .first()
-                )
-                if row and row[0] is not None:
-                    classroom_id = int(row[0])
-            except Exception:
-                classroom_id = None
+            row = (
+                db.query(ClassroomAssessment.classroom_id)
+                .filter(ClassroomAssessment.assessment_id == int(quiz_set.id))
+                .limit(1)
+                .first()
+            )
+            if row and row[0] is not None:
+                classroom_id = int(row[0])
 
-            # If we already have a plan id and it exists, don't generate again.
             if plan_id is not None:
                 exists_plan = db.query(LearningPlan.id).filter(LearningPlan.id == int(plan_id)).first()
-                if exists_plan:
-                    # keep
-                    pass
-                else:
+                if not exists_plan:
                     plan_id = None
+
+            decision_reason = (
+                f"diagnostic_pre submitted: score={total_percent}%, thresholds: >=80 advanced, 50-79 intermediate, <50 beginner"
+            )
 
             if plan_id is None:
                 days_total = int(getattr(settings, "LEARNING_PLAN_DAYS", 7) or 7)
                 minutes_per_day = int(getattr(settings, "LEARNING_PLAN_MINUTES_PER_DAY", 35) or 35)
+                learning_materials = _learning_materials_for_level(level=level, weak_topics=weak_topics, teacher_topic=teacher_topic)
 
                 teacher_plan = build_teacher_learning_plan(
                     db,
                     user_id=int(attempt.user_id),
                     teacher_id=int(getattr(quiz_set, "user_id", 1) or 1),
-                    level=str(level or "beginner"),
+                    level=str(level),
                     assigned_topic=teacher_topic,
                     modules=[],
                     days=days_total,
                     minutes_per_day=minutes_per_day,
                 )
+                plan_payload = teacher_plan.model_dump()
+                plan_payload["learning_materials"] = learning_materials
+                plan_payload["policy_reason"] = decision_reason
 
                 plan_row = save_teacher_plan(
                     db,
@@ -3263,36 +3290,60 @@ def sync_diagnostic_from_attempt(db: Session, *, quiz_set: QuizSet, attempt: Att
                     teacher_id=int(getattr(quiz_set, "user_id", 1) or 1),
                     classroom_id=classroom_id,
                     assigned_topic=teacher_topic,
-                    level=str(level or "beginner"),
+                    level=str(level),
                     days_total=int(teacher_plan.days_total or days_total),
                     minutes_per_day=int(teacher_plan.minutes_per_day or minutes_per_day),
-                    teacher_plan=teacher_plan.model_dump(),
+                    teacher_plan=plan_payload,
                 )
                 plan_id = int(plan_row.id)
 
-                # Store the plan id back to diagnostic_attempt for idempotency.
                 mj2 = dict(diag_row.mastery_json or {})
                 mj2["plan_id"] = int(plan_id)
+                mj2["learning_materials"] = learning_materials
                 diag_row.mastery_json = mj2
-
-                from app.services.notification_service import create_notification
 
                 create_notification(
                     db,
                     user_id=int(attempt.user_id),
-                    type="learning_plan_ready",
-                    title="Lộ trình học mới đã sẵn sàng!",
-                    message=f"AI đã tạo lộ trình học phù hợp với trình độ {level} của bạn. Click để xem!",
+                    type="LEARNING_PLAN_READY",
+                    title="Lộ trình học cá nhân đã sẵn sàng",
+                    message=f"Dựa trên kết quả kiểm tra đầu vào của bạn ({total_percent}%), AI đã xếp bạn vào nhóm {level} và chuẩn bị lộ trình học phù hợp. Xem lộ trình tại: /learning-path",
                     data={
                         "learning_plan_id": int(plan_id),
-                        "level": str(level or "beginner"),
-                        "topic": str(teacher_topic),
+                        "score": int(total_percent),
+                        "level": str(level),
+                        "event": "LEARNING_PLAN_READY",
+                        "reason": decision_reason,
                     },
                 )
-                db.commit()
+
+            policy_log = PolicyDecisionLog(
+                user_id=int(attempt.user_id),
+                document_id=int(getattr(quiz_set, "source_query_id", 0) or 0) or None,
+                topic=str(teacher_topic),
+                policy_type="diagnostic_pre_auto_plan",
+                action="create_learning_plan" if plan_id is not None else "skip_learning_plan",
+                recommended_difficulty=str(level),
+                state_json={
+                    "assessment_id": int(quiz_set.id),
+                    "attempt_id": int(attempt.id),
+                    "score_percent": int(total_percent),
+                    "mcq_percent": int(mcq_percent),
+                    "essay_percent": int(essay_percent),
+                    "pending": bool(pending),
+                    "weak_topics": weak_topics,
+                },
+                meta_json={
+                    "reason": decision_reason,
+                    "classroom_id": classroom_id,
+                    "plan_id": plan_id,
+                    "event": "LEARNING_PLAN_READY",
+                },
+            )
+            db.add(policy_log)
+            db.commit()
         except Exception:
-            # Do not fail the submission if auto-plan generation fails.
-            pass
+            db.rollback()
 
     return {
         "stage": stage,
