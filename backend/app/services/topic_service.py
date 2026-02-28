@@ -4057,4 +4057,125 @@ def build_topic_preview_for_teacher(doc_id: int, db: "Session") -> Dict[str, Any
         "total_topics": len(topic_items),
         "unreviewed_count": int(unreviewed_count),
     }
+
+
+def _build_topic_practice_pack(title: str, key_points: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    """Build a 3-3-3 practice pack for a single topic.
+
+    The stems are deterministic and constrained to topic signals only.
+    """
+    seeds = [str(x).strip() for x in (key_points or []) if str(x).strip()]
+    if not seeds:
+        seeds = [str(title).strip() or "nội dung chủ đề"]
+
+    def _pick(i: int) -> str:
+        return seeds[i % len(seeds)]
+
+    easy = [
+        {
+            "stem": f"Khái niệm nào mô tả đúng nhất: {_pick(0)}?",
+            "explanation": "Nhận diện đúng thuật ngữ cốt lõi theo nội dung vừa học.",
+        },
+        {
+            "stem": f"Nêu ý chính của nội dung: {_pick(1)}.",
+            "explanation": "Tóm tắt ngắn gọn giúp kiểm tra mức độ hiểu cơ bản.",
+        },
+        {
+            "stem": f"Trong chủ đề '{title}', {_pick(2)} thuộc nhóm kiến thức nào?",
+            "explanation": "Phân loại đúng giúp tránh nhầm lẫn giữa các phần gần nhau.",
+        },
+    ]
+    medium = [
+        {
+            "stem": f"Áp dụng '{_pick(0)}' để xử lý một tình huống gần với ví dụ trong bài.",
+            "explanation": "Cần nêu các bước áp dụng theo trình tự hợp lý.",
+        },
+        {
+            "stem": f"So sánh {_pick(1)} với {_pick(2)} và chỉ ra điểm khác nhau chính.",
+            "explanation": "Bài yêu cầu phân biệt khái niệm và bối cảnh sử dụng.",
+        },
+        {
+            "stem": f"Từ '{_pick(0)}', hãy biến đổi/triển khai thành kết quả cơ bản liên quan đến chủ đề.",
+            "explanation": "Kiểm tra khả năng áp dụng thay vì chỉ ghi nhớ định nghĩa.",
+        },
+    ]
+    hard = [
+        {
+            "stem": f"Kết hợp {_pick(0)} và {_pick(1)} để giải quyết một bài toán nhiều bước.",
+            "explanation": "Cần lập luận rõ từng bước, chỉ ra giả thiết và kết luận.",
+        },
+        {
+            "stem": f"Phân tích sai lầm thường gặp khi vận dụng {_pick(2)} trong chủ đề '{title}'.",
+            "explanation": "Bài khó vì đòi hỏi vừa hiểu bản chất vừa phát hiện lỗi tinh vi.",
+        },
+        {
+            "stem": f"Đề xuất cách kiểm chứng kết quả khi áp dụng đồng thời {_pick(1)} và {_pick(2)}.",
+            "explanation": "Đánh giá tư duy tổng hợp và khả năng tự kiểm tra tính đúng đắn.",
+        },
+    ]
+    return {"easy": easy, "medium": medium, "hard": hard}
+
+
+def generate_topic_map_from_extracted_text(
+    *,
+    document_title: str,
+    extracted_text: str,
+    toc_hints: Optional[List[str]] = None,
+    page_markers: Optional[List[str]] = None,
+    chunk_previews: Optional[List[str]] = None,
+    max_topics: int = 24,
+) -> Dict[str, Any]:
+    """Generate a textbook-faithful topic map from normalized extracted text.
+
+    Output contract:
+    {"topics":[{"title","summary","keywords","outline","study_guide_md","practice_pack"}]}
+    """
+    text = str(extracted_text or "").strip()
+    if not text:
+        return {"topics": []}
+
+    extracted = extract_topics(text, include_details=False, max_topics=int(max_topics))
+    topics = extracted.get("topics") if isinstance(extracted, dict) else []
+    if not isinstance(topics, list):
+        topics = []
+
+    # Optional hints are merged into text context, but never create standalone topics.
+    hint_blob = "\n".join([*(toc_hints or []), *(page_markers or []), *(chunk_previews or [])]).strip()
+
+    out_topics: List[Dict[str, Any]] = []
+    for topic in topics:
+        title = str(topic.get("title") or "").strip()
+        if not title:
+            continue
+        banned = ["bài tập", "luyện tập", "câu hỏi", "đáp án", "lời giải", "quiz"]
+        title_l = title.lower()
+        if any(x in title_l for x in banned):
+            continue
+
+        body = str(topic.get("body") or "").strip()
+        if hint_blob and body:
+            body = f"{body}\n\n{hint_blob[:1200]}"
+        details = build_topic_details(body, title=title)
+        keywords = [str(k).strip() for k in (details.get("key_points") or topic.get("keywords") or []) if str(k).strip()][:10]
+        outline = [str(x).strip() for x in (details.get("outline") or []) if str(x).strip()][:7]
+        summary = " ".join([str(x).strip() for x in (details.get("key_points") or [])[:2] if str(x).strip()]).strip()
+        if not summary:
+            summary = str(topic.get("summary") or "").strip()
+        summary = summary[:420]
+
+        pack = _build_topic_practice_pack(title, details.get("key_points") or [])
+        out_topics.append(
+            {
+                "title": " ".join(title.split())[:120],
+                "summary": summary,
+                "keywords": keywords[:10],
+                "outline": outline[:7],
+                "study_guide_md": str(details.get("study_guide_md") or "").strip()[:9000],
+                "practice_pack": pack,
+            }
+        )
+
+    # Quality gate: keep a practical number of topics, avoid empty items.
+    out_topics = [t for t in out_topics if t.get("title") and t.get("summary")]
+    return {"topics": out_topics[: max(12, min(60, int(max_topics)))]}
     
