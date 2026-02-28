@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, func
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import JSONB
 
@@ -19,4 +19,6 @@ class Attempt(Base):
     answers_json: Mapped[list[dict]] = mapped_column(JSONB, nullable=False, default=list)
     breakdown_json: Mapped[list[dict]] = mapped_column(JSONB, nullable=False, default=list)
     duration_sec: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_late: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    late_by_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

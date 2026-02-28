@@ -223,8 +223,53 @@ def assessments_submit(
             assessment_id=assessment_id,
             user_id=int(user.id),
             answers=[a.model_dump() for a in (payload.answers or [])],
+            duration_sec=payload.duration_sec,
         )
         _check_and_trigger_class_report(db, assessment_id=assessment_id, user_id=int(user.id))
+        return {"request_id": request.state.request_id, "data": data, "error": None}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/assessments/quiz-sets/{quiz_set_id}/start")
+def quiz_set_start(
+    request: Request,
+    quiz_set_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    if (getattr(user, "role", "student") or "student") == "student":
+        if not _student_can_access_assessment(db, student_id=int(user.id), assessment_id=int(quiz_set_id)):
+            raise HTTPException(status_code=404, detail="Assessment not found")
+
+    try:
+        data = start_assessment_session(db, assessment_id=int(quiz_set_id), user_id=int(user.id))
+        return {"request_id": request.state.request_id, "data": data, "error": None}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/assessments/quiz-sets/{quiz_set_id}/submit")
+def quiz_set_submit(
+    request: Request,
+    quiz_set_id: int,
+    payload: AssessmentSubmitRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    if (getattr(user, "role", "student") or "student") == "student":
+        if not _student_can_access_assessment(db, student_id=int(user.id), assessment_id=int(quiz_set_id)):
+            raise HTTPException(status_code=404, detail="Assessment not found")
+
+    try:
+        data = submit_assessment(
+            db,
+            assessment_id=int(quiz_set_id),
+            user_id=int(user.id),
+            answers=[a.model_dump() for a in (payload.answers or [])],
+            duration_sec=payload.duration_sec,
+        )
+        _check_and_trigger_class_report(db, assessment_id=int(quiz_set_id), user_id=int(user.id))
         return {"request_id": request.state.request_id, "data": data, "error": None}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

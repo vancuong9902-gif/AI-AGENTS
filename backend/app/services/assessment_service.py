@@ -2717,9 +2717,7 @@ def start_assessment_session(db: Session, *, assessment_id: int, user_id: int) -
 
     ensure_user_exists(db, int(user_id), role="student")
 
-    started_at = _utcnow()
-    time_limit_seconds = int(getattr(quiz_set, "duration_seconds", 0) or 0)
-    deadline = started_at + timedelta(seconds=max(0, time_limit_seconds))
+    time_limit_seconds = int(getattr(quiz_set, "time_limit_seconds", 0) or getattr(quiz_set, "duration_seconds", 0) or 0)
 
     session = (
         db.query(QuizSession)
@@ -2730,9 +2728,20 @@ def start_assessment_session(db: Session, *, assessment_id: int, user_id: int) -
         session = QuizSession(quiz_set_id=int(assessment_id), user_id=int(user_id))
         db.add(session)
 
-    session.started_at = started_at
-    session.submitted_at = None
+    # Idempotent start: do not reset if already started.
+    started_at = session.started_at or _utcnow()
+    if not session.started_at:
+        session.started_at = started_at
+        session.submitted_at = None
     session.time_limit_seconds = time_limit_seconds
+
+    # Keep compatibility fields on quiz_set for clients needing metadata.
+    if getattr(quiz_set, "started_at", None) is None:
+        quiz_set.started_at = started_at
+    if int(getattr(quiz_set, "time_limit_seconds", 0) or 0) <= 0:
+        quiz_set.time_limit_seconds = time_limit_seconds
+
+    deadline = started_at + timedelta(seconds=max(0, time_limit_seconds))
     db.commit()
 
     return {
@@ -2848,7 +2857,10 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
     if time_limit_seconds > 0 and actual_duration > (2 * time_limit_seconds):
         raise ValueError("Submission rejected: exceeded 2x time limit")
 
-    time_exceeded = time_limit_seconds > 0 and actual_duration > (time_limit_seconds + _GRACE_PERIOD_SECONDS)
+    elapsed = max(0, float((submitted_at - started_at).total_seconds()))
+    allowed_seconds = max(0, int(time_limit_seconds) + _GRACE_PERIOD_SECONDS)
+    time_exceeded = time_limit_seconds > 0 and elapsed > allowed_seconds
+    late_by_seconds = max(0, int(elapsed - max(0, int(time_limit_seconds)))) if time_exceeded else 0
 
     mcq_percent = int(round((mcq_earned / mcq_total) * 100)) if mcq_total else 0
 
@@ -2866,9 +2878,12 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
         duration_sec=actual_duration,
         answers_json=answers or [],
         breakdown_json=breakdown,
+        is_late=bool(time_exceeded),
+        late_by_seconds=int(late_by_seconds),
     )
     db.add(attempt)
     session.submitted_at = submitted_at
+    quiz_set.submitted_at = submitted_at
     db.commit()
     db.refresh(attempt)
 
@@ -2916,6 +2931,8 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
         "attempt_id": attempt.id,
         "duration_sec": int(getattr(attempt, "duration_sec", 0) or 0),
         "time_exceeded": bool(time_exceeded),
+        "is_late": bool(getattr(attempt, "is_late", False)),
+        "late_by_seconds": int(getattr(attempt, "late_by_seconds", 0) or 0),
         "penalty_applied": bool(penalty_applied),
         "score_percent": score_percent,
         "mcq_score_percent": int(split["mcq_percent"]),

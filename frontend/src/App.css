@@ -31,3 +31,14 @@
 .notification-item:hover { background: var(--surface-2); }
 .notification-item-title { font-weight: 600; margin-bottom: 4px; }
 .notification-item-message { color: #555; font-size: 13px; }
+
+.exam-timer-pulse {
+  animation: exam-timer-pulse 1s ease-in-out infinite;
+  font-weight: 800;
+}
+
+@keyframes exam-timer-pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.35; }
+  100% { opacity: 1; }
+}
