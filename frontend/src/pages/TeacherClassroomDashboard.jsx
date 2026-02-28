@@ -51,6 +51,80 @@ function ProgressPill({ pct }) {
   );
 }
 
+
+
+function AINarrativeCard({ narrative }) {
+  if (!narrative) return null;
+  return (
+    <div
+      style={{
+        background: "linear-gradient(135deg, #e3f2fd, #bbdefb)",
+        border: "1px solid #2196F3",
+        borderRadius: 12,
+        padding: "16px 20px",
+        marginBottom: 20,
+      }}
+    >
+      <div style={{ fontWeight: 700, color: "#1565C0", marginBottom: 8, fontSize: 15 }}>🤖 Nhận xét từ AI</div>
+      <p style={{ margin: 0, color: "#333", lineHeight: 1.7, fontSize: 14 }}>{narrative}</p>
+    </div>
+  );
+}
+
+function ProgressChart({ data }) {
+  if (!data || data.length === 0) return null;
+  const categories = data.map((item) => ({
+    key: String(item.student_id),
+    label: `#${item.student_id}`,
+    pre: Number(item.pre_score) || 0,
+    post: Number(item.post_score) || 0,
+  }));
+  return (
+    <GroupedBarChart
+      title="📈 Tiến bộ học sinh (Đầu vào vs Cuối kỳ)"
+      subtitle="So sánh điểm pre-test và post-test theo từng học sinh"
+      categories={categories}
+      series={[
+        { key: "pre", label: "Điểm đầu vào" },
+        { key: "post", label: "Điểm cuối kỳ" },
+      ]}
+      maxValue={100}
+      height={300}
+    />
+  );
+}
+
+function WeakTopicsTable({ topics }) {
+  if (!topics || topics.length === 0) return null;
+  return (
+    <div style={{ background: "#fff", borderRadius: 12, padding: 16, marginBottom: 20, boxShadow: "0 2px 16px rgba(0,0,0,0.06)" }}>
+      <h3 style={{ marginTop: 0, color: "#C62828" }}>⚠️ Phần học sinh đang yếu nhất</h3>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <thead>
+          <tr style={{ background: "#FFCDD2" }}>
+            <th style={{ padding: "8px 12px", textAlign: "left" }}>Chủ đề</th>
+            <th style={{ padding: "8px 12px", textAlign: "center" }}>Điểm TB</th>
+            <th style={{ padding: "8px 12px", textAlign: "center" }}>Học sinh yếu</th>
+            <th style={{ padding: "8px 12px", textAlign: "left" }}>Đề xuất</th>
+          </tr>
+        </thead>
+        <tbody>
+          {topics.slice(0, 5).map((t, i) => (
+            <tr key={`${t.topic}-${i}`} style={{ borderBottom: "1px solid #eee", background: i % 2 === 0 ? "#fff" : "#FFF9C4" }}>
+              <td style={{ padding: "8px 12px", fontWeight: 600 }}>{t.topic}</td>
+              <td style={{ padding: "8px 12px", textAlign: "center", color: t.avg_score_pct < 50 ? "#C62828" : "#F57F17" }}>{t.avg_score_pct}%</td>
+              <td style={{ padding: "8px 12px", textAlign: "center" }}>
+                {t.weak_student_count}/{t.total_student_count}
+              </td>
+              <td style={{ padding: "8px 12px", color: "#555", fontSize: 12 }}>{t.suggestion}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function clamp(x, a, b) {
   const n = Number(x);
   if (!Number.isFinite(n)) return a;
@@ -62,6 +136,7 @@ export default function TeacherClassroomDashboard() {
   const classroomId = Number(id);
 
   const [data, setData] = useState(null);
+  const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
 
@@ -109,8 +184,12 @@ export default function TeacherClassroomDashboard() {
     setAssignMsg(null);
     setLoading(true);
     try {
-      const payload = await apiJson(`/teacher/classrooms/${classroomId}/dashboard`);
+      const [payload, reportPayload] = await Promise.all([
+        apiJson(`/teacher/classrooms/${classroomId}/dashboard`),
+        apiJson(`/lms/teacher/report/${classroomId}`),
+      ]);
       setData(payload);
+      setReport(reportPayload?.data || null);
     } catch (e) {
       setErr(e?.message || String(e));
     } finally {
@@ -361,6 +440,14 @@ export default function TeacherClassroomDashboard() {
 
       {assignMsg ? (
         <div style={{ marginTop: 12, background: "#f6fff6", border: "1px solid #d8ffd8", padding: 12, borderRadius: 12, color: "#145214" }}>{assignMsg}</div>
+      ) : null}
+
+      {report ? (
+        <div style={{ marginTop: 14 }}>
+          <AINarrativeCard narrative={report.ai_narrative} />
+          <ProgressChart data={report.progress_chart_data} />
+          <WeakTopicsTable topics={report.weak_topics} />
+        </div>
       ) : null}
 
       {/* Stats */}
