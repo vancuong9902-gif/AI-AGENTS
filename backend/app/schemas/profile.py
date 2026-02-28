@@ -112,6 +112,8 @@ class HomeworkMCQQuestion(BaseModel):
     options: List[str] = Field(default_factory=list)
     correct_index: int = Field(..., ge=0)
     explanation: Optional[str] = None
+    hint: Optional[str] = None
+    related_concept: Optional[str] = None
     max_points: int = 1
     sources: List[Dict[str, int]] = Field(default_factory=list)
 

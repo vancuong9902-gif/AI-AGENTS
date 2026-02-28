@@ -209,6 +209,8 @@ def grade_homework_from_plan(
                 "score_points": int(sp),
                 "max_points": int(mp),
                 "explanation": it.get("explanation") or None,
+                "hint": it.get("hint") or None,
+                "related_concept": it.get("related_concept") or None,
                 "sources": it.get("sources") or [],
             }
         )

@@ -77,6 +77,7 @@ def test_teacher_report_includes_narrative_and_charts(monkeypatch):
     assert "weak_topics" in data
     assert "progress_chart" in data
     assert "student_evaluations" in data
+    assert "per_student_bloom" in data
     assert data["student_evaluations"][0]["student_id"] == 101
     assert data["summary"]["students"] >= 0
     assert "avg_improvement" in data["summary"]

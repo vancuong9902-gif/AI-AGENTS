@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timezone
+import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -12,6 +13,9 @@ from app.db.session import get_db
 from app.models.attempt import Attempt
 from app.models.classroom_assessment import ClassroomAssessment
 from app.models.classroom import ClassroomMember
+from app.mas.base import AgentContext
+from app.mas.contracts import Event
+from app.mas.orchestrator import Orchestrator
 from app.models.document_topic import DocumentTopic
 from app.models.quiz_set import QuizSet
 from app.models.question import Question
@@ -24,6 +28,7 @@ from app.models.session import Session as UserSession
 from app.models.student_assignment import StudentAssignment
 from app.services.assessment_service import generate_assessment, submit_assessment
 from app.services.lms_service import (
+    per_student_bloom_analysis,
     analyze_topic_weak_points,
     build_recommendations,
     classify_student_level,
@@ -135,13 +140,28 @@ def _generate_assessment_lms(*, request: Request, db: Session, payload: Generate
 
 
 def _quiz_duration_map(quiz: QuizSet) -> int:
-    level_text = str(getattr(quiz, "level", "") or "")
-    if "duration=" in level_text:
-        try:
-            return int(level_text.split("duration=", 1)[1].split(";", 1)[0].strip())
-        except Exception:
-            return 1800
-    return 1800
+    try:
+        return int(getattr(quiz, "duration_seconds", 1800) or 1800)
+    except Exception:
+        return 1800
+
+
+def _publish_mas_event_non_blocking(db: Session, *, event: Event) -> None:
+    """Phát event MAS theo cơ chế non-blocking để không ảnh hưởng luồng nộp bài."""
+
+    def _runner() -> None:
+        orchestrator = Orchestrator(db)
+        ctx = AgentContext(user_id=int(event.user_id), document_ids=[])
+        orchestrator.run(event, ctx)
+
+    async def _async_runner() -> None:
+        _runner()
+
+    try:
+        asyncio.ensure_future(_async_runner())
+    except Exception:
+        # Fallback an toàn nếu không có event loop khả dụng trong context hiện tại.
+        pass
 
 
 @router.post("/lms/placement/generate")
@@ -154,13 +174,20 @@ def lms_generate_placement(request: Request, payload: GenerateLmsQuizIn, db: Ses
 def lms_generate_final(request: Request, payload: GenerateLmsQuizIn, db: Session = Depends(get_db)):
     payload.title = payload.title or "Final Test"
 
+    student_ids = [
+        int(uid)
+        for uid, in db.query(ClassroomMember.user_id)
+        .filter(ClassroomMember.classroom_id == int(payload.classroom_id))
+        .all()
+    ]
+
     placement_ids: list[int] = []
     try:
         placement_rows = (
             db.query(Attempt.quiz_set_id)
             .join(QuizSet, QuizSet.id == Attempt.quiz_set_id)
             .filter(
-                Attempt.user_id == int(payload.teacher_id),
+                Attempt.user_id.in_(student_ids),
                 QuizSet.kind == "diagnostic_pre",
             )
             .distinct()
@@ -239,7 +266,7 @@ def create_placement_quiz(request: Request, payload: PlacementQuizIn, db: Sessio
     if quiz_id > 0:
         quiz = db.query(QuizSet).filter(QuizSet.id == quiz_id).first()
         if quiz:
-            quiz.level = f"{quiz.level};duration={int(payload.duration_seconds)}"
+            quiz.duration_seconds = int(payload.duration_seconds)
             db.commit()
     response["data"]["duration_seconds"] = int(payload.duration_seconds)
     response["data"]["quiz_type"] = "placement"
@@ -269,7 +296,7 @@ def create_final_quiz(request: Request, payload: PlacementQuizIn, db: Session = 
     if quiz_id > 0:
         quiz = db.query(QuizSet).filter(QuizSet.id == quiz_id).first()
         if quiz:
-            quiz.level = f"{quiz.level};duration={int(payload.duration_seconds)}"
+            quiz.duration_seconds = int(payload.duration_seconds)
             db.commit()
     response["data"]["duration_seconds"] = int(payload.duration_seconds)
     response["data"]["quiz_type"] = "final"
@@ -337,6 +364,21 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
 
     if timed_out:
         base["notes"] = "Nộp quá thời gian; hệ thống chấm theo câu trả lời tại thời điểm nộp."
+
+    if str(getattr(quiz, "kind", "") or "") == "diagnostic_pre":
+        evt = Event(
+            type="ENTRY_TEST_SUBMITTED",
+            user_id=int(started.user_id),
+            payload={
+                "quiz_id": int(quiz_id),
+                "user_id": int(started.user_id),
+                "answers": payload.answers,
+                "duration_sec": int(spent),
+                "classroom_id": int(getattr(quiz, "classroom_id", 0) or 0),
+            },
+            trace_id=str(getattr(request.state, "request_id", "") or None),
+        )
+        _publish_mas_event_non_blocking(db, event=evt)
     return {
         "request_id": request.state.request_id,
         "data": {
@@ -581,6 +623,7 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
     pre_breakdowns: dict[int, dict] = {}
     post_breakdowns: dict[int, dict] = {}
     all_breakdowns: list[dict] = []
+    by_student_breakdowns: dict[int, list[dict]] = defaultdict(list)
 
     classroom_student_ids = {
         int(uid)
@@ -595,8 +638,9 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
     for at in attempts:
         br = score_breakdown(at.breakdown_json or [])
         all_breakdowns.append(br)
-        pct = float(br["overall"]["percent"])
         uid = int(at.user_id)
+        by_student_breakdowns[uid].append(br)
+        pct = float(br["overall"]["percent"])
         by_student[uid].append(pct)
         by_level[classify_student_level(int(round(pct)))] += 1
 
@@ -641,6 +685,7 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
     )
 
     student_evaluations = []
+    per_student_bloom = per_student_bloom_analysis(by_student_breakdowns=by_student_breakdowns)
     eval_uids = sorted(set(classroom_student_ids) | set(pre_breakdowns.keys()) | set(post_breakdowns.keys()))
     for uid in eval_uids:
         pre_bd = pre_breakdowns.get(uid, {"overall": {"percent": pre_scores.get(uid, 0.0)}})
@@ -674,6 +719,7 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
             "weak_topics": weak_topics[:5],
             "progress_chart": progress_chart,
             "student_evaluations": student_evaluations,
+            "per_student_bloom": per_student_bloom,
         },
         "error": None,
     }

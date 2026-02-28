@@ -30,6 +30,7 @@ from app.services.topic_service import (
     split_study_and_practice,
     is_appendix_title,
     validate_and_clean_topic_title,
+    extract_exercises_from_topic,
 )
 from app.services import vector_store
 from app.infra.queue import is_async_enabled, enqueue
@@ -445,6 +446,10 @@ def regenerate_document_topics(
         for i, (t, (s_idx, e_idx)) in enumerate(zip(topics, ranges)):
             cleaned_title, title_warnings = validate_and_clean_topic_title(str(t.get('title') or '').strip()[:255])
             page_start, page_end = _infer_page_range_from_chunks(chunks, s_idx, e_idx)
+            original_exercises = extract_exercises_from_topic(
+                str(t.get('content_preview') or t.get('summary') or ''),
+                str(t.get('title') or ''),
+            )
             tm = DocumentTopic(
                 document_id=int(document_id),
                 topic_index=i,
@@ -452,6 +457,7 @@ def regenerate_document_topics(
                 display_title=(cleaned_title or str(t.get('title') or '').strip())[:255],
                 needs_review=bool(t.get('needs_review') or title_warnings),
                 extraction_confidence=float(t.get('extraction_confidence') or 0.0),
+                metadata_json={'original_exercises': original_exercises},
                 summary=str(t.get('summary') or '').strip(),
                 keywords=[str(x).strip() for x in (t.get('keywords') or []) if str(x).strip()],
                 start_chunk_index=s_idx,
@@ -941,6 +947,10 @@ async def upload_document(
             for i, (t, (s_idx, e_idx)) in enumerate(zip(topics, ranges)):
                 cleaned_title, title_warnings = validate_and_clean_topic_title(str(t.get("title") or "").strip()[:255])
                 page_start, page_end = _infer_page_range_from_chunks(chunk_models, s_idx, e_idx)
+                original_exercises = extract_exercises_from_topic(
+                    str(t.get("content_preview") or t.get("summary") or ""),
+                    str(t.get("title") or ""),
+                )
                 tm = DocumentTopic(
                     document_id=doc.id,
                     topic_index=i,
@@ -948,6 +958,7 @@ async def upload_document(
                     display_title=(cleaned_title or str(t.get("title") or "").strip())[:255],
                     needs_review=bool(t.get("needs_review") or title_warnings),
                     extraction_confidence=float(t.get("extraction_confidence") or 0.0),
+                    metadata_json={"original_exercises": original_exercises},
                     summary=str(t.get("summary") or "").strip(),
                     keywords=[str(x).strip() for x in (t.get("keywords") or []) if str(x).strip()],
                     start_chunk_index=s_idx,

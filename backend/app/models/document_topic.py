@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func, text
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base_class import Base
@@ -28,6 +28,7 @@ class DocumentTopic(Base):
     keywords: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False, default=list)
     needs_review: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     extraction_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    metadata_json: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
 
     # Optional chunk-range mapping (by chunk_index). Helps later: filter chunks for a topic.
     start_chunk_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
