@@ -17,3 +17,5 @@ from app.models.diagnostic_attempt import DiagnosticAttempt
 from app.models.learning_plan import LearningPlan, LearningPlanTaskCompletion, LearningPlanHomeworkSubmission
 from app.models.classroom import Classroom, ClassroomMember
 from app.models.classroom_assessment import ClassroomAssessment
+
+from app.models.student_assignment import StudentAssignment

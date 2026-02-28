@@ -3,28 +3,40 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.models.attempt import Attempt
 from app.models.classroom_assessment import ClassroomAssessment
+from app.models.classroom import ClassroomMember
 from app.models.document_topic import DocumentTopic
 from app.models.quiz_set import QuizSet
 from app.models.question import Question
 from app.models.learner_profile import LearnerProfile
 from app.models.learning_plan import LearningPlan
+from app.infra.queue import enqueue
+from app.services.teacher_report_export_service import build_classroom_report_pdf
+from app.tasks.report_tasks import task_export_teacher_report_pdf
 from app.models.session import Session as UserSession
+from app.models.student_assignment import StudentAssignment
 from app.services.assessment_service import generate_assessment, submit_assessment
 from app.services.lms_service import (
     analyze_topic_weak_points,
     build_recommendations,
     classify_student_level,
+
     classify_student_multidim,
     generate_class_narrative,
     persist_multidim_profile,
+    generate_student_evaluation_report,
+    get_student_homework_results,
+    generate_class_narrative,
+    resolve_student_name,
     score_breakdown,
+    assign_topic_materials,
 )
 
 
@@ -113,16 +125,12 @@ def _generate_assessment_lms(*, request: Request, db: Session, payload: Generate
         title=payload.title,
         level="intermediate",
         kind=kind,
-        easy_count=int(payload.easy_count + payload.medium_count),
+        easy_count=int(payload.easy_count),
+        medium_count=int(payload.medium_count),
         hard_count=int(payload.hard_count),
         document_ids=[int(x) for x in payload.document_ids],
         topics=payload.topics,
     )
-    data["difficulty_plan"] = {
-        "easy": int(payload.easy_count),
-        "medium": int(payload.medium_count),
-        "hard": int(payload.hard_count),
-    }
     return {"request_id": request.state.request_id, "data": data, "error": None}
 
 
@@ -169,18 +177,14 @@ def lms_generate_final(request: Request, payload: GenerateLmsQuizIn, db: Session
         title=payload.title,
         level="intermediate",
         kind="diagnostic_post",
-        easy_count=int(payload.easy_count + payload.medium_count),
+        easy_count=int(payload.easy_count),
+        medium_count=int(payload.medium_count),
         hard_count=int(payload.hard_count),
         document_ids=[int(x) for x in payload.document_ids],
         topics=payload.topics,
         exclude_quiz_ids=placement_ids,
         similarity_threshold=0.75,
     )
-    data["difficulty_plan"] = {
-        "easy": int(payload.easy_count),
-        "medium": int(payload.medium_count),
-        "hard": int(payload.hard_count),
-    }
     data["excluded_from_count"] = len(placement_ids)
     return {"request_id": request.state.request_id, "data": data, "error": None}
 
@@ -484,11 +488,26 @@ def lms_submit_attempt(request: Request, assessment_id: int, payload: SubmitAtte
 
     persisted = persist_multidim_profile(db, user_id=int(payload.user_id), profile=multidim_profile)
 
+    assignment_ids: list[int] = []
+    if q and getattr(q, "document_ids_json", None):
+        doc_ids = [int(x) for x in (q.document_ids_json or [])]
+        if doc_ids:
+            assignment_ids = assign_topic_materials(
+                db,
+                student_id=int(payload.user_id),
+                classroom_id=int(getattr(q, "classroom_id", 0) or 0),
+                student_level=level,
+                weak_topics=breakdown.get("weak_topics") or [],
+                document_id=int(doc_ids[0]),
+            )
+
     base["score_breakdown"] = breakdown
     base["student_level"] = level
     base["multidim_profile"] = persisted["profile"]
     base["multidim_profile_key"] = persisted["key"]
     base["recommendations"] = recommendations
+    base["assignments_created"] = len(assignment_ids)
+    base["assignment_ids"] = assignment_ids
     return {"request_id": request.state.request_id, "data": base, "error": None}
 
 
@@ -552,15 +571,21 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
             "error": None,
         }
 
-    attempts = db.query(Attempt).filter(
-        Attempt.quiz_set_id.in_(assessment_ids)).all()
+    attempts = db.query(Attempt).filter(Attempt.quiz_set_id.in_(assessment_ids)).all()
     by_student: dict[int, list[float]] = defaultdict(list)
     by_level: dict[str, int] = defaultdict(int)
 
     progress_chart: list[dict] = []
     pre_scores: dict[int, float] = {}
     post_scores: dict[int, float] = {}
+    pre_breakdowns: dict[int, dict] = {}
+    post_breakdowns: dict[int, dict] = {}
     all_breakdowns: list[dict] = []
+
+    classroom_student_ids = {
+        int(uid)
+        for uid, in db.query(ClassroomMember.user_id).filter(ClassroomMember.classroom_id == int(classroom_id)).all()
+    }
 
     quiz_kind_map = {
         int(qid): str(kind or "")
@@ -578,8 +603,10 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
         kind = quiz_kind_map.get(int(at.quiz_set_id), "")
         if kind == "diagnostic_pre":
             pre_scores[uid] = pct
+            pre_breakdowns[uid] = br
         elif kind == "diagnostic_post":
             post_scores[uid] = pct
+            post_breakdowns[uid] = br
 
     rows = []
     for uid, vals in sorted(by_student.items()):
@@ -613,6 +640,31 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
         avg_improvement=avg_improvement,
     )
 
+    student_evaluations = []
+    eval_uids = sorted(set(classroom_student_ids) | set(pre_breakdowns.keys()) | set(post_breakdowns.keys()))
+    for uid in eval_uids:
+        pre_bd = pre_breakdowns.get(uid, {"overall": {"percent": pre_scores.get(uid, 0.0)}})
+        post_bd = post_breakdowns.get(uid, {"overall": {"percent": post_scores.get(uid, 0.0)}})
+        eval_report = generate_student_evaluation_report(
+            student_id=uid,
+            pre_attempt=pre_bd,
+            post_attempt=post_bd,
+            homework_results=get_student_homework_results(uid, db),
+            db=db,
+        )
+        student_evaluations.append(
+            {
+                "student_id": uid,
+                "student_name": resolve_student_name(uid, db),
+                "pre_score": round(float((pre_bd.get("overall") or {}).get("percent") or 0.0), 1),
+                "post_score": round(float((post_bd.get("overall") or {}).get("percent") or 0.0), 1),
+                "overall_grade": eval_report.get("overall_grade", "N/A"),
+                "ai_comment": eval_report.get("ai_comment", ""),
+                "strengths": eval_report.get("strengths") or [],
+                "weaknesses": eval_report.get("weaknesses") or [],
+            }
+        )
+
     return {
         "request_id": request.state.request_id,
         "data": {
@@ -621,6 +673,118 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
             "ai_narrative": narrative,
             "weak_topics": weak_topics[:5],
             "progress_chart": progress_chart,
+            "student_evaluations": student_evaluations,
+        },
+        "error": None,
+    }
+
+
+@router.get("/lms/teacher/report/{classroom_id}/export")
+def export_teacher_report(
+    request: Request,
+    classroom_id: int,
+    format: str = Query("pdf"),
+    db: Session = Depends(get_db),
+):
+    export_format = str(format or "pdf").strip().lower()
+    if export_format != "pdf":
+        raise HTTPException(status_code=400, detail="Only pdf format is supported")
+
+    student_count = (
+        db.query(ClassroomMember)
+        .filter(ClassroomMember.classroom_id == int(classroom_id))
+        .count()
+    )
+    if student_count > 30:
+        job = enqueue(task_export_teacher_report_pdf, int(classroom_id), queue_name="default")
+        return {
+            "request_id": request.state.request_id,
+            "data": {
+                "queued": True,
+                "job_id": job.get("job_id"),
+                "note": "Lớp đông hơn 30 học sinh, báo cáo được tạo ở background task.",
+            },
+            "error": None,
+        }
+
+    pdf_path = build_classroom_report_pdf(classroom_id=int(classroom_id), db=db)
+    return FileResponse(pdf_path, media_type="application/pdf", filename=f"classroom_{classroom_id}_report.pdf")
+@router.get("/lms/students/{student_id}/assignments")
+def list_student_assignments(request: Request, student_id: int, classroom_id: int | None = None, db: Session = Depends(get_db)):
+    q = db.query(StudentAssignment).filter(StudentAssignment.student_id == int(student_id))
+    if classroom_id is not None:
+        q = q.filter(StudentAssignment.classroom_id == int(classroom_id))
+    rows = q.order_by(StudentAssignment.created_at.desc()).all()
+    return {
+        "request_id": request.state.request_id,
+        "data": [
+            {
+                "id": int(r.id),
+                "student_id": int(r.student_id),
+                "classroom_id": int(r.classroom_id),
+                "topic_id": int(r.topic_id) if r.topic_id else None,
+                "document_id": int(r.document_id),
+                "assignment_type": str(r.assignment_type),
+                "student_level": str(r.student_level),
+                "status": str(r.status),
+                "due_date": r.due_date.isoformat() if r.due_date else None,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+            }
+            for r in rows
+        ],
+        "error": None,
+    }
+
+
+@router.get("/lms/students/{student_id}/assignments/{assignment_id}")
+def get_student_assignment_detail(request: Request, student_id: int, assignment_id: int, db: Session = Depends(get_db)):
+    row = db.query(StudentAssignment).filter(
+        StudentAssignment.id == int(assignment_id),
+        StudentAssignment.student_id == int(student_id),
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    return {
+        "request_id": request.state.request_id,
+        "data": {
+            "id": int(row.id),
+            "student_id": int(row.student_id),
+            "classroom_id": int(row.classroom_id),
+            "topic_id": int(row.topic_id) if row.topic_id else None,
+            "document_id": int(row.document_id),
+            "assignment_type": str(row.assignment_type),
+            "student_level": str(row.student_level),
+            "status": str(row.status),
+            "content_json": row.content_json if isinstance(row.content_json, dict) else {},
+            "due_date": row.due_date.isoformat() if row.due_date else None,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+        },
+        "error": None,
+    }
+
+
+@router.post("/lms/students/{student_id}/assignments/{assignment_id}/complete")
+def complete_student_assignment(request: Request, student_id: int, assignment_id: int, db: Session = Depends(get_db)):
+    row = db.query(StudentAssignment).filter(
+        StudentAssignment.id == int(assignment_id),
+        StudentAssignment.student_id == int(student_id),
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    row.status = "completed"
+    row.completed_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(row)
+
+    return {
+        "request_id": request.state.request_id,
+        "data": {
+            "id": int(row.id),
+            "status": str(row.status),
+            "completed_at": row.completed_at.isoformat() if row.completed_at else None,
         },
         "error": None,
     }

@@ -4,6 +4,7 @@ from app.services.lms_service import (
     build_recommendations,
     classify_student_level,
     classify_student_multidim,
+    generate_student_evaluation_report,
     generate_class_narrative,
     score_breakdown,
 )
@@ -96,3 +97,33 @@ def test_classify_student_multidim_and_recommendations_rules():
 
     recs = build_recommendations(breakdown=scored, multidim_profile=profile)
     assert any(r["topic"] == "higher_order_thinking" for r in recs)
+
+def test_generate_student_evaluation_report_fallback(monkeypatch):
+    monkeypatch.setattr("app.services.lms_service.llm_available", lambda: False)
+    out = generate_student_evaluation_report(
+        student_id=100,
+        pre_attempt={"overall": {"percent": 40.0}},
+        post_attempt={
+            "overall": {"percent": 70.0},
+            "by_topic": {"đại số": {"percent": 80.0}, "hình học": {"percent": 45.0}},
+            "by_difficulty": {"easy": {"percent": 90}, "medium": {"percent": 70}, "hard": {"percent": 40}},
+        },
+        homework_results=[{"completed": True, "score": 75}],
+        db=None,
+    )
+    assert out["overall_grade"] in {"A", "B", "C", "D", "F"}
+    assert out["improvement_delta"] == 30.0
+    assert isinstance(out["strengths"], list)
+    assert isinstance(out["weaknesses"], list)
+
+def test_score_breakdown_includes_bloom_based_weak_topics():
+    breakdown = [
+        {"topic": "đại số", "score_points": 0, "max_points": 1, "bloom_level": "remember", "type": "mcq"},
+        {"topic": "đại số", "score_points": 0, "max_points": 1, "bloom_level": "understand", "type": "mcq"},
+        {"topic": "hình học", "score_points": 1, "max_points": 4, "bloom_level": "evaluate", "type": "essay"},
+    ]
+    scored = score_breakdown(breakdown)
+    assert "weak_topics" in scored
+    weak = {r["topic"]: r for r in scored["weak_topics"]}
+    assert weak["đại số"]["assignment_type"] == "reading"
+    assert weak["hình học"]["assignment_type"] == "essay_case_study"

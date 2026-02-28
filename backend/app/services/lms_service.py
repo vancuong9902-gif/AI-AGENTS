@@ -4,15 +4,29 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import statistics
+
+from statistics import mean
 from typing import Any
 
-from app.services.llm_service import chat_text, llm_available
+from app.services.llm_service import chat_json, chat_text, llm_available
 from sqlalchemy.orm import Session
 
+from app.models.learning_plan import LearningPlanHomeworkSubmission
+from app.models.user import User
+from datetime import datetime
+from typing import Any
+
+from app.services.bloom import normalize_bloom_level
+from app.services.llm_service import chat_text, llm_available
+from sqlalchemy import or_
+from sqlalchemy.orm import Session
+
+from app.models.document_chunk import DocumentChunk
 from app.models.document_topic import DocumentTopic
 from app.models.learner_profile import LearnerProfile
 from app.models.learning_plan import LearningPlan
 from app.models.quiz_set import QuizSet
+from app.models.student_assignment import StudentAssignment
 
 
 @dataclass
@@ -153,10 +167,19 @@ def _difficulty_from_breakdown_item(item: dict[str, Any]) -> str:
 
 
 def score_breakdown(breakdown: list[dict[str, Any]]) -> dict[str, Any]:
-    by_topic: dict[str, dict[str, int]] = defaultdict(
-        lambda: {"earned": 0, "total": 0})
+    by_topic: dict[str, dict[str, float | int]] = defaultdict(
+        lambda: {"earned": 0, "total": 0, "bloom_sum": 0.0, "bloom_n": 0})
     by_difficulty: dict[str, dict[str, int]] = defaultdict(
         lambda: {"earned": 0, "total": 0})
+
+    bloom_order = {
+        "remember": 1.0,
+        "understand": 2.0,
+        "apply": 3.0,
+        "analyze": 4.0,
+        "evaluate": 5.0,
+        "create": 6.0,
+    }
 
     total_earned = 0
     total_points = 0
@@ -166,9 +189,13 @@ def score_breakdown(breakdown: list[dict[str, Any]]) -> dict[str, Any]:
         earned = int(item.get("score_points") or 0)
         earned = max(0, min(max_points, earned))
         difficulty = _difficulty_from_breakdown_item(item)
+        bloom = normalize_bloom_level(str(item.get("bloom_level") or "understand"))
 
         by_topic[topic]["earned"] += earned
         by_topic[topic]["total"] += max_points
+        by_topic[topic]["bloom_sum"] += bloom_order.get(bloom, 2.0)
+        by_topic[topic]["bloom_n"] += 1
+
         by_difficulty[difficulty]["earned"] += earned
         by_difficulty[difficulty]["total"] += max_points
         total_earned += earned
@@ -186,14 +213,53 @@ def score_breakdown(breakdown: list[dict[str, Any]]) -> dict[str, Any]:
             }
         return out
 
+    by_topic_out: dict[str, dict[str, float | int | str]] = {}
+    bloom_weak_topics: list[dict[str, Any]] = []
+    for topic, vals in by_topic.items():
+        total = int(vals["total"])
+        earned = int(vals["earned"])
+        bloom_n = int(vals["bloom_n"])
+        bloom_avg = round(float(vals["bloom_sum"]) / max(1, bloom_n), 2)
+        percent = round((earned / total) * 100, 2) if total > 0 else 0.0
+
+        if bloom_avg < 2:
+            assignment_type = "reading"
+            bloom_focus = ["remember", "understand"]
+        elif bloom_avg < 3.5:
+            assignment_type = "exercise"
+            bloom_focus = ["apply", "analyze"]
+        else:
+            assignment_type = "essay_case_study"
+            bloom_focus = ["evaluate", "create"]
+
+        by_topic_out[topic] = {
+            "earned": earned,
+            "total": total,
+            "percent": percent,
+            "bloom_avg": bloom_avg,
+            "assignment_type": assignment_type,
+            "bloom_focus": bloom_focus,
+        }
+        if percent < 65:
+            bloom_weak_topics.append(
+                {
+                    "topic": topic,
+                    "bloom_avg": bloom_avg,
+                    "assignment_type": assignment_type,
+                    "bloom_focus": bloom_focus,
+                    "percent": percent,
+                }
+            )
+
     return {
         "overall": {
             "earned": total_earned,
             "total": total_points,
             "percent": round((total_earned / total_points) * 100, 2) if total_points > 0 else 0.0,
         },
-        "by_topic": _attach_percent(by_topic),
+        "by_topic": by_topic_out,
         "by_difficulty": _attach_percent(by_difficulty),
+        "weak_topics": sorted(bloom_weak_topics, key=lambda x: (x["percent"], x["bloom_avg"])),
     }
 
 
@@ -349,6 +415,155 @@ def generate_class_narrative(
         return f"Lớp {total_students} HS, điểm TB {imp}. Cần chú ý: {wt}."
 
 
+def generate_student_evaluation_report(
+    student_id: int,
+    pre_attempt: dict,
+    post_attempt: dict,
+    homework_results: list[dict],
+    db: Session,
+) -> dict:
+    """Tạo báo cáo đánh giá chi tiết cho 1 học sinh bằng LLM (kèm fallback cứng)."""
+
+    _ = db  # giữ chữ ký để có thể mở rộng truy vấn DB trong tương lai
+
+    pre_score = float((pre_attempt or {}).get("overall", {}).get("percent") or 0.0)
+    post_score = float((post_attempt or {}).get("overall", {}).get("percent") or 0.0)
+    delta = post_score - pre_score
+
+    post_topics = (post_attempt or {}).get("by_topic") or {}
+    topic_lines = []
+    for topic, info in sorted(post_topics.items(), key=lambda x: float((x[1] or {}).get("percent") or 0), reverse=True):
+        topic_lines.append(f"- {topic}: {float((info or {}).get('percent') or 0):.1f}%")
+    topic_breakdown = "\n".join(topic_lines) if topic_lines else "- Chưa có dữ liệu topic"
+
+    by_diff = (post_attempt or {}).get("by_difficulty") or {}
+    easy_percent = float((by_diff.get("easy") or {}).get("percent") or 0.0)
+    medium_percent = float((by_diff.get("medium") or {}).get("percent") or 0.0)
+    hard_percent = float((by_diff.get("hard") or {}).get("percent") or 0.0)
+
+    total_hw = len(homework_results or [])
+    completed_hw = sum(1 for x in (homework_results or []) if bool((x or {}).get("completed", True)))
+    hw_scores = [float((x or {}).get("score") or (x or {}).get("score_percent") or 0.0) for x in (homework_results or [])]
+    homework_completion_rate = round((completed_hw / total_hw) * 100, 1) if total_hw > 0 else 0.0
+    homework_avg = round(mean(hw_scores), 1) if hw_scores else 0.0
+
+    progress_label = "ổn định"
+    if delta >= 12:
+        progress_label = "tiến bộ rõ rệt"
+    elif delta < -5:
+        progress_label = "sụt giảm"
+    elif delta < 2:
+        progress_label = "chưa cải thiện"
+
+    def _fallback_grade(score: float) -> str:
+        if score >= 85:
+            return "A"
+        if score >= 70:
+            return "B"
+        if score >= 55:
+            return "C"
+        if score >= 40:
+            return "D"
+        return "F"
+
+    sorted_topics = sorted(post_topics.items(), key=lambda x: float((x[1] or {}).get("percent") or 0), reverse=True)
+    strengths = [t for t, info in sorted_topics if float((info or {}).get("percent") or 0) >= 70][:3]
+    weaknesses = [t for t, info in sorted_topics[::-1] if float((info or {}).get("percent") or 0) < 60][:3]
+
+    if not llm_available():
+        return {
+            "student_id": int(student_id),
+            "overall_grade": _fallback_grade(post_score),
+            "strengths": strengths,
+            "weaknesses": weaknesses,
+            "progress": progress_label,
+            "improvement_delta": round(delta, 1),
+            "recommendation_for_teacher": "Theo dõi sát các topic yếu, giao thêm bài tập theo mức độ và phản hồi cá nhân mỗi tuần.",
+            "ai_comment": (
+                f"Học sinh có điểm đầu vào {pre_score:.1f}% và điểm cuối kỳ {post_score:.1f}%, mức thay đổi {delta:+.1f}%. "
+                f"Các điểm mạnh hiện tại: {', '.join(strengths) if strengths else 'chưa nổi bật rõ'}. "
+                f"Cần ưu tiên cải thiện: {', '.join(weaknesses) if weaknesses else 'chưa xác định cụ thể'}. "
+                "Giáo viên nên duy trì nhịp luyện tập đều và theo dõi tiến độ theo từng tuần."
+            ),
+        }
+
+    system = "Bạn là giáo viên AI chuyên đánh giá học sinh. Luôn trả về JSON hợp lệ, không markdown, không giải thích thêm."
+    user = (
+        "Dựa trên dữ liệu sau, hãy viết đánh giá học sinh bằng tiếng Việt:\n"
+        f"Điểm kiểm tra đầu vào: {pre_score:.1f}% | Điểm cuối kỳ: {post_score:.1f}%\n"
+        f"Tiến bộ: {delta:+.1f}%\n"
+        f"Điểm theo topic (cuối kỳ):\n{topic_breakdown}\n"
+        "Điểm theo độ khó:\n"
+        f"Dễ: {easy_percent:.1f}% | Trung bình: {medium_percent:.1f}% | Khó: {hard_percent:.1f}%\n\n"
+        f"Kết quả bài tập: {homework_completion_rate:.1f}% hoàn thành, điểm TB {homework_avg:.1f}%\n"
+        "Hãy trả về JSON với cấu trúc:\n"
+        "{\n"
+        '"overall_grade": "A/B/C/D/F",\n'
+        '"strengths": ["topic mạnh 1", "topic mạnh 2"],\n'
+        '"weaknesses": ["topic yếu 1", "topic yếu 2"],\n'
+        '"progress": "tiến bộ rõ rệt|ổn định|chưa cải thiện|sụt giảm",\n'
+        '"recommendation_for_teacher": "...",\n'
+        '"ai_comment": "Học sinh ... [nhận xét 3-5 câu bằng tiếng Việt tự nhiên]"\n'
+        "}"
+    )
+    try:
+        report = chat_json(
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.2,
+            max_tokens=600,
+        )
+    except Exception:
+        report = {}
+
+    return {
+        "student_id": int(student_id),
+        "overall_grade": str(report.get("overall_grade") or _fallback_grade(post_score)).strip().upper()[:1],
+        "strengths": [str(x).strip() for x in (report.get("strengths") or strengths) if str(x).strip()][:5],
+        "weaknesses": [str(x).strip() for x in (report.get("weaknesses") or weaknesses) if str(x).strip()][:5],
+        "progress": str(report.get("progress") or progress_label).strip().lower(),
+        "improvement_delta": round(delta, 1),
+        "recommendation_for_teacher": str(
+            report.get("recommendation_for_teacher")
+            or "Ưu tiên hỗ trợ các lỗ hổng kiến thức và giao bài tập phân hóa theo từng mảng nội dung."
+        ).strip(),
+        "ai_comment": str(report.get("ai_comment") or "").strip()
+        or (
+            f"Học sinh cải thiện {delta:+.1f}% so với đầu kỳ. "
+            f"Điểm cuối kỳ đạt {post_score:.1f}%. "
+            "Cần tiếp tục luyện tập đều và tập trung vào các topic còn yếu để nâng độ vững kiến thức."
+        ),
+    }
+
+
+def get_student_homework_results(student_id: int, db: Session) -> list[dict[str, Any]]:
+    rows = (
+        db.query(LearningPlanHomeworkSubmission)
+        .filter(LearningPlanHomeworkSubmission.user_id == int(student_id))
+        .order_by(LearningPlanHomeworkSubmission.created_at.asc())
+        .all()
+    )
+    results: list[dict[str, Any]] = []
+    for r in rows:
+        grade = r.grade_json or {}
+        score = float(grade.get("score") or grade.get("score_percent") or 0.0)
+        results.append(
+            {
+                "submission_id": int(r.id),
+                "completed": True,
+                "score": score,
+                "created_at": r.created_at.isoformat() if getattr(r, "created_at", None) else None,
+            }
+        )
+    return results
+
+
+def resolve_student_name(student_id: int, db: Session) -> str:
+    user = db.query(User).filter(User.id == int(student_id)).first()
+    if not user:
+        return f"Student {student_id}"
+    return str(user.full_name or user.email or f"Student {student_id}")
+
+
 def _topic_body_len(topic: DocumentTopic) -> int:
     configured = getattr(topic, "body_len", None)
     if configured is not None:
@@ -453,3 +668,134 @@ def assign_learning_path(
         ],
         "total_assigned": len(assigned_tasks),
     }
+
+
+def _question_prompt_by_assignment_type(assignment_type: str) -> str:
+    if assignment_type == "reading":
+        return "Tạo câu hỏi mức nhớ/hiểu, ngắn gọn và kiểm tra khái niệm nền tảng."
+    if assignment_type == "exercise":
+        return "Tạo câu hỏi vận dụng/phân tích, có dữ kiện và yêu cầu lập luận từng bước."
+    return "Tạo đề bài essay/case study yêu cầu đánh giá và đề xuất giải pháp."
+
+
+def _generate_practice_questions(*, topic: str, student_level: str, chunks: list[dict[str, Any]], assignment_type: str) -> list[dict[str, Any]]:
+    context = "\n\n".join(str(c.get("text") or "")[:700] for c in chunks[:3])
+    if not context.strip():
+        context = f"Chủ đề: {topic}"
+
+    if not llm_available():
+        return [
+            {"question": f"Nêu ý chính của chủ đề '{topic}' từ tài liệu đã đọc.", "bloom": "remember"},
+            {"question": f"Giải thích khái niệm quan trọng trong '{topic}' bằng ví dụ ngắn.", "bloom": "understand"},
+            {"question": f"Áp dụng kiến thức '{topic}' để xử lý một tình huống đơn giản.", "bloom": "apply"},
+        ]
+
+    system = "Bạn là giáo viên tạo bài luyện tập tiếng Việt, trả JSON array 3-5 phần tử."
+    user = (
+        f"Học sinh level: {student_level}\n"
+        f"Topic: {topic}\n"
+        f"Loại bài giao: {assignment_type}\n"
+        f"Yêu cầu: {_question_prompt_by_assignment_type(assignment_type)}\n"
+        "Mỗi phần tử JSON gồm: question, bloom, answer_hint. Không markdown, không text thừa.\n\n"
+        f"Ngữ cảnh tài liệu:\n{context}"
+    )
+    try:
+        raw = str(chat_text([{"role": "system", "content": system}, {"role": "user", "content": user}], temperature=0.2, max_tokens=700) or "")
+        import json
+        data = json.loads(raw)
+        if isinstance(data, list):
+            clean = [x for x in data if isinstance(x, dict) and x.get("question")]
+            if clean:
+                return clean[:5]
+    except Exception:
+        pass
+    return [
+        {"question": f"Tóm tắt nội dung chính của chủ đề '{topic}'.", "bloom": "understand"},
+        {"question": f"Làm bài luyện tập theo chủ đề '{topic}' theo đúng level {student_level}.", "bloom": "apply"},
+        {"question": f"Phân tích lỗi thường gặp khi làm bài về '{topic}'.", "bloom": "analyze"},
+    ]
+
+
+def assign_topic_materials(
+    db: Session,
+    *,
+    student_id: int,
+    classroom_id: int,
+    student_level: str,
+    weak_topics: list[dict[str, Any]] | list[str],
+    document_id: int,
+) -> list[int]:
+    assignment_ids: list[int] = []
+
+    for weak in weak_topics or []:
+        if isinstance(weak, dict):
+            topic_name = str(weak.get("topic") or "").strip()
+            assignment_type = str(weak.get("assignment_type") or "exercise")
+            bloom_focus = weak.get("bloom_focus") or []
+        else:
+            topic_name = str(weak).strip()
+            assignment_type = "exercise"
+            bloom_focus = []
+
+        if not topic_name:
+            continue
+
+        topic_obj = (
+            db.query(DocumentTopic)
+            .filter(DocumentTopic.document_id == int(document_id))
+            .filter(DocumentTopic.title.ilike(f"%{topic_name}%"))
+            .first()
+        )
+
+        chunk_query = db.query(DocumentChunk).filter(DocumentChunk.document_id == int(document_id))
+        if topic_obj and topic_obj.start_chunk_index is not None and topic_obj.end_chunk_index is not None:
+            chunk_query = chunk_query.filter(
+                DocumentChunk.chunk_index >= int(topic_obj.start_chunk_index),
+                DocumentChunk.chunk_index <= int(topic_obj.end_chunk_index),
+            )
+        else:
+            chunk_query = chunk_query.filter(or_(DocumentChunk.text.ilike(f"%{topic_name}%"), DocumentChunk.chunk_index < 8))
+
+        chunks = chunk_query.order_by(DocumentChunk.chunk_index.asc()).limit(5).all()
+        chunk_payload = [
+            {
+                "chunk_id": int(c.id),
+                "chunk_index": int(c.chunk_index),
+                "text": str(c.text),
+                "meta": c.meta if isinstance(c.meta, dict) else {},
+            }
+            for c in chunks
+        ]
+
+        questions = _generate_practice_questions(
+            topic=topic_name,
+            student_level=student_level,
+            chunks=chunk_payload,
+            assignment_type=assignment_type,
+        )
+
+        row = StudentAssignment(
+            student_id=int(student_id),
+            classroom_id=int(classroom_id),
+            topic_id=int(topic_obj.id) if topic_obj else None,
+            document_id=int(document_id),
+            assignment_type=assignment_type,
+            student_level=str(student_level),
+            status="pending",
+            content_json={
+                "topic": topic_name,
+                "bloom_focus": bloom_focus,
+                "chunks": chunk_payload,
+                "questions": questions,
+            },
+            due_date=None,
+            created_at=datetime.utcnow(),
+            completed_at=None,
+        )
+        db.add(row)
+        db.flush()
+        assignment_ids.append(int(row.id))
+
+    if assignment_ids:
+        db.commit()
+    return assignment_ids

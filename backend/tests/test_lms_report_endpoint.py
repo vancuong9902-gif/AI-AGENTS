@@ -16,15 +16,34 @@ class _FakeQuery:
     def all(self):
         return self._rows
 
+    def order_by(self, *args, **kwargs):
+        return self
+
+    def count(self):
+        return len(self._rows)
+
+    def first(self):
+        return self._rows[0] if self._rows else None
+
 
 class _FakeDB:
     def query(self, *entities):
         name = ",".join(getattr(e, "name", str(e)) for e in entities)
+        normalized = name.replace(" ", "").lower()
+        entity_dump = ",".join(str(e).lower() for e in entities)
         if "assessment_id" in name:
             return _FakeQuery([(1,), (2,)])
-        if "quiz_sets.id,quiz_sets.kind" in name.replace(" ", ""):
+        if (
+            "classroom_members" in normalized
+            or "classroommember" in normalized
+            or ("classroom" in entity_dump and "user_id" in entity_dump)
+        ):
+            return _FakeQuery([(101,)])
+        if "quiz_sets.id,quiz_sets.kind" in normalized or "quizset.id,quizset.kind" in normalized:
             return _FakeQuery([(1, "diagnostic_pre"), (2, "diagnostic_post")])
-        if "attempts" in name:
+        if "users" in normalized:
+            return _FakeQuery([SimpleNamespace(id=101, full_name="HS A", email="a@test")])
+        if "attempts" in normalized:
             return _FakeQuery(
                 [
                     SimpleNamespace(user_id=101, quiz_set_id=1, breakdown_json=[]),
@@ -57,6 +76,8 @@ def test_teacher_report_includes_narrative_and_charts(monkeypatch):
     assert "ai_narrative" in data
     assert "weak_topics" in data
     assert "progress_chart" in data
+    assert "student_evaluations" in data
+    assert data["student_evaluations"][0]["student_id"] == 101
     assert data["summary"]["students"] >= 0
     assert "avg_improvement" in data["summary"]
 
