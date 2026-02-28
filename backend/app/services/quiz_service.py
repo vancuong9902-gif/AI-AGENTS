@@ -254,7 +254,9 @@ Chỉ xuất JSON hợp lệ."""
                 "stem": "string",
                 "options": ["A", "B", "C", "D"],
                 "correct_index": 0,
-                "explanation": "string",
+                "explanation": "giải thích ngắn gọn tại sao đáp án đúng (2-3 câu)",
+                "hint": "gợi ý nếu học sinh chọn sai (1-2 câu, không tiết lộ đáp án)",
+                "related_concept": "tên khái niệm/phần trong sách cần xem lại",
                 "sources": [{"chunk_id": 123}],
             }
         },
@@ -456,7 +458,9 @@ def _generate_mcq_with_llm(
                     "stem": "string",
                     "options": ["A", "B", "C", "D"],
                     "correct_index": 0,
-                    "explanation": "string",
+                    "explanation": "giải thích ngắn gọn tại sao đáp án đúng (2-3 câu)",
+                    "hint": "gợi ý nếu học sinh chọn sai (1-2 câu, không tiết lộ đáp án)",
+                    "related_concept": "tên khái niệm/phần trong sách cần xem lại",
                     "sources": [{"chunk_id": 123}],
                 }
             ]
@@ -519,6 +523,8 @@ def _generate_mcq_with_llm(
             continue
 
         explanation = " ".join(str(q.get("explanation") or "").split())
+        hint = " ".join(str(q.get("hint") or "").split())
+        related_concept = " ".join(str(q.get("related_concept") or "").split())
         sources = _coerce_sources(q.get("sources"), valid_ids)
 
         raw_bloom = q.get("bloom_level")
@@ -539,6 +545,8 @@ def _generate_mcq_with_llm(
                 "options": options,
                 "correct_index": ci,
                 "explanation": explanation,
+                "hint": hint,
+                "related_concept": related_concept,
                 "sources": sources,
             }
         )
@@ -740,7 +748,9 @@ Nếu CONTEXT không đủ rõ: {"status":"NEED_CLEAN_TEXT","reason":"...","sugg
                     "stem": "string",
                     "options": ["A", "B", "C", "D"],
                     "correct_index": 0,
-                    "explanation": "string",
+                    "explanation": "giải thích ngắn gọn tại sao đáp án đúng (2-3 câu)",
+                    "hint": "gợi ý nếu học sinh chọn sai (1-2 câu, không tiết lộ đáp án)",
+                    "related_concept": "tên khái niệm/phần trong sách cần xem lại",
                     "sources": [{"chunk_id": valid_ids[0]}],
                 }
             ]
@@ -813,6 +823,8 @@ Nếu CONTEXT không đủ rõ: {"status":"NEED_CLEAN_TEXT","reason":"...","sugg
             continue
 
         explanation = " ".join(str(q.get("explanation") or "").split())
+        hint = " ".join(str(q.get("hint") or "").split())
+        related_concept = " ".join(str(q.get("related_concept") or "").split())
         sources = _coerce_sources(q.get("sources"), valid_ids)
 
         raw_bloom = q.get("bloom_level")
@@ -831,6 +843,8 @@ Nếu CONTEXT không đủ rõ: {"status":"NEED_CLEAN_TEXT","reason":"...","sugg
                 "options": options,
                 "correct_index": ci,
                 "explanation": explanation,
+                "hint": hint,
+                "related_concept": related_concept,
                 "sources": sources,
             }
         )
@@ -1577,6 +1591,8 @@ def clean_mcq_questions(questions: List[Dict[str, Any]], *, limit: int | None = 
         ci2 = options.index(correct)
 
         explanation = " ".join(str(q.get("explanation") or "").split()).strip()
+        hint = " ".join(str(q.get("hint") or "").split()).strip()
+        related_concept = " ".join(str(q.get("related_concept") or "").split()).strip()
         sources = q.get("sources") or []
         if isinstance(sources, dict):
             sources = [sources]
@@ -1588,6 +1604,8 @@ def clean_mcq_questions(questions: List[Dict[str, Any]], *, limit: int | None = 
                 "options": options,
                 "correct_index": int(ci2),
                 "explanation": explanation,
+                "hint": hint,
+                "related_concept": related_concept,
                 "sources": sources,
             }
         )
