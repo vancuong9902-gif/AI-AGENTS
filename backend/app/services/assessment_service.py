@@ -397,6 +397,64 @@ def _topic_mastery_from_breakdown(breakdown: list[dict]) -> dict:
     return out
 
 
+def _difficulty_from_bloom(bloom_level: str | None) -> str:
+    bloom = normalize_bloom_level(bloom_level)
+    if bloom in {"remember", "understand"}:
+        return "easy"
+    if bloom in {"apply", "analyze"}:
+        return "medium"
+    return "hard"
+
+
+def _build_answer_review(*, breakdown: list[dict], questions: list[Question], default_topic: str) -> list[dict[str, Any]]:
+    q_map: dict[int, Question] = {int(q.id): q for q in (questions or [])}
+    answer_review: list[dict[str, Any]] = []
+
+    for item in breakdown or []:
+        qid = int(item.get("question_id") or 0)
+        q = q_map.get(qid)
+        q_type = str(item.get("type") or getattr(q, "type", "")).strip().lower()
+        topic = str(item.get("topic") or _infer_topic_from_stem(getattr(q, "stem", ""), fallback=default_topic))
+        difficulty = _difficulty_from_bloom(getattr(q, "bloom_level", None))
+
+        if q_type == "mcq":
+            answer_review.append(
+                {
+                    "question_id": qid,
+                    "stem": str(getattr(q, "stem", "") or ""),
+                    "your_answer_index": int(item.get("chosen", -1) or -1),
+                    "correct_answer_index": int(item.get("correct", getattr(q, "correct_index", 0)) or 0),
+                    "is_correct": bool(item.get("is_correct")),
+                    "explanation": str(item.get("explanation") or getattr(q, "explanation", "") or ""),
+                    "topic": topic,
+                    "difficulty": difficulty,
+                }
+            )
+            continue
+
+        max_points = int(item.get("max_points") or getattr(q, "max_points", 10) or 10)
+        score_points = int(item.get("score_points") or 0)
+        graded = bool(item.get("graded"))
+
+        answer_review.append(
+            {
+                "question_id": qid,
+                "stem": str(getattr(q, "stem", "") or ""),
+                "your_answer_index": None,
+                "correct_answer_index": None,
+                "your_answer": str(item.get("answer_text") or ""),
+                # Current data model has no `sample_answer`; reuse explanation as expected answer guidance.
+                "correct_answer": str(getattr(q, "explanation", "") or ""),
+                "is_correct": bool(graded and max_points > 0 and score_points >= (0.6 * max_points)),
+                "explanation": str(item.get("comment") or item.get("explanation") or getattr(q, "explanation", "") or ""),
+                "topic": topic,
+                "difficulty": difficulty,
+            }
+        )
+
+    return answer_review
+
+
 
 def _normalize_ws(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip())
@@ -2327,10 +2385,19 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, duration
 
     earned_points = int(split["mcq_earned"]) + int(split["essay_earned"])
     total_points = int(split["mcq_total"]) + int(split["essay_total"])
+    classroom_link = (
+        db.query(ClassroomAssessment)
+        .filter(ClassroomAssessment.assessment_id == int(assessment_id))
+        .order_by(ClassroomAssessment.id.asc())
+        .first()
+    )
 
     return {
         "assessment_id": assessment_id,
+        "assessment_kind": _normalize_assessment_kind(getattr(quiz_set, "kind", None)),
+        "classroom_id": int(getattr(classroom_link, "classroom_id", 0) or 0),
         "attempt_id": attempt.id,
+        "duration_sec": int(getattr(attempt, "duration_sec", 0) or 0),
         "score_percent": score_percent,
         "mcq_score_percent": int(split["mcq_percent"]),
         "essay_score_percent": int(split["essay_percent"]),
@@ -2339,6 +2406,7 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, duration
         "max_points": total_points,
         "status": "submitted (essay pending)" if pending else "graded",
         "breakdown": bd,
+        "answer_review": _build_answer_review(breakdown=bd, questions=questions, default_topic=str(quiz_set.topic or "tài liệu")),
         "synced_diagnostic": synced_diagnostic,
     }
 def list_assessments_for_teacher(db: Session, *, teacher_id: int, classroom_id: int | None = None) -> List[Dict[str, Any]]:

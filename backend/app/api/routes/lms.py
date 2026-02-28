@@ -44,6 +44,7 @@ from app.services.lms_service import (
     resolve_student_name,
     score_breakdown,
     assign_topic_materials,
+    assign_learning_path,
 )
 
 
@@ -95,6 +96,12 @@ class SubmitAttemptByIdIn(BaseModel):
 class AssignPathIn(BaseModel):
     student_level: str
     document_ids: list[int] = Field(default_factory=list)
+    classroom_id: int = 0
+
+
+class AssignPathByQuizIn(BaseModel):
+    user_id: int
+    quiz_id: int
     classroom_id: int = 0
 
 
@@ -460,6 +467,50 @@ def assign_student_path(
     return {"request_id": request.state.request_id, "data": result, "error": None}
 
 
+@router.post("/lms/assign-path")
+def assign_path_by_quiz(
+    request: Request,
+    payload: AssignPathByQuizIn,
+    db: Session = Depends(get_db),
+):
+    latest = (
+        db.query(Attempt)
+        .filter(Attempt.quiz_set_id == int(payload.quiz_id), Attempt.user_id == int(payload.user_id))
+        .order_by(Attempt.created_at.desc())
+        .first()
+    )
+    if not latest:
+        raise HTTPException(status_code=404, detail="Attempt not found")
+
+    quiz = db.query(QuizSet).filter(QuizSet.id == int(payload.quiz_id)).first()
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    breakdown = score_breakdown(latest.breakdown_json or [])
+    level = classify_student_level(int(round(float((breakdown.get("overall") or {}).get("percent") or 0))))
+    doc_ids = [int(x) for x in (getattr(quiz, "document_ids_json", None) or []) if str(x).isdigit()]
+
+    result = assign_learning_path(
+        db,
+        user_id=int(payload.user_id),
+        student_level=level,
+        document_ids=doc_ids,
+        classroom_id=int(payload.classroom_id or 0),
+    )
+
+    return {
+        "request_id": request.state.request_id,
+        "data": {
+            "user_id": int(payload.user_id),
+            "quiz_id": int(payload.quiz_id),
+            "classroom_id": int(payload.classroom_id or 0),
+            "student_level": level,
+            "assigned_path": result,
+        },
+        "error": None,
+    }
+
+
 @router.get("/lms/student/{user_id}/my-path")
 def get_my_path(request: Request, user_id: int, db: Session = Depends(get_db)):
     profile = db.query(LearnerProfile).filter(
@@ -562,8 +613,6 @@ def lms_submit_attempt(request: Request, assessment_id: int, payload: SubmitAtte
         breakdown=breakdown, document_topics=topics, multidim_profile=multidim_profile)
 
     try:
-        from app.services.lms_service import assign_learning_path
-
         q_obj = db.query(QuizSet).filter(QuizSet.id == int(assessment_id)).first()
         doc_ids = getattr(q_obj, "document_ids_json", None) or []
         if doc_ids:
