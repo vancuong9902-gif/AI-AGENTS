@@ -2933,6 +2933,57 @@ def enrich_topic_details_with_llm(body: str, *, title: str) -> Dict[str, Any]:
     return out
 
 
+def extract_exercises_from_topic(topic_text: str, topic_title: str) -> list[dict]:
+    """Dùng LLM để trích xuất bài tập gốc từ đoạn text của topic."""
+    if not llm_available() or not topic_text:
+        return []
+
+    prompt = f'''Đoạn văn bản sau là nội dung topic "{topic_title}" từ sách giáo khoa.
+    Hãy tìm và trích xuất TẤT CẢ bài tập, câu hỏi ôn tập có trong đoạn này.
+    Trả về JSON array, mỗi phần tử có:
+    - "type": "mcq" hoặc "essay" hoặc "exercise"
+    - "question": nội dung câu hỏi/bài tập (giữ nguyên từ sách)
+    - "options": ["A", "B", "C", "D"] nếu là MCQ, null nếu không
+    - "answer": đáp án nếu có trong sách, null nếu không
+    - "source": "original_pdf"
+    Nếu không có bài tập nào, trả về [].
+    Văn bản: {topic_text[:3000]}'''
+    try:
+        result = chat_json(messages=[{"role": "user", "content": prompt}], max_tokens=1500)
+        if not isinstance(result, list):
+            return []
+
+        out: list[dict] = []
+        for item in result:
+            if not isinstance(item, dict):
+                continue
+            q = str(item.get("question") or "").strip()
+            if not q:
+                continue
+            q_type = str(item.get("type") or "exercise").strip().lower()
+            if q_type not in {"mcq", "essay", "exercise"}:
+                q_type = "exercise"
+            options = item.get("options")
+            if not isinstance(options, list):
+                options = None
+            else:
+                options = [str(x).strip() for x in options if str(x).strip()][:8] or None
+            ans = item.get("answer")
+            answer = str(ans).strip() if ans is not None and str(ans).strip() else None
+            out.append(
+                {
+                    "type": q_type,
+                    "question": q,
+                    "options": options,
+                    "answer": answer,
+                    "source": "original_pdf",
+                }
+            )
+        return out
+    except Exception:
+        return []
+
+
 def generate_study_guide_md(body: str, *, title: str) -> str:
     """Generate a Thea-like Markdown study guide from a topic body.
 
@@ -3279,6 +3330,7 @@ def extract_topics(
         body_for_summary = study_body if len(re.sub(r"\s+", " ", study_body)) >= 120 else body
         body_for_details = study_body if study_body else body
         body_norm = re.sub(r"\s+", " ", body_for_summary).strip()
+        original_exercises = extract_exercises_from_topic(body, title)
 
         kws = t.get('keywords') if isinstance(t.get('keywords'), list) else None
         if not kws:
@@ -3312,6 +3364,8 @@ def extract_topics(
             "content_preview": content_preview,
             "has_more_content": has_more,
             "body": body,
+            "original_exercises": original_exercises,
+            "has_original_exercises": bool(original_exercises),
         }
 
         if practice_body:
