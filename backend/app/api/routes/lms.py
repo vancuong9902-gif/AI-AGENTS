@@ -9,6 +9,7 @@ import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -116,7 +117,7 @@ def teacher_select_topics(request: Request, payload: TeacherTopicSelectionIn, db
 
     existing = {
         str(r[0]).strip().lower()
-        for r in db.query(DocumentTopic.title).filter(DocumentTopic.document_id == int(payload.document_id)).all()
+        for r in db.query(func.coalesce(DocumentTopic.teacher_edited_title, DocumentTopic.title)).filter(DocumentTopic.document_id == int(payload.document_id)).filter(DocumentTopic.status == "approved").all()
     }
     selected = [t.strip() for t in payload.topics if t and t.strip()]
     missing = [t for t in selected if t.strip().lower() not in existing]
@@ -267,8 +268,9 @@ def debug_quiz_overlap(request: Request, id1: int, id2: int, db: Session = Depen
 def create_placement_quiz(request: Request, payload: PlacementQuizIn, db: Session = Depends(get_db)):
     topics = [
         str(r[0])
-        for r in db.query(DocumentTopic.title)
+        for r in db.query(func.coalesce(DocumentTopic.teacher_edited_title, DocumentTopic.title))
         .filter(DocumentTopic.id.in_([int(tid) for tid in payload.topic_ids]))
+        .filter(DocumentTopic.status == "approved")
         .all()
     ]
     req = GenerateLmsQuizIn(
@@ -297,8 +299,9 @@ def create_placement_quiz(request: Request, payload: PlacementQuizIn, db: Sessio
 def create_final_quiz(request: Request, payload: PlacementQuizIn, db: Session = Depends(get_db)):
     topics = [
         str(r[0])
-        for r in db.query(DocumentTopic.title)
+        for r in db.query(func.coalesce(DocumentTopic.teacher_edited_title, DocumentTopic.title))
         .filter(DocumentTopic.id.in_([int(tid) for tid in payload.topic_ids]))
+        .filter(DocumentTopic.status == "approved")
         .all()
     ]
     req = GenerateLmsQuizIn(

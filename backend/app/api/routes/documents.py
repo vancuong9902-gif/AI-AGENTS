@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timezone
 
 from typing import Optional, Any
 
@@ -118,6 +119,11 @@ def _create_topic_quick_check_quiz(db: Session, *, user_id: int, topic_title: st
     db.add_all(rows)
     db.flush()
     return int(quiz_set.id)
+
+
+def _topic_title_for_generation(topic: DocumentTopic) -> str:
+    edited = str(getattr(topic, 'teacher_edited_title', '') or '').strip()
+    return edited or str(getattr(topic, 'title', '') or '').strip()
 
 def _dynamic_topic_target(full_text: str, estimated_pages: int | None = None) -> float:
     full_len = len(full_text or '')
@@ -317,10 +323,20 @@ def list_document_chunks(request: Request, document_id: int, db: Session = Depen
 
 
 @router.get('/documents/{document_id}/topics')
-def list_document_topics(request: Request, document_id: int, db: Session = Depends(get_db), detail: int = 0, filter: str | None = None):
+def list_document_topics(
+    request: Request,
+    document_id: int,
+    db: Session = Depends(get_db),
+    detail: int = 0,
+    filter: str | None = None,
+    status: str | None = None,
+):
     topics_q = db.query(DocumentTopic).filter(DocumentTopic.document_id == document_id)
     if (filter or '').strip().lower() == 'needs_review':
         topics_q = topics_q.filter(DocumentTopic.needs_review.is_(True))
+    status_norm = (status or '').strip().lower()
+    if status_norm in {'pending_review', 'approved', 'rejected', 'edited'}:
+        topics_q = topics_q.filter(DocumentTopic.status == status_norm)
     topics = topics_q.order_by(func.coalesce(DocumentTopic.page_start, 10**9).asc(), DocumentTopic.topic_index.asc()).all()
 
     # Preload chunk lengths for fast "quiz_ready" stats (no extra heavy per-topic queries).
@@ -344,8 +360,13 @@ def list_document_topics(request: Request, document_id: int, db: Session = Depen
             "topic_id": t.id,
             "topic_index": t.topic_index,
             "title": t.title,
+            "effective_title": _topic_title_for_generation(t),
             # Frontend can show ordering using topic_index; keep titles clean.
             "display_title": t.display_title or t.title,
+            "status": getattr(t, 'status', 'pending_review'),
+            "teacher_edited_title": getattr(t, 'teacher_edited_title', None),
+            "teacher_note": getattr(t, 'teacher_note', None),
+            "reviewed_at": (t.reviewed_at.isoformat() if getattr(t, 'reviewed_at', None) else None),
             "needs_review": bool(t.needs_review),
             "extraction_confidence": float(t.extraction_confidence or 0.0),
             "page_range": [t.page_start, t.page_end],
@@ -594,7 +615,12 @@ def regenerate_document_topics(
                         'topic_id': tm.id,
                         'topic_index': tm.topic_index,
                         'title': tm.title,
+                        'effective_title': _topic_title_for_generation(tm),
                         'display_title': tm.display_title or tm.title,
+                        'status': tm.status,
+                        'teacher_edited_title': tm.teacher_edited_title,
+                        'teacher_note': tm.teacher_note,
+                        'reviewed_at': tm.reviewed_at.isoformat() if tm.reviewed_at else None,
                         'needs_review': bool(tm.needs_review),
                         'extraction_confidence': float(tm.extraction_confidence or 0.0),
                         'page_range': [tm.page_start, tm.page_end],
@@ -661,7 +687,12 @@ def get_document_topic_detail(
         "topic_id": t.id,
         "topic_index": t.topic_index,
         "title": t.title,
+        "effective_title": _topic_title_for_generation(t),
         "display_title": t.display_title or t.title,
+        "status": getattr(t, 'status', 'pending_review'),
+        "teacher_edited_title": getattr(t, 'teacher_edited_title', None),
+        "teacher_note": getattr(t, 'teacher_note', None),
+        "reviewed_at": (t.reviewed_at.isoformat() if getattr(t, 'reviewed_at', None) else None),
         "needs_review": bool(t.needs_review),
         "extraction_confidence": float(t.extraction_confidence or 0.0),
         "page_range": [t.page_start, t.page_end],
@@ -710,8 +741,8 @@ def get_document_topic_detail(
     return {"request_id": request.state.request_id, "data": item, "error": None}
 
 
-@router.put('/documents/{document_id}/topics/{topic_id}')
-def update_document_topic(
+@router.patch('/documents/{document_id}/topics/{topic_id}')
+def review_document_topic(
     request: Request,
     document_id: int,
     topic_id: int,
@@ -734,15 +765,30 @@ def update_document_topic(
     if not topic:
         raise HTTPException(status_code=404, detail='Topic not found')
 
-    new_title = str(payload.get('title') or '').strip()
-    if not new_title:
-        raise HTTPException(status_code=422, detail='Title cannot be empty')
+    status = payload.get('status')
+    if status is not None:
+        status = str(status).strip().lower()
+        if status not in {'pending_review', 'approved', 'rejected', 'edited'}:
+            raise HTTPException(status_code=422, detail='Invalid status')
+        topic.status = status
 
-    cleaned, warnings = validate_and_clean_topic_title(new_title)
-    topic.title = (cleaned or new_title)[:255]
-    topic.display_title = (cleaned or new_title)[:255]
-    topic.needs_review = bool(warnings)
-    topic.extraction_confidence = max(float(topic.extraction_confidence or 0.0), 0.95)
+    if 'title' in payload:
+        new_title = str(payload.get('title') or '').strip()
+        if not new_title:
+            topic.teacher_edited_title = None
+        else:
+            cleaned, _warnings = validate_and_clean_topic_title(new_title)
+            topic.teacher_edited_title = (cleaned or new_title)[:255]
+            if topic.status in {'pending_review', 'approved'}:
+                topic.status = 'edited'
+
+    if 'note' in payload or 'teacher_note' in payload:
+        note = payload.get('note') if 'note' in payload else payload.get('teacher_note')
+        note_value = str(note or '').strip()
+        topic.teacher_note = note_value or None
+
+    if any(k in payload for k in ('status', 'title', 'note', 'teacher_note')):
+        topic.reviewed_at = datetime.now(timezone.utc)
 
     db.add(topic)
     db.commit()
@@ -754,14 +800,65 @@ def update_document_topic(
             'topic_id': int(topic.id),
             'document_id': int(document_id),
             'title': topic.title,
+            'effective_title': _topic_title_for_generation(topic),
             'display_title': topic.display_title,
-            'needs_review': bool(topic.needs_review),
-            'extraction_confidence': float(topic.extraction_confidence or 0.0),
-            'page_range': [topic.page_start, topic.page_end],
+            'status': topic.status,
+            'teacher_edited_title': topic.teacher_edited_title,
+            'teacher_note': topic.teacher_note,
+            'reviewed_at': topic.reviewed_at.isoformat() if topic.reviewed_at else None,
         },
         'error': None,
     }
 
+
+@router.post('/documents/{document_id}/topics/approve-all')
+def approve_all_document_topics(
+    request: Request,
+    document_id: int,
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    doc = db.query(Document).filter(Document.id == int(document_id)).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail='Document not found')
+    if int(doc.user_id) != int(getattr(teacher, 'id')):
+        raise HTTPException(status_code=403, detail='Not allowed')
+
+    now = datetime.now(timezone.utc)
+    topics = db.query(DocumentTopic).filter(DocumentTopic.document_id == int(document_id)).all()
+    for t in topics:
+        t.status = 'approved'
+        t.reviewed_at = now
+        db.add(t)
+    db.commit()
+
+    return {
+        'request_id': request.state.request_id,
+        'data': {
+            'document_id': int(document_id),
+            'approved_count': len(topics),
+        },
+        'error': None,
+    }
+
+
+@router.put('/documents/{document_id}/topics/{topic_id}')
+def update_document_topic(
+    request: Request,
+    document_id: int,
+    topic_id: int,
+    payload: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    return review_document_topic(
+        request=request,
+        document_id=document_id,
+        topic_id=topic_id,
+        payload={'title': payload.get('title'), 'status': payload.get('status') or 'edited'},
+        db=db,
+        teacher=teacher,
+    )
 
 def _parse_tags(tags: Optional[str]) -> list[str]:
     if not tags:
