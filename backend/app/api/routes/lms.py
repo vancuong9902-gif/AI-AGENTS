@@ -12,6 +12,9 @@ from app.models.attempt import Attempt
 from app.models.classroom_assessment import ClassroomAssessment
 from app.models.document_topic import DocumentTopic
 from app.models.quiz_set import QuizSet
+from app.models.question import Question
+from app.models.learner_profile import LearnerProfile
+from app.models.learning_plan import LearningPlan
 from app.models.session import Session as UserSession
 from app.services.assessment_service import generate_assessment, submit_assessment
 from app.services.lms_service import (
@@ -21,6 +24,8 @@ from app.services.lms_service import (
     generate_class_narrative,
     score_breakdown,
 )
+from app.services.lms_service import assign_learning_path, build_recommendations, classify_student_level, score_breakdown
+
 
 router = APIRouter(tags=["lms"])
 
@@ -51,7 +56,8 @@ class SubmitAttemptIn(BaseModel):
 
 class PlacementQuizIn(BaseModel):
     topic_ids: list[int] = Field(default_factory=list)
-    difficulty_settings: dict[str, int] = Field(default_factory=lambda: {"easy": 4, "medium": 4, "hard": 2})
+    difficulty_settings: dict[str, int] = Field(
+        default_factory=lambda: {"easy": 4, "medium": 4, "hard": 2})
     duration_seconds: int = 1800
     teacher_id: int = 1
     classroom_id: int = 1
@@ -66,10 +72,17 @@ class SubmitAttemptByIdIn(BaseModel):
     answers: list[dict] = Field(default_factory=list)
 
 
+class AssignLearningPathIn(BaseModel):
+    student_level: str
+    classroom_id: int
+    document_ids: list[int] = Field(default_factory=list)
+
+
 @router.post("/lms/teacher/select-topics")
 def teacher_select_topics(request: Request, payload: TeacherTopicSelectionIn, db: Session = Depends(get_db)):
     if not payload.topics:
-        raise HTTPException(status_code=400, detail="Vui lòng chọn ít nhất 1 topic")
+        raise HTTPException(
+            status_code=400, detail="Vui lòng chọn ít nhất 1 topic")
 
     existing = {
         str(r[0]).strip().lower()
@@ -131,7 +144,87 @@ def lms_generate_placement(request: Request, payload: GenerateLmsQuizIn, db: Ses
 @router.post("/lms/final/generate")
 def lms_generate_final(request: Request, payload: GenerateLmsQuizIn, db: Session = Depends(get_db)):
     payload.title = payload.title or "Final Test"
-    return _generate_assessment_lms(request=request, db=db, payload=payload, kind="diagnostic_post")
+
+    placement_ids: list[int] = []
+    try:
+        placement_attempts = (
+            db.query(Attempt)
+            .join(QuizSet, QuizSet.id == Attempt.quiz_set_id)
+            .filter(
+                Attempt.user_id == int(payload.teacher_id),
+                QuizSet.kind == "diagnostic_pre",
+                QuizSet.user_id == int(payload.teacher_id),
+            )
+            .all()
+        )
+        placement_ids = sorted({int(a.quiz_set_id)
+                               for a in placement_attempts if a and a.quiz_set_id})
+    except Exception:
+        placement_ids = []
+
+    data = generate_assessment(
+        db,
+        teacher_id=int(payload.teacher_id),
+        classroom_id=int(payload.classroom_id),
+        title=payload.title,
+        level="intermediate",
+        kind="diagnostic_post",
+        easy_count=int(payload.easy_count + payload.medium_count),
+        hard_count=int(payload.hard_count),
+        document_ids=[int(x) for x in payload.document_ids],
+        topics=payload.topics,
+        exclude_assessment_ids=placement_ids,
+        similarity_threshold=0.75,
+    )
+    data["difficulty_plan"] = {
+        "easy": int(payload.easy_count),
+        "medium": int(payload.medium_count),
+        "hard": int(payload.hard_count),
+    }
+    data["excluded_from"] = placement_ids
+    return {"request_id": request.state.request_id, "data": data, "error": None}
+
+
+@router.get("/lms/assessments/compare-overlap/{id1}/{id2}")
+def compare_assessment_overlap(request: Request, id1: int, id2: int, db: Session = Depends(get_db)):
+    """Compare stem overlap between two assessments for QA/debug usage."""
+    from difflib import SequenceMatcher
+
+    stems1 = [str(r[0] or "") for r in db.query(
+        Question.stem).filter(Question.quiz_set_id == int(id1)).all()]
+    stems2 = [str(r[0] or "") for r in db.query(
+        Question.stem).filter(Question.quiz_set_id == int(id2)).all()]
+
+    duplicates: list[dict[str, object]] = []
+    for s1 in stems1:
+        s1_norm = s1.lower().strip()
+        if not s1_norm:
+            continue
+        for s2 in stems2:
+            s2_norm = s2.lower().strip()
+            if not s2_norm:
+                continue
+            ratio = SequenceMatcher(None, s1_norm, s2_norm).ratio()
+            if ratio >= 0.75:
+                duplicates.append(
+                    {
+                        "stem1": s1[:80],
+                        "stem2": s2[:80],
+                        "similarity": round(float(ratio), 3),
+                    }
+                )
+
+    return {
+        "request_id": request.state.request_id,
+        "data": {
+            "assessment_1_count": len(stems1),
+            "assessment_2_count": len(stems2),
+            "duplicate_count": len(duplicates),
+            "overlap_percent": round(len(duplicates) / max(1, len(stems1)) * 100, 1),
+            "duplicates": duplicates[:20],
+        },
+        "error": None,
+    }
 
 
 @router.post("/quizzes/placement")
@@ -151,7 +244,8 @@ def create_placement_quiz(request: Request, payload: PlacementQuizIn, db: Sessio
         medium_count=int(payload.difficulty_settings.get("medium", 4)),
         hard_count=int(payload.difficulty_settings.get("hard", 2)),
     )
-    response = _generate_assessment_lms(request=request, db=db, payload=req, kind="diagnostic_pre")
+    response = _generate_assessment_lms(
+        request=request, db=db, payload=req, kind="diagnostic_pre")
     quiz_id = int((response.get("data") or {}).get("assessment_id") or 0)
     if quiz_id > 0:
         quiz = db.query(QuizSet).filter(QuizSet.id == quiz_id).first()
@@ -180,7 +274,8 @@ def create_final_quiz(request: Request, payload: PlacementQuizIn, db: Session = 
         medium_count=int(payload.difficulty_settings.get("medium", 4)),
         hard_count=int(payload.difficulty_settings.get("hard", 2)),
     )
-    response = _generate_assessment_lms(request=request, db=db, payload=req, kind="diagnostic_post")
+    response = _generate_assessment_lms(
+        request=request, db=db, payload=req, kind="diagnostic_post")
     quiz_id = int((response.get("data") or {}).get("assessment_id") or 0)
     if quiz_id > 0:
         quiz = db.query(QuizSet).filter(QuizSet.id == quiz_id).first()
@@ -194,7 +289,8 @@ def create_final_quiz(request: Request, payload: PlacementQuizIn, db: Session = 
 
 @router.post("/attempts/start")
 def start_attempt(request: Request, payload: StartAttemptIn, db: Session = Depends(get_db)):
-    session = UserSession(user_id=int(payload.student_id), type=f"quiz_attempt:{int(payload.quiz_id)}")
+    session = UserSession(user_id=int(payload.student_id),
+                          type=f"quiz_attempt:{int(payload.quiz_id)}")
     db.add(session)
     db.commit()
     db.refresh(session)
@@ -212,7 +308,8 @@ def start_attempt(request: Request, payload: StartAttemptIn, db: Session = Depen
 
 @router.post("/attempts/{attempt_id}/submit")
 def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttemptByIdIn, db: Session = Depends(get_db)):
-    started = db.query(UserSession).filter(UserSession.id == int(attempt_id)).first()
+    started = db.query(UserSession).filter(
+        UserSession.id == int(attempt_id)).first()
     if not started or not str(started.type or "").startswith("quiz_attempt:"):
         raise HTTPException(status_code=404, detail="Attempt not found")
     quiz_id = int(str(started.type).split(":", 1)[1])
@@ -236,9 +333,12 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
         answers=payload.answers,
     )
     breakdown = score_breakdown(base.get("breakdown") or [])
-    level = classify_student_level(int(round(float(breakdown["overall"]["percent"]))))
-    topics = [str(x) for x in (quiz.topic.split(",") if quiz.topic else []) if x.strip()]
-    recommendations = build_recommendations(breakdown=breakdown, document_topics=topics)
+    level = classify_student_level(
+        int(round(float(breakdown["overall"]["percent"]))))
+    topics = [str(x) for x in (quiz.topic.split(
+        ",") if quiz.topic else []) if x.strip()]
+    recommendations = build_recommendations(
+        breakdown=breakdown, document_topics=topics)
 
     if timed_out:
         base["notes"] = "Nộp quá thời gian; hệ thống chấm theo câu trả lời tại thời điểm nộp."
@@ -257,6 +357,46 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
     }
 
 
+@router.post("/lms/student/{user_id}/assign-learning-path")
+def assign_student_path(
+    request: Request,
+    user_id: int,
+    payload: AssignLearningPathIn,
+    db: Session = Depends(get_db),
+):
+    result = assign_learning_path(
+        db,
+        user_id=int(user_id),
+        student_level=str(payload.student_level),
+        document_ids=[int(x) for x in (payload.document_ids or [])],
+        classroom_id=int(payload.classroom_id),
+    )
+    return {"request_id": request.state.request_id, "data": result, "error": None}
+
+
+@router.get("/lms/student/{user_id}/my-path")
+def get_student_path(request: Request, user_id: int, db: Session = Depends(get_db)):
+    profile = db.query(LearnerProfile).filter(
+        LearnerProfile.user_id == int(user_id)).first()
+    plan = db.query(LearningPlan).filter(LearningPlan.user_id == int(
+        user_id)).order_by(LearningPlan.id.desc()).first()
+    tasks = []
+    if plan and isinstance(plan.plan_json, dict):
+        tasks = plan.plan_json.get("tasks") or []
+
+    return {
+        "request_id": request.state.request_id,
+        "data": {
+            "student_level": profile.level if profile else None,
+            "plan": {
+                "plan_id": int(plan.id) if plan else None,
+                "tasks": tasks,
+            },
+        },
+        "error": None,
+    }
+
+
 @router.get("/students/{student_id}/recommendations")
 def student_recommendations(request: Request, student_id: int, db: Session = Depends(get_db)):
     latest = (
@@ -268,11 +408,14 @@ def student_recommendations(request: Request, student_id: int, db: Session = Dep
     if not latest:
         return {"request_id": request.state.request_id, "data": {"student_id": student_id, "recommendations": []}, "error": None}
     breakdown = score_breakdown(latest.breakdown_json or [])
-    quiz = db.query(QuizSet).filter(QuizSet.id == int(latest.quiz_set_id)).first()
-    topics = [str(x) for x in (quiz.topic.split(",") if quiz and quiz.topic else []) if x.strip()]
+    quiz = db.query(QuizSet).filter(
+        QuizSet.id == int(latest.quiz_set_id)).first()
+    topics = [str(x) for x in (quiz.topic.split(
+        ",") if quiz and quiz.topic else []) if x.strip()]
     recs = build_recommendations(breakdown=breakdown, document_topics=topics)
     assignments = [
-        {"topic": r["topic"], "material": r["material"], "exercise_set": r["exercise"], "status": "assigned"}
+        {"topic": r["topic"], "material": r["material"],
+            "exercise_set": r["exercise"], "status": "assigned"}
         for r in recs
     ]
     return {"request_id": request.state.request_id, "data": {"student_id": student_id, "recommendations": recs, "assignments": assignments}, "error": None}
@@ -294,11 +437,34 @@ def lms_submit_attempt(request: Request, assessment_id: int, payload: SubmitAtte
     )
 
     breakdown = score_breakdown(base.get("breakdown") or [])
-    level = classify_student_level(int(round(float(breakdown["overall"]["percent"]))))
+    level = classify_student_level(
+        int(round(float(breakdown["overall"]["percent"]))))
 
     q = db.query(QuizSet).filter(QuizSet.id == int(assessment_id)).first()
-    topics = [str(x) for x in (q.topic.split(",") if q and q.topic else []) if x.strip()]
-    recommendations = build_recommendations(breakdown=breakdown, document_topics=topics)
+    topics = [str(x) for x in (q.topic.split(
+        ",") if q and q.topic else []) if x.strip()]
+    recommendations = build_recommendations(
+        breakdown=breakdown, document_topics=topics)
+
+    try:
+        q_obj = db.query(QuizSet).filter(
+            QuizSet.id == int(assessment_id)).first()
+        doc_ids: list[int] = []
+        if q_obj:
+            raw_doc_ids = getattr(q_obj, "document_ids_json", None)
+            if isinstance(raw_doc_ids, list):
+                doc_ids = [int(x) for x in raw_doc_ids if x]
+        if doc_ids and level:
+            path_result = assign_learning_path(
+                db,
+                user_id=int(payload.user_id),
+                student_level=level,
+                document_ids=doc_ids,
+                classroom_id=0,
+            )
+            base["assigned_learning_path"] = path_result
+    except Exception:
+        base["assigned_learning_path"] = None
 
     base["score_breakdown"] = breakdown
     base["student_level"] = level
@@ -328,7 +494,8 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
             "error": None,
         }
 
-    attempts = db.query(Attempt).filter(Attempt.quiz_set_id.in_(assessment_ids)).all()
+    attempts = db.query(Attempt).filter(
+        Attempt.quiz_set_id.in_(assessment_ids)).all()
     by_student: dict[int, list[float]] = defaultdict(list)
     by_level: dict[str, int] = defaultdict(int)
 
@@ -359,7 +526,8 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
     rows = []
     for uid, vals in sorted(by_student.items()):
         avg = round(sum(vals) / max(1, len(vals)), 2)
-        rows.append({"student_id": uid, "attempts": len(vals), "avg_percent": avg, "level": classify_student_level(int(round(avg)))})
+        rows.append({"student_id": uid, "attempts": len(
+            vals), "avg_percent": avg, "level": classify_student_level(int(round(avg)))})
 
     all_uids = sorted(set(pre_scores.keys()) | set(post_scores.keys()))
     for uid in all_uids:
@@ -377,7 +545,8 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
     weak_topics = analyze_topic_weak_points(all_breakdowns)
     level_distribution = dict(by_level)
 
-    improvements = [d["improvement"] for d in progress_chart_data if d["pre_score"] > 0]
+    improvements = [d["improvement"]
+                    for d in progress_chart_data if d["pre_score"] > 0]
     avg_improvement = sum(improvements) / max(1, len(improvements))
 
     narrative = generate_class_narrative(

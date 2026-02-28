@@ -316,7 +316,13 @@ def enforce_standalone_mcqs(*, topic: str, level: str, chunks: List[Dict[str, An
     return out
 
 
-def _generate_mcq_with_llm(topic: str, level: str, question_count: int, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _generate_mcq_with_llm(
+    topic: str,
+    level: str,
+    question_count: int,
+    chunks: List[Dict[str, Any]],
+    extra_system_hint: str | None = None,
+) -> List[Dict[str, Any]]:
     """LLM-based MCQ generator (high quality + grounded to teacher materials).
 
     Goals:
@@ -404,6 +410,9 @@ def _generate_mcq_with_llm(topic: str, level: str, question_count: int, chunks: 
     - Nếu OK: {"status":"OK","questions":[...]}.
     - Nếu CONTEXT lỗi/thiếu: {"status":"NEED_CLEAN_TEXT","reason":"...","suggestion":"..."}.
     """
+
+    if extra_system_hint:
+        system = f"{system}\n\n{str(extra_system_hint).strip()}"
 
     # Desired mix by level (team rule) + Bloom distribution (6-level)
     mix_text = {

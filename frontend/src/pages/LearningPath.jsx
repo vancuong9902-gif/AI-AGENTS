@@ -143,7 +143,7 @@ function ScorePill({ score, max }) {
   );
 }
 
-function TaskRow({ task, checked, onToggle }) {
+function TaskRow({ task, checked, onToggle, assigned }) {
   const t = task || {};
   const title = t.title || "(Không có tiêu đề)";
 
@@ -162,7 +162,23 @@ function TaskRow({ task, checked, onToggle }) {
     >
       <input type="checkbox" checked={!!checked} onChange={(e) => onToggle(!!e.target.checked)} style={{ marginTop: 4 }} />
       <div style={{ flex: 1 }}>
-        <div style={{ fontWeight: 700 }}>{title}</div>
+        <div style={{ fontWeight: 700 }}>
+          {title}
+          {assigned && (
+            <span
+              style={{
+                background: "#2E75B6",
+                color: "white",
+                fontSize: 11,
+                padding: "2px 8px",
+                borderRadius: 12,
+                marginLeft: 8,
+              }}
+            >
+              ⭐ Phù hợp với bạn
+            </span>
+          )}
+        </div>
         {t.instructions && <div style={{ color: "#555", marginTop: 4 }}>{t.instructions}</div>}
         {t.type === "quiz" && (
           <div style={{ marginTop: 6, color: "#666" }}>
@@ -195,6 +211,8 @@ export default function LearningPath() {
   const [homeworkGrades, setHomeworkGrades] = useState({});
 
   const [showGenerated, setShowGenerated] = useState(false);
+  const [myPath, setMyPath] = useState(null);
+  const [showOnlyAssigned, setShowOnlyAssigned] = useState(false);
 
   const currentDay = useMemo(() => {
     return (planDays || []).find((d) => Number(d.day_index) === Number(selectedDay)) || null;
@@ -297,6 +315,12 @@ export default function LearningPath() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
+  useEffect(() => {
+    apiJson(`/lms/student/${userId}/my-path`)
+      .then((d) => setMyPath(d?.data || null))
+      .catch(() => {});
+  }, [userId]);
+
   async function toggleTask(dayIndex, taskIndex, completed) {
     const key = `${dayIndex}-${taskIndex}`;
     setTaskCompletion((m) => ({ ...m, [key]: !!completed }));
@@ -377,6 +401,18 @@ export default function LearningPath() {
     }
   }
 
+
+  const assignedTasks = myPath?.plan?.tasks || [];
+  const isAssigned = (taskTitle) => {
+    const title = String(taskTitle || "").toLowerCase();
+    if (!title) return false;
+    return assignedTasks.some((t) => String(t?.topic_title || "").toLowerCase().includes(title.slice(0, 20)));
+  };
+
+  const filteredTaskEntries = (currentDay?.tasks || [])
+    .map((task, idx) => ({ task, idx }))
+    .filter(({ task }) => !showOnlyAssigned || isAssigned(task?.title || task?.topic_title || ""));
+
   const pageWrap = { maxWidth: 980, margin: "0 auto", padding: 16 };
   const card = { border: "1px solid #eee", borderRadius: 14, padding: 16, background: "#fff" };
 
@@ -387,11 +423,15 @@ export default function LearningPath() {
           <h2 style={{ margin: 0 }}>📌 Learning Path (mỗi ngày 1 bài + 1 bài tập)</h2>
           <div style={{ color: "#666", marginTop: 4 }}>
             Học sinh đọc <strong>1 bài như sách giáo khoa</strong> mỗi ngày, rồi làm <strong>Bài tập về nhà</strong> (trắc nghiệm + tự luận) để nhận điểm.
+            {myPath?.student_level && <span> • Level hiện tại: <strong>{myPath.student_level}</strong></span>}
           </div>
         </div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
           <button onClick={generateAndSavePlan} disabled={loading}>
             Tạo mới & lưu plan
+          </button>
+          <button onClick={() => setShowOnlyAssigned(!showOnlyAssigned)} disabled={loading}>
+            {showOnlyAssigned ? "Xem tất cả" : "⭐ Chỉ xem bài của tôi"}
           </button>
           <button onClick={() => loadPersisted()} disabled={loading}>
             Tải lại
@@ -491,8 +531,8 @@ export default function LearningPath() {
               {/* Tasks */}
               <div style={{ marginTop: 14 }}>
                 <h4 style={{ margin: "0 0 10px 0" }}>📋 Nhiệm vụ hôm nay</h4>
-                {(currentDay.tasks || []).length ? (
-                  (currentDay.tasks || []).map((t, idx) => {
+                {filteredTaskEntries.length ? (
+                  filteredTaskEntries.map(({ task: t, idx }) => {
                     const key = `${currentDay.day_index}-${idx}`;
                     return (
                       <TaskRow
@@ -500,6 +540,7 @@ export default function LearningPath() {
                         task={t}
                         checked={!!taskCompletion?.[key]}
                         onToggle={(val) => toggleTask(currentDay.day_index, idx, val)}
+                        assigned={isAssigned(t?.title || t?.topic_title || "")}
                       />
                     );
                   })

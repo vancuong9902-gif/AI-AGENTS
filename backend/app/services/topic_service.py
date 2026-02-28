@@ -1094,6 +1094,10 @@ def _llm_rewrite_title(body: str, *, old_title: str) -> str | None:
         "Không bịa thêm kiến thức mới, không thêm chủ đề ngoài đoạn trích. "
         "Tiêu đề cần giống mục lục sách/giáo viên: ngắn gọn, mô tả đúng ý chính, 6-14 từ. "
         "Tránh các tiền tố chung chung như 'Topic', 'Phần', 'Mục' nếu không cần. "
+        "QUAN TRỌNG VỀ ENCODING: Nếu old_title chứa ký tự lạ như: ¸, \\u00AD, ¬, ×, ®, ¦, §, © "
+        "hoặc các ký tự Latin-1 không phải tiếng Việt chuẩn thì xem như lỗi font. "
+        "Trong trường hợp đó: BỎ QUA hoàn toàn old_title và tạo tiêu đề mới 100% dựa trên body. "
+        "Tiêu đề phải là tiếng Việt chuẩn Unicode NFC. "
         "Chỉ trả JSON hợp lệ: {\"title\": \"...\"}."
     )
 
@@ -1141,6 +1145,17 @@ def _clean_line(line: str) -> str:
         s2 = repair_ocr_spacing_line(s)
         if s2:
             s = re.sub(r"\s+", " ", s2).strip()
+    except Exception:
+        pass
+
+    # Nếu line có vẻ lỗi font, thử fix trước khi dùng làm heading
+    try:
+        from app.services.vietnamese_font_fix import detect_broken_vn_font, fix_vietnamese_font_encoding
+
+        if detect_broken_vn_font(s):
+            fixed = fix_vietnamese_font_encoding(s)
+            if fixed and not detect_broken_vn_font(fixed):
+                s = fixed
     except Exception:
         pass
 
@@ -1680,7 +1695,56 @@ def _is_bad_heading_candidate(line: str) -> bool:
     if len(s) < 6 or len(s) > 140:
         return True
 
+    # Reject heading có tỷ lệ ký tự lạ (font encoding cũ) > 20%
+    def _has_encoding_artifacts(x: str) -> bool:
+        if not x:
+            return False
+        valid = sum(
+            1
+            for ch in x
+            if (
+                0x20 <= ord(ch) <= 0x7E
+                or 0x00C0 <= ord(ch) <= 0x024F
+                or 0x1E00 <= ord(ch) <= 0x1EFF
+                or ch in " \t\n"
+            )
+        )
+        ratio = valid / max(1, len(x))
+        return ratio < 0.80
+
+    if _has_encoding_artifacts(s):
+        return True  # Bỏ qua heading bị lỗi encoding
+
     return False
+
+
+def validate_topic_quality(topics: list[dict]) -> list[dict]:
+    """
+    Post-process: kiểm tra và lọc topic có tiêu đề/body lỗi font.
+    Nếu title lỗi nhưng body OK → dùng LLM rewrite title từ body.
+    Nếu cả title lẫn body đều lỗi → drop topic đó.
+    """
+    try:
+        from app.services.vietnamese_font_fix import detect_broken_vn_font
+    except Exception:
+        return topics
+
+    out: list[dict] = []
+    for t in topics:
+        title = str(t.get('title') or '')
+        body = str(t.get('body') or '')
+        title_broken = detect_broken_vn_font(title)
+        body_broken = detect_broken_vn_font(body) if len(body) > 50 else False
+
+        if title_broken and not body_broken:
+            new_title = _llm_rewrite_title(body, old_title=title)
+            if new_title:
+                t['title'] = new_title
+                t['title_was_repaired'] = True
+        elif title_broken and body_broken:
+            continue
+        out.append(t)
+    return out
 
 
 def _maybe_title_from_quiz_ready(cleaned_lines: List[str], i: int) -> tuple[int, str] | None:
@@ -2824,6 +2888,10 @@ def extract_topics(
     NOTE: content_preview is bounded; full content can be reconstructed later from chunks by (start_chunk_index,end_chunk_index).
     """
 
+    from app.services.vietnamese_font_fix import fix_vietnamese_font_encoding
+
+    full_text = fix_vietnamese_font_encoding(full_text or "")
+
     # Repair common PDF/OCR spacing artifacts before any splitting/quality checks.
     try:
         full_text = repair_ocr_spacing_text(full_text or "")
@@ -2974,6 +3042,7 @@ def extract_topics(
 
     # Merge duplicates created by noisy outlines before limiting.
     norm_raw = _merge_similar_topics(norm_raw, max_topics=int(max_topics) * 2)
+
 
     # Optional LLM filter pass: remove prefaces/TOC artifacts, merge tiny leftovers, rename titles.
     if _topic_llm_filter_enabled():
@@ -3141,6 +3210,8 @@ def extract_topics(
                 pass
 
         out.append(item)
+
+    out = validate_topic_quality(out)
 
     if not out:
         # Only hard-block when quality is low AND we also failed to extract topics.
