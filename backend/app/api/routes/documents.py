@@ -459,7 +459,6 @@ def regenerate_document_topics(
                 display_title=(cleaned_title or str(t.get('title') or '').strip())[:255],
                 needs_review=bool(t.get('needs_review') or title_warnings),
                 extraction_confidence=float(t.get('extraction_confidence') or 0.0),
-                metadata_json={'original_exercises': original_exercises},
                 summary=str(t.get('summary') or '').strip(),
                 keywords=[str(x).strip() for x in (t.get('keywords') or []) if str(x).strip()],
                 start_chunk_index=s_idx,
@@ -879,6 +878,53 @@ def generate_question_bank(
     }
 
 
+@router.get('/documents/{document_id}/status')
+def get_document_status(
+    request: Request,
+    document_id: int,
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    doc = (
+        db.query(Document)
+        .filter(Document.id == int(document_id))
+        .filter(Document.user_id == int(getattr(teacher, "id")))
+        .first()
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail='Document not found')
+
+    chunks = db.query(DocumentChunk).filter(DocumentChunk.document_id == int(document_id)).all()
+    topics_count = db.query(func.count(DocumentTopic.id)).filter(DocumentTopic.document_id == int(document_id)).scalar() or 0
+    ocr_used = any(bool((getattr(c, 'meta', {}) or {}).get('ocr')) for c in chunks)
+
+    if not chunks:
+        stage = 'uploaded'
+    elif int(topics_count) <= 0:
+        stage = 'extracting'
+    else:
+        stage = 'completed'
+
+    return {
+        'request_id': request.state.request_id,
+        'data': {
+            'document_id': int(document_id),
+            'stage': stage,
+            'ocr_used': bool(ocr_used),
+            'ocr_engine': 'tesseract' if ocr_used else None,
+            'topics_count': int(topics_count),
+            'steps': {
+                'upload': True,
+                'parse_structure': bool(chunks),
+                'extract_text': bool(chunks),
+                'split_topics': int(topics_count) > 0,
+                'completed': int(topics_count) > 0,
+            },
+        },
+        'error': None,
+    }
+
+
 @router.post('/documents/upload')
 async def upload_document(
     request: Request,
@@ -968,7 +1014,6 @@ async def upload_document(
                     display_title=(cleaned_title or str(t.get("title") or "").strip())[:255],
                     needs_review=bool(t.get("needs_review") or title_warnings),
                     extraction_confidence=float(t.get("extraction_confidence") or 0.0),
-                    metadata_json={"original_exercises": original_exercises},
                     summary=str(t.get("summary") or "").strip(),
                     keywords=[str(x).strip() for x in (t.get("keywords") or []) if str(x).strip()],
                     start_chunk_index=s_idx,
@@ -1094,6 +1139,8 @@ async def upload_document(
             'topics_quality': topics_quality,
             'topics': topics_payload,
             'pdf_report': pdf_report,
+            'ocr_used': bool((pdf_report or {}).get('ocr_used')),
+            'ocr_engine': (pdf_report or {}).get('ocr_engine'),
             **vector_info,
             'vector_status': vector_store.status(),
         },

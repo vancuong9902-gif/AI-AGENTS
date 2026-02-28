@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import re
 import unicodedata
 from typing import Any, Dict, List, Tuple, Optional
@@ -9,6 +10,8 @@ from fastapi import UploadFile
 
 from app.core.config import settings
 from app.services.text_repair import repair_ocr_spacing_line, repair_ocr_spacing_text, fix_eth_d
+
+logger = logging.getLogger(__name__)
 
 
 # Postgres TEXT/VARCHAR cannot contain NUL (\x00) bytes.
@@ -142,72 +145,60 @@ def _clean_pdf_page_text(text: str) -> str:
     return _normalize_pipeline_text("\n".join(lines).strip())
 
 
-def _extract_text_pdf_ocr(data: bytes) -> Tuple[str, List[Dict[str, Any]]]:
-    """OCR fallback for scanned PDFs (image-only).
+def _ocr_pdf(file_bytes: bytes, *, language: str = "vie+eng") -> str:
+    """Extract text from scanned PDF using Tesseract OCR."""
+    try:
+        import pytesseract
+        from pdf2image import convert_from_bytes
+    except Exception as e:
+        logger.warning("OCR dependencies unavailable: %s", e)
+        return ""
 
-    Uses PyMuPDF for rendering + Tesseract via pytesseract.
-    """
+    try:
+        images = convert_from_bytes(file_bytes, dpi=200, fmt="jpeg")
+    except Exception as e:
+        logger.warning("pdf2image failed: %s", e)
+        return ""
+
+    pages_text: List[str] = []
+    for i, img in enumerate(images):
+        gray = img.convert("L")
+        bw = gray.point(lambda px: 255 if px > 180 else 0)
+        text = pytesseract.image_to_string(
+            bw,
+            lang=language,
+            config="--oem 3 --psm 6",
+        )
+        if text.strip():
+            pages_text.append(f"--- Trang {i + 1} ---\n{text}")
+
+    return "\n\n".join(pages_text)
+
+
+def _extract_text_pdf_ocr(data: bytes) -> Tuple[str, List[Dict[str, Any]]]:
+    """OCR fallback for scanned PDFs (image-only) using Tesseract + pdf2image."""
     if not bool(getattr(settings, "PDF_OCR_ENABLED", True)):
         return "", []
 
-    try:
-        import fitz  # PyMuPDF
-    except Exception:
-        return "", []
-
-    try:
-        from PIL import Image
-    except Exception:
-        return "", []
-
-    ocr_backend = None
-    pytesseract = None
-    easyocr = None
-    try:
-        import pytesseract  # type: ignore
-        ocr_backend = 'tesseract'
-    except Exception:
-        try:
-            import easyocr  # type: ignore
-            ocr_backend = 'easyocr'
-        except Exception:
-            return "", []
-
     lang = str(getattr(settings, "PDF_OCR_LANG", "vie+eng") or "vie+eng")
-    zoom = float(getattr(settings, "PDF_OCR_ZOOM", 2.5) or 2.5)
     max_pages = int(getattr(settings, "PDF_OCR_MAX_PAGES", 200) or 200)
+    ocr_text = _ocr_pdf(data, language=lang)
+    if not ocr_text.strip():
+        return "", []
 
-    doc = fitz.open(stream=data, filetype="pdf")
     pages_out: List[Dict[str, Any]] = []
     full_parts: List[str] = []
+    parts = re.split(r"(?m)^---\s*Trang\s+(\d+)\s*---\s*$", ocr_text)
+    if parts and parts[0].strip():
+        parts = ["1", parts[0], *parts[1:]]
 
-    reader = None
-    if ocr_backend == 'easyocr':
-        # EasyOCR uses language codes like ['vi','en']
-        langs = []
-        low = lang.lower()
-        if 'vie' in low or 'vi' in low:
-            langs.append('vi')
-        if 'eng' in low or 'en' in low:
-            langs.append('en')
-        if not langs:
-            langs = ['en']
+    for i in range(0, len(parts) - 1, 2):
+        page_str = parts[i]
+        raw_text = parts[i + 1]
         try:
-            reader = easyocr.Reader(langs, gpu=False)
+            page_num = int(page_str)
         except Exception:
-            reader = None
-
-    for idx in range(min(len(doc), max_pages)):
-        page = doc.load_page(idx)
-        mat = fitz.Matrix(zoom, zoom)
-        pix = page.get_pixmap(matrix=mat, alpha=False)
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-        if ocr_backend == 'tesseract':
-            raw_text = pytesseract.image_to_string(img, lang=lang) or ""
-        else:
-            if reader is None:
-                continue
-            raw_text = "\n".join(reader.readtext(img, detail=0, paragraph=True) or [])
+            page_num = (i // 2) + 1
         page_text = _clean_pdf_page_text(raw_text)
         if not page_text:
             continue
@@ -215,7 +206,9 @@ def _extract_text_pdf_ocr(data: bytes) -> Tuple[str, List[Dict[str, Any]]]:
             continue
         full_parts.append(page_text)
         for ch in _chunk_text(page_text):
-            pages_out.append({"text": ch, "meta": {"page": idx + 1, "ocr": True, "ocr_backend": ocr_backend}})
+            pages_out.append({"text": ch, "meta": {"page": page_num, "ocr": True, "ocr_backend": "tesseract"}})
+        if page_num >= max_pages:
+            break
 
     full_text = _normalize_pipeline_text("\n\n".join(full_parts))
     return full_text, pages_out
@@ -718,6 +711,19 @@ def _extract_text_pdf_with_report(data: bytes) -> Tuple[str, List[Dict[str, Any]
     best_text, best_chunks, report = picked
 
     # OCR trigger when extracted text is likely garbled or too sparse
+    if not best_text or len(best_text.strip()) < 100:
+        logger.info("PDF appears to be scanned — running OCR")
+        ocr_text, ocr_chunks = _extract_text_pdf_ocr(data)
+        if ocr_text.strip():
+            return ocr_text, ocr_chunks, {
+                **report,
+                "chosen_extractor": "ocr",
+                "extractor_chosen": "ocr",
+                "ocr_used": True,
+                "ocr_engine": "tesseract",
+                "selection_reason": "PDF có text quá ít; dùng OCR fallback.",
+            }
+
     try:
         from app.services.text_quality import quality_score
 
@@ -745,9 +751,23 @@ def _extract_text_pdf_with_report(data: bytes) -> Tuple[str, List[Dict[str, Any]
             if picked2:
                 txt2, chunks2, report2 = picked2
                 report2["ocr_used"] = bool(report2.get("chosen_extractor") == "ocr")
+                if report2["ocr_used"]:
+                    report2["ocr_engine"] = "tesseract"
                 return txt2, chunks2, report2
 
-    report["ocr_used"] = False
+    # Final VN font repair regardless of extractor.
+    if best_text:
+        try:
+            from app.services.vietnamese_font_fix import fix_vietnamese_font_encoding, detect_broken_vn_font
+            if detect_broken_vn_font(best_text):
+                best_text = fix_vietnamese_font_encoding(best_text)
+                best_chunks = [{**c, "text": fix_vietnamese_font_encoding(str(c.get("text") or ""))} for c in best_chunks]
+        except Exception:
+            pass
+
+    report["ocr_used"] = bool(report.get("chosen_extractor") == "ocr")
+    if report["ocr_used"]:
+        report["ocr_engine"] = "tesseract"
     return best_text, best_chunks, report
 
 
