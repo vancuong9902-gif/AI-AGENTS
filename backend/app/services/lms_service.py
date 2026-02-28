@@ -1,6 +1,15 @@
 from __future__ import annotations
 
 from collections import defaultdict
+
+from statistics import mean
+from typing import Any
+
+from app.services.llm_service import chat_json, chat_text, llm_available
+from sqlalchemy.orm import Session
+
+from app.models.learning_plan import LearningPlanHomeworkSubmission
+from app.models.user import User
 from datetime import datetime
 from typing import Any
 
@@ -257,6 +266,155 @@ def generate_class_narrative(
         ).strip()
     except Exception:
         return f"Lớp {total_students} HS, điểm TB {imp}. Cần chú ý: {wt}."
+
+
+def generate_student_evaluation_report(
+    student_id: int,
+    pre_attempt: dict,
+    post_attempt: dict,
+    homework_results: list[dict],
+    db: Session,
+) -> dict:
+    """Tạo báo cáo đánh giá chi tiết cho 1 học sinh bằng LLM (kèm fallback cứng)."""
+
+    _ = db  # giữ chữ ký để có thể mở rộng truy vấn DB trong tương lai
+
+    pre_score = float((pre_attempt or {}).get("overall", {}).get("percent") or 0.0)
+    post_score = float((post_attempt or {}).get("overall", {}).get("percent") or 0.0)
+    delta = post_score - pre_score
+
+    post_topics = (post_attempt or {}).get("by_topic") or {}
+    topic_lines = []
+    for topic, info in sorted(post_topics.items(), key=lambda x: float((x[1] or {}).get("percent") or 0), reverse=True):
+        topic_lines.append(f"- {topic}: {float((info or {}).get('percent') or 0):.1f}%")
+    topic_breakdown = "\n".join(topic_lines) if topic_lines else "- Chưa có dữ liệu topic"
+
+    by_diff = (post_attempt or {}).get("by_difficulty") or {}
+    easy_percent = float((by_diff.get("easy") or {}).get("percent") or 0.0)
+    medium_percent = float((by_diff.get("medium") or {}).get("percent") or 0.0)
+    hard_percent = float((by_diff.get("hard") or {}).get("percent") or 0.0)
+
+    total_hw = len(homework_results or [])
+    completed_hw = sum(1 for x in (homework_results or []) if bool((x or {}).get("completed", True)))
+    hw_scores = [float((x or {}).get("score") or (x or {}).get("score_percent") or 0.0) for x in (homework_results or [])]
+    homework_completion_rate = round((completed_hw / total_hw) * 100, 1) if total_hw > 0 else 0.0
+    homework_avg = round(mean(hw_scores), 1) if hw_scores else 0.0
+
+    progress_label = "ổn định"
+    if delta >= 12:
+        progress_label = "tiến bộ rõ rệt"
+    elif delta < -5:
+        progress_label = "sụt giảm"
+    elif delta < 2:
+        progress_label = "chưa cải thiện"
+
+    def _fallback_grade(score: float) -> str:
+        if score >= 85:
+            return "A"
+        if score >= 70:
+            return "B"
+        if score >= 55:
+            return "C"
+        if score >= 40:
+            return "D"
+        return "F"
+
+    sorted_topics = sorted(post_topics.items(), key=lambda x: float((x[1] or {}).get("percent") or 0), reverse=True)
+    strengths = [t for t, info in sorted_topics if float((info or {}).get("percent") or 0) >= 70][:3]
+    weaknesses = [t for t, info in sorted_topics[::-1] if float((info or {}).get("percent") or 0) < 60][:3]
+
+    if not llm_available():
+        return {
+            "student_id": int(student_id),
+            "overall_grade": _fallback_grade(post_score),
+            "strengths": strengths,
+            "weaknesses": weaknesses,
+            "progress": progress_label,
+            "improvement_delta": round(delta, 1),
+            "recommendation_for_teacher": "Theo dõi sát các topic yếu, giao thêm bài tập theo mức độ và phản hồi cá nhân mỗi tuần.",
+            "ai_comment": (
+                f"Học sinh có điểm đầu vào {pre_score:.1f}% và điểm cuối kỳ {post_score:.1f}%, mức thay đổi {delta:+.1f}%. "
+                f"Các điểm mạnh hiện tại: {', '.join(strengths) if strengths else 'chưa nổi bật rõ'}. "
+                f"Cần ưu tiên cải thiện: {', '.join(weaknesses) if weaknesses else 'chưa xác định cụ thể'}. "
+                "Giáo viên nên duy trì nhịp luyện tập đều và theo dõi tiến độ theo từng tuần."
+            ),
+        }
+
+    system = "Bạn là giáo viên AI chuyên đánh giá học sinh. Luôn trả về JSON hợp lệ, không markdown, không giải thích thêm."
+    user = (
+        "Dựa trên dữ liệu sau, hãy viết đánh giá học sinh bằng tiếng Việt:\n"
+        f"Điểm kiểm tra đầu vào: {pre_score:.1f}% | Điểm cuối kỳ: {post_score:.1f}%\n"
+        f"Tiến bộ: {delta:+.1f}%\n"
+        f"Điểm theo topic (cuối kỳ):\n{topic_breakdown}\n"
+        "Điểm theo độ khó:\n"
+        f"Dễ: {easy_percent:.1f}% | Trung bình: {medium_percent:.1f}% | Khó: {hard_percent:.1f}%\n\n"
+        f"Kết quả bài tập: {homework_completion_rate:.1f}% hoàn thành, điểm TB {homework_avg:.1f}%\n"
+        "Hãy trả về JSON với cấu trúc:\n"
+        "{\n"
+        '"overall_grade": "A/B/C/D/F",\n'
+        '"strengths": ["topic mạnh 1", "topic mạnh 2"],\n'
+        '"weaknesses": ["topic yếu 1", "topic yếu 2"],\n'
+        '"progress": "tiến bộ rõ rệt|ổn định|chưa cải thiện|sụt giảm",\n'
+        '"recommendation_for_teacher": "...",\n'
+        '"ai_comment": "Học sinh ... [nhận xét 3-5 câu bằng tiếng Việt tự nhiên]"\n'
+        "}"
+    )
+    try:
+        report = chat_json(
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.2,
+            max_tokens=600,
+        )
+    except Exception:
+        report = {}
+
+    return {
+        "student_id": int(student_id),
+        "overall_grade": str(report.get("overall_grade") or _fallback_grade(post_score)).strip().upper()[:1],
+        "strengths": [str(x).strip() for x in (report.get("strengths") or strengths) if str(x).strip()][:5],
+        "weaknesses": [str(x).strip() for x in (report.get("weaknesses") or weaknesses) if str(x).strip()][:5],
+        "progress": str(report.get("progress") or progress_label).strip().lower(),
+        "improvement_delta": round(delta, 1),
+        "recommendation_for_teacher": str(
+            report.get("recommendation_for_teacher")
+            or "Ưu tiên hỗ trợ các lỗ hổng kiến thức và giao bài tập phân hóa theo từng mảng nội dung."
+        ).strip(),
+        "ai_comment": str(report.get("ai_comment") or "").strip()
+        or (
+            f"Học sinh cải thiện {delta:+.1f}% so với đầu kỳ. "
+            f"Điểm cuối kỳ đạt {post_score:.1f}%. "
+            "Cần tiếp tục luyện tập đều và tập trung vào các topic còn yếu để nâng độ vững kiến thức."
+        ),
+    }
+
+
+def get_student_homework_results(student_id: int, db: Session) -> list[dict[str, Any]]:
+    rows = (
+        db.query(LearningPlanHomeworkSubmission)
+        .filter(LearningPlanHomeworkSubmission.user_id == int(student_id))
+        .order_by(LearningPlanHomeworkSubmission.created_at.asc())
+        .all()
+    )
+    results: list[dict[str, Any]] = []
+    for r in rows:
+        grade = r.grade_json or {}
+        score = float(grade.get("score") or grade.get("score_percent") or 0.0)
+        results.append(
+            {
+                "submission_id": int(r.id),
+                "completed": True,
+                "score": score,
+                "created_at": r.created_at.isoformat() if getattr(r, "created_at", None) else None,
+            }
+        )
+    return results
+
+
+def resolve_student_name(student_id: int, db: Session) -> str:
+    user = db.query(User).filter(User.id == int(student_id)).first()
+    if not user:
+        return f"Student {student_id}"
+    return str(user.full_name or user.email or f"Student {student_id}")
 
 
 def _topic_body_len(topic: DocumentTopic) -> int:

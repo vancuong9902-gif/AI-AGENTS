@@ -3,18 +3,23 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.models.attempt import Attempt
 from app.models.classroom_assessment import ClassroomAssessment
+from app.models.classroom import ClassroomMember
 from app.models.document_topic import DocumentTopic
 from app.models.quiz_set import QuizSet
 from app.models.question import Question
 from app.models.learner_profile import LearnerProfile
 from app.models.learning_plan import LearningPlan
+from app.infra.queue import enqueue
+from app.services.teacher_report_export_service import build_classroom_report_pdf
+from app.tasks.report_tasks import task_export_teacher_report_pdf
 from app.models.session import Session as UserSession
 from app.models.student_assignment import StudentAssignment
 from app.services.assessment_service import generate_assessment, submit_assessment
@@ -22,7 +27,10 @@ from app.services.lms_service import (
     analyze_topic_weak_points,
     build_recommendations,
     classify_student_level,
+    generate_student_evaluation_report,
+    get_student_homework_results,
     generate_class_narrative,
+    resolve_student_name,
     score_breakdown,
     assign_topic_materials,
 )
@@ -484,15 +492,21 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
             "error": None,
         }
 
-    attempts = db.query(Attempt).filter(
-        Attempt.quiz_set_id.in_(assessment_ids)).all()
+    attempts = db.query(Attempt).filter(Attempt.quiz_set_id.in_(assessment_ids)).all()
     by_student: dict[int, list[float]] = defaultdict(list)
     by_level: dict[str, int] = defaultdict(int)
 
     progress_chart: list[dict] = []
     pre_scores: dict[int, float] = {}
     post_scores: dict[int, float] = {}
+    pre_breakdowns: dict[int, dict] = {}
+    post_breakdowns: dict[int, dict] = {}
     all_breakdowns: list[dict] = []
+
+    classroom_student_ids = {
+        int(uid)
+        for uid, in db.query(ClassroomMember.user_id).filter(ClassroomMember.classroom_id == int(classroom_id)).all()
+    }
 
     quiz_kind_map = {
         int(qid): str(kind or "")
@@ -510,8 +524,10 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
         kind = quiz_kind_map.get(int(at.quiz_set_id), "")
         if kind == "diagnostic_pre":
             pre_scores[uid] = pct
+            pre_breakdowns[uid] = br
         elif kind == "diagnostic_post":
             post_scores[uid] = pct
+            post_breakdowns[uid] = br
 
     rows = []
     for uid, vals in sorted(by_student.items()):
@@ -545,6 +561,31 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
         avg_improvement=avg_improvement,
     )
 
+    student_evaluations = []
+    eval_uids = sorted(set(classroom_student_ids) | set(pre_breakdowns.keys()) | set(post_breakdowns.keys()))
+    for uid in eval_uids:
+        pre_bd = pre_breakdowns.get(uid, {"overall": {"percent": pre_scores.get(uid, 0.0)}})
+        post_bd = post_breakdowns.get(uid, {"overall": {"percent": post_scores.get(uid, 0.0)}})
+        eval_report = generate_student_evaluation_report(
+            student_id=uid,
+            pre_attempt=pre_bd,
+            post_attempt=post_bd,
+            homework_results=get_student_homework_results(uid, db),
+            db=db,
+        )
+        student_evaluations.append(
+            {
+                "student_id": uid,
+                "student_name": resolve_student_name(uid, db),
+                "pre_score": round(float((pre_bd.get("overall") or {}).get("percent") or 0.0), 1),
+                "post_score": round(float((post_bd.get("overall") or {}).get("percent") or 0.0), 1),
+                "overall_grade": eval_report.get("overall_grade", "N/A"),
+                "ai_comment": eval_report.get("ai_comment", ""),
+                "strengths": eval_report.get("strengths") or [],
+                "weaknesses": eval_report.get("weaknesses") or [],
+            }
+        )
+
     return {
         "request_id": request.state.request_id,
         "data": {
@@ -553,11 +594,42 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
             "ai_narrative": narrative,
             "weak_topics": weak_topics[:5],
             "progress_chart": progress_chart,
+            "student_evaluations": student_evaluations,
         },
         "error": None,
     }
 
 
+@router.get("/lms/teacher/report/{classroom_id}/export")
+def export_teacher_report(
+    request: Request,
+    classroom_id: int,
+    format: str = Query("pdf"),
+    db: Session = Depends(get_db),
+):
+    export_format = str(format or "pdf").strip().lower()
+    if export_format != "pdf":
+        raise HTTPException(status_code=400, detail="Only pdf format is supported")
+
+    student_count = (
+        db.query(ClassroomMember)
+        .filter(ClassroomMember.classroom_id == int(classroom_id))
+        .count()
+    )
+    if student_count > 30:
+        job = enqueue(task_export_teacher_report_pdf, int(classroom_id), queue_name="default")
+        return {
+            "request_id": request.state.request_id,
+            "data": {
+                "queued": True,
+                "job_id": job.get("job_id"),
+                "note": "Lớp đông hơn 30 học sinh, báo cáo được tạo ở background task.",
+            },
+            "error": None,
+        }
+
+    pdf_path = build_classroom_report_pdf(classroom_id=int(classroom_id), db=db)
+    return FileResponse(pdf_path, media_type="application/pdf", filename=f"classroom_{classroom_id}_report.pdf")
 @router.get("/lms/students/{student_id}/assignments")
 def list_student_assignments(request: Request, student_id: int, classroom_id: int | None = None, db: Session = Depends(get_db)):
     q = db.query(StudentAssignment).filter(StudentAssignment.student_id == int(student_id))

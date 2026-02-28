@@ -3,6 +3,7 @@ from app.services.lms_service import (
     analyze_topic_weak_points,
     build_recommendations,
     classify_student_level,
+    generate_student_evaluation_report,
     generate_class_narrative,
     score_breakdown,
 )
@@ -67,6 +68,25 @@ def test_analyze_topic_weak_points():
     assert result[0]["topic"] == "Đạo hàm"
     assert result[0]["avg_pct"] == 37.5
 
+
+
+def test_generate_student_evaluation_report_fallback(monkeypatch):
+    monkeypatch.setattr("app.services.lms_service.llm_available", lambda: False)
+    out = generate_student_evaluation_report(
+        student_id=100,
+        pre_attempt={"overall": {"percent": 40.0}},
+        post_attempt={
+            "overall": {"percent": 70.0},
+            "by_topic": {"đại số": {"percent": 80.0}, "hình học": {"percent": 45.0}},
+            "by_difficulty": {"easy": {"percent": 90}, "medium": {"percent": 70}, "hard": {"percent": 40}},
+        },
+        homework_results=[{"completed": True, "score": 75}],
+        db=None,
+    )
+    assert out["overall_grade"] in {"A", "B", "C", "D", "F"}
+    assert out["improvement_delta"] == 30.0
+    assert isinstance(out["strengths"], list)
+    assert isinstance(out["weaknesses"], list)
 
 def test_score_breakdown_includes_bloom_based_weak_topics():
     breakdown = [
