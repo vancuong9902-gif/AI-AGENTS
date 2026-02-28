@@ -588,10 +588,14 @@ def _generate_day_mcq_questions(
             out.append(
                 HomeworkMCQQuestion(
                     question_id=qid,
+                    question_text=stem,
                     stem=stem,
                     options=[str(x) for x in opts][:4],
                     correct_index=int(ci),
-                    explanation=_compact(str(q.get("explanation") or "")) or None,
+                    bloom_level=str(q.get("bloom_level") or "remember"),
+                    explanation=_compact(str(q.get("explanation") or "")),
+                    hint=_compact(str(q.get("hint") or "")),
+                    related_concept=_compact(str(q.get("related_concept") or "")),
                     max_points=1,
                     sources=(q.get("sources") or []),
                 )
