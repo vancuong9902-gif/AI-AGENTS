@@ -4,6 +4,7 @@ import random
 import copy
 import json
 import logging
+import math
 import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -41,6 +42,7 @@ from app.services.quiz_service import (
     _llm_refine_mcqs,
 )
 from app.services.bloom import infer_bloom_level, normalize_bloom_level
+from app.services.embedding_service import embed_texts
 
 # Keep topic ranges tight in DB (for clean topic display) and expand only when generating assessments.
 from app.services.topic_service import ensure_topic_chunk_ranges_ready_for_quiz
@@ -62,6 +64,31 @@ def _is_dup(stem: str, excluded_stems: set[str] | None = None, similarity_thresh
     if not s:
         return False
     return any(SequenceMatcher(None, s, ex).ratio() >= float(similarity_threshold) for ex in excluded_stems if ex)
+
+
+_TOK_RE = re.compile(r"[\wÀ-ỹ]+", re.UNICODE)
+
+
+def _token_set(text: str) -> set[str]:
+    return {t for t in _TOK_RE.findall((text or "").lower()) if len(t) >= 2}
+
+
+def _jaccard_similarity(a: str, b: str) -> float:
+    sa, sb = _token_set(a), _token_set(b)
+    if not sa or not sb:
+        return 0.0
+    return float(len(sa & sb)) / float(max(1, len(sa | sb)))
+
+
+def _cosine_similarity(a: List[float], b: List[float]) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(float(x) * float(y) for x, y in zip(a, b))
+    na = math.sqrt(sum(float(x) * float(x) for x in a))
+    nb = math.sqrt(sum(float(y) * float(y) for y in b))
+    if na <= 0 or nb <= 0:
+        return 0.0
+    return float(dot / (na * nb))
 
 
 def _cap_int(x: Any, *, default: int, lo: int, hi: int) -> int:
@@ -1557,6 +1584,48 @@ def _collect_chunks(
     good2, _bad2 = filter_chunks_by_quality(chunks, min_score=float(settings.OCR_MIN_QUALITY_SCORE))
     return good2 or chunks
 
+
+
+def _filter_semantic_duplicates(
+    *,
+    generated: List[Dict[str, Any]],
+    excluded_stems: List[str],
+    threshold: float = 0.85,
+) -> tuple[List[Dict[str, Any]], int, str]:
+    if not generated or not excluded_stems:
+        return generated, 0, "none"
+
+    q_texts = [str((q or {}).get("stem") or (q or {}).get("question", "")).strip() for q in generated]
+    ex_texts = [str(x or "").strip() for x in excluded_stems if str(x or "").strip()]
+    if not ex_texts:
+        return generated, 0, "none"
+
+    keep_idx = list(range(len(generated)))
+    mode = "jaccard"
+
+    try:
+        emb_q = embed_texts(q_texts)
+        emb_e = embed_texts(ex_texts)
+        drop: set[int] = set()
+        for i, vq in enumerate(emb_q):
+            for ve in emb_e:
+                if _cosine_similarity(vq, ve) > float(threshold):
+                    drop.add(i)
+                    break
+        keep_idx = [i for i in range(len(generated)) if i not in drop]
+        mode = "embedding"
+    except Exception:
+        drop = set()
+        for i, stem in enumerate(q_texts):
+            for ex in ex_texts:
+                if _jaccard_similarity(stem, ex) > float(threshold):
+                    drop.add(i)
+                    break
+        keep_idx = [i for i in range(len(generated)) if i not in drop]
+
+    filtered = [generated[i] for i in keep_idx]
+    removed = max(0, len(generated) - len(filtered))
+    return filtered, removed, mode
 def generate_assessment(
     db: Session,
     *,
@@ -1571,6 +1640,7 @@ def generate_assessment(
     topics: List[str],
     kind: str = "midterm",
     exclude_quiz_ids: List[int] | None = None,
+    excluded_question_ids: List[int] | None = None,
     similarity_threshold: float = 0.75,
 ) -> Dict[str, Any]:
     total_q = int(easy_count) + int(medium_count) + int(hard_count)
@@ -1582,11 +1652,15 @@ def generate_assessment(
     ensure_user_exists(db, int(teacher_id), role="teacher")
 
     _excluded_stems: set[str] = set()
+    _excluded_question_ids = {int(x) for x in (excluded_question_ids or []) if x is not None}
     if exclude_quiz_ids:
         rows = db.query(Question.stem).filter(
             Question.quiz_set_id.in_([int(x) for x in exclude_quiz_ids])
         ).all()
-        _excluded_stems = {str(r[0] or "").lower().strip() for r in rows if r[0]}
+        _excluded_stems.update({str(r[0] or "").lower().strip() for r in rows if r[0]})
+    if _excluded_question_ids:
+        qrows = db.query(Question.stem).filter(Question.id.in_(list(_excluded_question_ids))).all()
+        _excluded_stems.update({str(r[0] or "").lower().strip() for r in qrows if r[0]})
 
     def _is_dup_local(stem: str) -> bool:
         return _is_dup(stem, _excluded_stems, similarity_threshold)
@@ -1687,6 +1761,15 @@ def generate_assessment(
                             f"TARGET_DIFFICULTY={bucket_name.upper()} - ưu tiên Bloom levels: {', '.join(target_blooms)}. "
                             "Không dùng mức ngoài nhóm mục tiêu nếu không thật sự cần thiết."
                         )
+                    if (kind or "").lower() == "final_exam" and (_excluded_question_ids or _excluded_stems):
+                        final_rules = (
+                            "QUAN TRỌNG: Đây là bài kiểm tra CUỐI KỲ. Câu hỏi phải: "
+                            "1) KHÔNG trùng bài đầu vào; "
+                            "2) ưu tiên Bloom apply/analyze/evaluate/create; "
+                            "3) tập trung ứng dụng thực tế, so sánh, phân tích; "
+                            "4) tối thiểu 40% câu dạng scenario-based."
+                        )
+                        hint = (hint + "\n" + final_rules) if hint else final_rules
                     qs = _generate_mcq_with_llm(
                         t,
                         level,
@@ -1715,7 +1798,7 @@ def generate_assessment(
             if cnt <= 0:
                 continue
             try:
-                offline_mcqs.extend(_generate_mcq_from_chunks(t, level, cnt, chunks) or [])
+                offline_mcqs.extend(_generate_mcq_from_chunks(t, level, cnt, chunks, excluded_question_ids=excluded_question_ids) or [])
             except Exception:
                 continue
 
@@ -1884,12 +1967,24 @@ def generate_assessment(
     generated = [q for q in generated if not _is_dup_local(str((q or {}).get("stem") or (q or {}).get("question", "")))]
     filtered_count = max(0, original_count - len(generated))
 
+    # Semantic duplicate guard (embedding cosine, fallback jaccard).
+    semantic_filtered = 0
+    semantic_mode = "none"
+    generated, semantic_filtered, semantic_mode = _filter_semantic_duplicates(
+        generated=generated,
+        excluded_stems=sorted(_excluded_stems),
+        threshold=0.85,
+    )
+    filtered_count += int(semantic_filtered)
+
     if filtered_count > 0:
         logging.getLogger(__name__).info(
-            "Filtered %s/%s duplicate questions (similarity >= %s)",
+            "Filtered %s/%s duplicate questions (similarity >= %s, semantic=%s, semantic_mode=%s)",
             filtered_count,
             original_count,
             float(similarity_threshold),
+            int(semantic_filtered),
+            semantic_mode,
         )
 
     target_total = int(easy_count) + int(medium_count) + int(hard_count)
@@ -1952,7 +2047,9 @@ def generate_assessment(
 
 # Persist as a QuizSet(kind="midterm"/"diagnostic_pre"/"diagnostic_post") + questions
     kind = _normalize_assessment_kind(kind)
-    quiz_set = QuizSet(user_id=teacher_id, kind=kind, topic=title, level=level, source_query_id=None)
+    quiz_set = QuizSet(user_id=teacher_id, kind=kind, topic=title, level=level, source_query_id=None, excluded_from_quiz_ids=[int(x) for x in (exclude_quiz_ids or [])], generation_seed=None)
+    seed_payload = {"teacher_id": int(teacher_id), "title": str(title), "topics": [str(t).strip().lower() for t in (topics or []) if str(t).strip()], "kind": kind, "doc_ids": [int(x) for x in (doc_ids or [])], "excluded_question_ids": sorted(list(_excluded_question_ids))}
+    quiz_set.generation_seed = __import__("hashlib").sha256(json.dumps(seed_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
     db.add(quiz_set)
     db.commit()
     db.refresh(quiz_set)
@@ -2020,6 +2117,8 @@ def generate_assessment(
         "difficulty_plan": difficulty_plan,
         "excluded_stems_count": len(_excluded_stems),
         "filtered_duplicates": int(filtered_count),
+        "semantic_filtered_duplicates": int(semantic_filtered),
+        "semantic_filter_mode": semantic_mode,
     }
 
 
