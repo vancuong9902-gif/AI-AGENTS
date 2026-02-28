@@ -159,6 +159,8 @@ class Settings(BaseSettings):
     CRAG_MAX_ITERS: int = 2
     # Lexical relevance threshold (0..1). Thấp hơn -> dễ pass; cao hơn -> strict hơn.
     CRAG_MIN_RELEVANCE: float = 0.18
+    # Tutor off-topic gate via LLM (strict JSON output). If False, fallback to CRAG flow.
+    TUTOR_LLM_OFFTOPIC_ENABLED: bool = False
 
     # ===== Reranking (2nd-stage refinement) =====
     # Reference: "Reranking in RAG" (2-stage refinement), especially technique #5 (LLM-as-a-Judge).
