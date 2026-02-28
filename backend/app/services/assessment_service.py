@@ -1204,7 +1204,11 @@ Yêu cầu:
     return sync_diagnostic_from_attempt(db, quiz_set=quiz_set, attempt=attempt)
 
 
-def _generate_essay_with_llm(requests: List[Dict[str, Any]], chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _generate_essay_with_llm(
+    requests: List[Dict[str, Any]],
+    chunks: List[Dict[str, Any]],
+    generation_instruction: str | None = None,
+) -> List[Dict[str, Any]]:
     """LLM-based essay question generator, grounded to evidence chunks."""
     gen_mode = (settings.QUIZ_GEN_MODE or 'auto').strip().lower()
     if gen_mode == 'offline' or not llm_available():
@@ -1274,6 +1278,9 @@ def _generate_essay_with_llm(requests: List[Dict[str, Any]], chunks: List[Dict[s
     - Nếu OK: {"status":"OK","questions":[...]}.
     - Nếu CONTEXT lỗi/thiếu: {"status":"NEED_CLEAN_TEXT","reason":"...","suggestion":"..."}.
     """
+
+    if generation_instruction:
+        system = f"{system}\n\nADDITIONAL INSTRUCTION:\n{str(generation_instruction).strip()}"
 
     user = {
         'requests': requests,
@@ -1570,7 +1577,9 @@ def generate_assessment(
     topics: List[str],
     kind: str = "midterm",
     exclude_quiz_ids: List[int] | None = None,
+    exclude_assessment_ids: List[int] | None = None,
     similarity_threshold: float = 0.75,
+    generation_instruction: str | None = None,
 ) -> Dict[str, Any]:
     total_q = int(easy_count) + int(hard_count)
 
@@ -1581,11 +1590,12 @@ def generate_assessment(
     ensure_user_exists(db, int(teacher_id), role="teacher")
 
     _excluded_stems: set[str] = set()
-    if exclude_quiz_ids:
+    effective_exclude_ids = exclude_assessment_ids if exclude_assessment_ids is not None else exclude_quiz_ids
+    if effective_exclude_ids:
         from app.models.question import Question
 
         rows = db.query(Question.stem).filter(
-            Question.quiz_set_id.in_([int(x) for x in exclude_quiz_ids])
+            Question.quiz_set_id.in_([int(x) for x in effective_exclude_ids])
         ).all()
         _excluded_stems = {str(r[0] or "").lower().strip() for r in rows if r[0]}
 
@@ -1668,7 +1678,7 @@ def generate_assessment(
             if cnt <= 0:
                 continue
             try:
-                qs = _generate_mcq_with_llm(t, level, cnt, chunks)
+                qs = _generate_mcq_with_llm(t, level, cnt, chunks, extra_system_hint=generation_instruction)
             except HTTPException:
                 raise
             except Exception:
@@ -1755,7 +1765,7 @@ def generate_assessment(
     gen_mode = (settings.QUIZ_GEN_MODE or "auto").strip().lower()
     if gen_mode in {"auto", "llm"} and llm_available():
         try:
-            essay_generated = _generate_essay_with_llm(essay_reqs, chunks) or []
+            essay_generated = _generate_essay_with_llm(essay_reqs, chunks, generation_instruction=generation_instruction) or []
         except HTTPException:
             raise
         except Exception:

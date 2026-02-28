@@ -45,6 +45,7 @@ class GenerateLmsQuizIn(BaseModel):
     easy_count: int = 4
     medium_count: int = 4
     hard_count: int = 2
+    student_ids: list[int] = Field(default_factory=list)
 
 
 class SubmitAttemptIn(BaseModel):
@@ -149,13 +150,16 @@ def lms_generate_final(request: Request, payload: GenerateLmsQuizIn, db: Session
         placement_rows = (
             db.query(Attempt.quiz_set_id)
             .join(QuizSet, QuizSet.id == Attempt.quiz_set_id)
+            .join(ClassroomAssessment, ClassroomAssessment.assessment_id == Attempt.quiz_set_id)
             .filter(
-                Attempt.user_id == int(payload.teacher_id),
+                ClassroomAssessment.classroom_id == int(payload.classroom_id),
                 QuizSet.kind == "diagnostic_pre",
             )
-            .distinct()
-            .all()
         )
+        student_ids = [int(sid) for sid in (payload.student_ids or [])]
+        if student_ids:
+            placement_rows = placement_rows.filter(Attempt.user_id.in_(student_ids))
+        placement_rows = placement_rows.distinct().all()
         placement_ids = [int(r[0]) for r in placement_rows]
     except Exception:
         placement_ids = []
@@ -171,8 +175,13 @@ def lms_generate_final(request: Request, payload: GenerateLmsQuizIn, db: Session
         hard_count=int(payload.hard_count),
         document_ids=[int(x) for x in payload.document_ids],
         topics=payload.topics,
-        exclude_quiz_ids=placement_ids,
+        exclude_assessment_ids=placement_ids,
         similarity_threshold=0.75,
+        generation_instruction=(
+            "This is a FINAL EXAM (post-test). Generate questions at a HIGHER cognitive level "
+            "than the placement test. Emphasize 'evaluate', 'synthesize', 'create' Bloom levels. "
+            "Avoid repeating questions from the placement test."
+        ),
     )
     data["difficulty_plan"] = {
         "easy": int(payload.easy_count),
@@ -180,6 +189,7 @@ def lms_generate_final(request: Request, payload: GenerateLmsQuizIn, db: Session
         "hard": int(payload.hard_count),
     }
     data["excluded_from_count"] = len(placement_ids)
+    data["exam_type"] = "final"
     return {"request_id": request.state.request_id, "data": data, "error": None}
 
 
