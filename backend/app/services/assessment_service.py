@@ -393,6 +393,10 @@ def _is_assessment_kind(kind: str) -> bool:
     return (kind or "").strip().lower() in ("midterm", "diagnostic_pre", "diagnostic_post", "assessment", "entry_test", "final_exam", "final")
 
 
+def _is_final_diagnostic_kind(kind: str | None) -> bool:
+    return (kind or "").strip().lower() in ("final_exam", "diagnostic_post")
+
+
 def _normalize_assessment_kind(kind: str | None) -> str:
     k = (kind or "").strip().lower()
     if k == "assessment":
@@ -1841,7 +1845,7 @@ def generate_assessment(
         "TỔNG HỢP kiến thức từ nhiều chủ đề, không phải chỉ ghi nhớ đơn thuần. Mức độ khó "
         "phải cao hơn bài kiểm tra đầu vào."
     )
-    dedup_similarity_threshold = 0.65 if kind == "final_exam" else float(similarity_threshold)
+    dedup_similarity_threshold = max(0.75, float(similarity_threshold)) if _is_final_diagnostic_kind(kind) else float(similarity_threshold)
 
     final_exam_excluded_instruction = ""
     diagnostic_pre_stems_for_prompt: list[str] = []
@@ -2020,7 +2024,7 @@ def generate_assessment(
                             f"TARGET_DIFFICULTY={bucket_name.upper()} - ưu tiên Bloom levels: {', '.join(target_blooms)}. "
                             "Không dùng mức ngoài nhóm mục tiêu nếu không thật sự cần thiết."
                         )
-                    if (kind or "").lower() == "final_exam" and (_excluded_question_ids or _excluded_stems):
+                    if _is_final_diagnostic_kind(kind) and (_excluded_question_ids or _excluded_stems):
                         final_rules = (
                             "QUAN TRỌNG: Đây là bài kiểm tra CUỐI KỲ. Câu hỏi phải: "
                             "1) KHÔNG trùng bài đầu vào; "
@@ -2029,9 +2033,9 @@ def generate_assessment(
                             "4) tối thiểu 40% câu dạng scenario-based."
                         )
                         hint = (hint + "\n" + final_rules) if hint else final_rules
-                    if (kind or "").lower() == "final_exam":
+                    if _is_final_diagnostic_kind(kind):
                         hint = (hint + "\n" + final_exam_llm_system_hint) if hint else final_exam_llm_system_hint
-                    if (kind or "").lower() == "final_exam" and final_exam_excluded_instruction:
+                    if _is_final_diagnostic_kind(kind) and final_exam_excluded_instruction:
                         hint = (hint + "\n" + final_exam_excluded_instruction) if hint else final_exam_excluded_instruction
                     try:
                         qs = _generate_mcq_with_llm(
@@ -2113,7 +2117,7 @@ def generate_assessment(
                 out.append(_normalize_question_bloom(q, allowed, target_blooms, i))
         return out[: int(count)]
 
-    bucket_excluded_stems = _excluded_stems if kind == "final_exam" else None
+    bucket_excluded_stems = _excluded_stems if _is_final_diagnostic_kind(kind) else None
     easy_mcqs = _generate_mcq_bucket(count=int(easy_count), bucket_name="easy", target_blooms=["remember", "understand"], excluded_stems=bucket_excluded_stems)
     medium_mcqs = _generate_mcq_bucket(count=int(medium_count), bucket_name="medium", target_blooms=["apply", "analyze"], excluded_stems=bucket_excluded_stems)
     generated.extend(easy_mcqs)
@@ -2289,7 +2293,7 @@ def generate_assessment(
                 f"Hãy tạo {deficit} câu HOÀN TOÀN MỚI, tiếp cận topic từ góc độ khác: "
                 "ứng dụng thực tế, bài toán ngược, hoặc kết hợp nhiều khái niệm."
             )
-            if final_exam_excluded_instruction and (kind or "").lower() == "final_exam":
+            if final_exam_excluded_instruction and _is_final_diagnostic_kind(kind):
                 extra_system_hint = f"{extra_system_hint}\n{final_exam_excluded_instruction}"
             extra_qs: List[Dict[str, Any]] = []
             for idx, topic_name in enumerate(topic_list):
@@ -2327,7 +2331,7 @@ def generate_assessment(
                 generated.extend(extra_qs[:deficit])
 
         final_deficit = target_total - len(generated)
-        if final_deficit > 0 and (kind or "").lower() == "final_exam":
+        if final_deficit > 0 and _is_final_diagnostic_kind(kind):
             logging.getLogger(__name__).warning(
                 "Final exam generation still lacks %s fully new questions after 3 retries (user_id=%s, classroom_id=%s)",
                 int(final_deficit),
@@ -2338,7 +2342,7 @@ def generate_assessment(
     if len(generated) > target_total:
         generated = generated[:target_total]
 
-    if kind == "final_exam":
+    if _is_final_diagnostic_kind(kind):
         essay_count = sum(1 for q in (generated or []) if str((q or {}).get("type") or "").strip().lower() == "essay")
         if essay_count < 2:
             topic_fallback = (topics_cycle[0] if topics_cycle else (title or "Final Exam"))
@@ -2362,7 +2366,7 @@ def generate_assessment(
                 )
             generated = generated[:target_total]
 
-    if kind == "final_exam" and len(topics_cycle) >= 2:
+    if _is_final_diagnostic_kind(kind) and len(topics_cycle) >= 2:
         for i, q in enumerate(generated):
             if not isinstance(q, dict):
                 continue
@@ -2410,7 +2414,7 @@ def generate_assessment(
     quiz_metadata: Dict[str, Any] = {}
     if kind in {"entry_test", "diagnostic_pre", "final_exam"}:
         quiz_metadata["topics_covered"] = topics_covered
-    if kind == "final_exam":
+    if _is_final_diagnostic_kind(kind):
         quiz_metadata["deduplication_info"] = {
             "excluded_count": int(len(_excluded_stems)),
             "topics_from_entry": dedup_topics_from_entry,
@@ -2424,7 +2428,7 @@ def generate_assessment(
 
     if time_limit_minutes is not None:
         requested_minutes = int(time_limit_minutes)
-    elif kind == "final_exam":
+    elif _is_final_diagnostic_kind(kind):
         requested_minutes = 90
     elif kind == "entry_test":
         requested_minutes = 45
@@ -2437,7 +2441,7 @@ def generate_assessment(
         kind=kind,
         topic=title,
         level=level,
-        is_final_exam=bool(kind == "final_exam"),
+        is_final_exam=bool(_is_final_diagnostic_kind(kind)),
         duration_seconds=int(requested_minutes * 60),
         metadata_json=quiz_metadata,
         source_query_id=None,
@@ -2508,7 +2512,7 @@ def generate_assessment(
         "title": quiz_set.topic,
         "level": quiz_set.level,
         "time_limit_minutes": int(total_minutes),
-        "exam_type_label": "Kiểm tra cuối kỳ" if kind == "final_exam" else "Kiểm tra đầu vào",
+        "exam_type_label": "Kiểm tra cuối kỳ" if _is_final_diagnostic_kind(kind) else "Kiểm tra đầu vào",
         "metadata": quiz_metadata,
         "questions": questions_out,
         "difficulty_plan": difficulty_plan,
