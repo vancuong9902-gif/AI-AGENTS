@@ -35,6 +35,7 @@ from app.services.topic_service import (
     validate_and_clean_topic_title,
     extract_exercises_from_topic,
     parse_quick_check_quiz,
+    build_topic_preview_for_teacher,
 )
 from app.services import vector_store
 from app.infra.queue import is_async_enabled, enqueue
@@ -681,6 +682,7 @@ def regenerate_document_topics(
 
 
 @router.get('/documents/{document_id}/topics/preview')
+@router.get('/v1/documents/{document_id}/topics/preview')
 def preview_document_topics(
     request: Request,
     document_id: int,
@@ -693,34 +695,14 @@ def preview_document_topics(
     if int(doc.user_id) != int(getattr(teacher, 'id')):
         raise HTTPException(status_code=403, detail='Not allowed')
 
-    topics = (
-        db.query(DocumentTopic)
-        .filter(DocumentTopic.document_id == int(document_id))
-        .order_by(func.coalesce(DocumentTopic.page_start, 10**9).asc(), DocumentTopic.topic_index.asc())
-        .all()
-    )
+    try:
+        payload = build_topic_preview_for_teacher(int(document_id), db)
+    except ValueError:
+        raise HTTPException(status_code=404, detail='Document not found')
 
     return {
         'request_id': request.state.request_id,
-        'data': {
-            'document_id': int(document_id),
-            'topics': [
-                {
-                    'topic_id': int(t.id),
-                    'topic_index': int(t.topic_index),
-                    'title': _topic_title_for_generation(t),
-                    'summary': str(t.summary or ''),
-                    'coverage_score': float((t.metadata_json or {}).get('coverage_score') or 0.0),
-                    'confidence': str((t.metadata_json or {}).get('confidence') or 'low'),
-                    'sample_content': str((t.metadata_json or {}).get('sample_content') or ''),
-                    'subtopics': (t.metadata_json or {}).get('subtopics') or [],
-                    'page_ranges': (t.metadata_json or {}).get('page_ranges') or [],
-                    'status': getattr(t, 'status', 'pending_review'),
-                    'is_confirmed': bool(getattr(t, 'is_confirmed', False)),
-                }
-                for t in topics
-            ],
-        },
+        'data': payload,
         'error': None,
     }
 
@@ -967,6 +949,7 @@ def confirm_document_topics(
 
 
 @router.post('/documents/{doc_id}/topics/confirm')
+@router.post('/v1/documents/{doc_id}/topics/confirm')
 def confirm_document_topics_v2(
     request: Request,
     doc_id: int,
@@ -974,13 +957,111 @@ def confirm_document_topics_v2(
     db: Session = Depends(get_db),
     teacher: User = Depends(require_teacher),
 ):
-    return confirm_document_topics(
-        request=request,
-        doc_id=doc_id,
-        payload=payload,
-        db=db,
-        teacher=teacher,
+    doc = db.query(Document).filter(Document.id == int(doc_id)).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail='Document not found')
+    if int(doc.user_id) != int(getattr(teacher, 'id')):
+        raise HTTPException(status_code=403, detail='Not allowed')
+
+    approved_ids = {int(x) for x in (payload.get('approved_topic_ids') or [])}
+    rejected_ids = {int(x) for x in (payload.get('rejected_topic_ids') or [])}
+    renamed_topics = payload.get('renamed_topics') or {}
+    if not isinstance(renamed_topics, dict):
+        renamed_topics = {}
+
+    topics = db.query(DocumentTopic).filter(DocumentTopic.document_id == int(doc_id)).all()
+    topic_by_id = {int(t.id): t for t in topics}
+    if not topic_by_id:
+        raise HTTPException(status_code=400, detail='No topics found for document')
+
+    now = datetime.now(timezone.utc)
+    approved_count = 0
+    rejected_count = 0
+    for topic_id, topic in topic_by_id.items():
+        if topic_id in approved_ids:
+            topic.status = 'approved'
+            topic.is_confirmed = True
+            approved_count += 1
+        elif topic_id in rejected_ids:
+            topic.status = 'rejected'
+            topic.is_confirmed = False
+            rejected_count += 1
+
+        if str(topic_id) in renamed_topics:
+            raw_title = str(renamed_topics.get(str(topic_id)) or '').strip()
+            if raw_title:
+                cleaned, _warnings = validate_and_clean_topic_title(raw_title)
+                new_title = (cleaned or raw_title)[:255]
+                topic.title = new_title
+                topic.teacher_edited_title = new_title
+
+        topic.reviewed_at = now
+        db.add(topic)
+
+    db.commit()
+
+    return {
+        'request_id': request.state.request_id,
+        'data': {
+            'approved': int(approved_count),
+            'rejected': int(rejected_count),
+            'message': 'Đã xác nhận topic thành công',
+        },
+        'error': None,
+    }
+
+
+@router.post('/documents/{doc_id}/topics/add-custom')
+@router.post('/v1/documents/{doc_id}/topics/add-custom')
+def add_custom_topic(
+    request: Request,
+    doc_id: int,
+    payload: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    doc = db.query(Document).filter(Document.id == int(doc_id)).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail='Document not found')
+    if int(doc.user_id) != int(getattr(teacher, 'id')):
+        raise HTTPException(status_code=403, detail='Not allowed')
+
+    title = str(payload.get('title') or '').strip()
+    description = str(payload.get('description') or '').strip()
+    if not title:
+        raise HTTPException(status_code=422, detail='title is required')
+
+    cleaned_title, _warnings = validate_and_clean_topic_title(title)
+    next_index = (db.query(func.max(DocumentTopic.topic_index)).filter(DocumentTopic.document_id == int(doc_id)).scalar() or -1) + 1
+    topic = DocumentTopic(
+        document_id=int(doc_id),
+        topic_index=int(next_index),
+        title=(cleaned_title or title)[:255],
+        display_title=(cleaned_title or title)[:255],
+        summary=description,
+        keywords=[],
+        status='approved',
+        is_confirmed=True,
+        extraction_confidence=1.0,
+        needs_review=False,
+        metadata_json={'source': 'manual'},
+        reviewed_at=datetime.now(timezone.utc),
     )
+    db.add(topic)
+    db.commit()
+    db.refresh(topic)
+
+    return {
+        'request_id': request.state.request_id,
+        'data': {
+            'topic_id': int(topic.id),
+            'title': topic.title,
+            'status': topic.status,
+            'source': 'manual',
+            'message': 'Đã thêm topic thủ công',
+        },
+        'error': None,
+    }
 
 
 @router.post('/documents/{document_id}/topics/approve-all')

@@ -3910,4 +3910,74 @@ def ensure_topic_chunk_ranges_ready_for_quiz(
         out.append((s, e))
 
     return out
+
+
+def build_topic_preview_for_teacher(doc_id: int, db: "Session") -> Dict[str, Any]:
+    """Build a concise review payload so teachers can approve/reject extracted topics."""
+    from app.models.document import Document
+    from app.models.document_topic import DocumentTopic
+
+    doc = db.query(Document).filter(Document.id == int(doc_id)).first()
+    if not doc:
+        raise ValueError("Document not found")
+
+    topics = (
+        db.query(DocumentTopic)
+        .filter(DocumentTopic.document_id == int(doc_id))
+        .order_by(DocumentTopic.topic_index.asc(), DocumentTopic.id.asc())
+        .all()
+    )
+
+    topic_items: List[Dict[str, Any]] = []
+    for t in topics:
+        md = getattr(t, "metadata_json", {}) or {}
+        coverage = float(md.get("coverage_score") or 0.0)
+        confidence = str(md.get("confidence") or "").strip().lower()
+        if confidence not in {"high", "medium", "low"}:
+            if coverage >= 0.66:
+                confidence = "high"
+            elif coverage >= 0.33:
+                confidence = "medium"
+            else:
+                confidence = "low"
+
+        sample_excerpt = str(
+            md.get("sample_excerpt")
+            or md.get("sample_content")
+            or getattr(t, "summary", "")
+            or ""
+        ).strip()
+        sample_excerpt = re.sub(r"\s+", " ", sample_excerpt)[:300]
+
+        page_start = getattr(t, "page_start", None)
+        page_end = getattr(t, "page_end", None)
+        if page_start and page_end:
+            page_hint = f"Trang {int(page_start)}-{int(page_end)}"
+        elif page_start:
+            page_hint = f"Trang {int(page_start)}"
+        else:
+            page_hint = "Chưa xác định"
+
+        topic_items.append(
+            {
+                "topic_id": int(t.id),
+                "title": str(getattr(t, "teacher_edited_title", None) or t.title or ""),
+                "summary": str(getattr(t, "summary", "") or "").strip(),
+                "keywords": list(getattr(t, "keywords", []) or []),
+                "coverage_score": max(0.0, min(1.0, coverage)),
+                "confidence": confidence,
+                "sample_excerpt": sample_excerpt,
+                "page_hint": page_hint,
+                "status": str(getattr(t, "status", "pending_review") or "pending_review"),
+            }
+        )
+
+    unreviewed_count = sum(1 for item in topic_items if item.get("status") == "pending_review")
+    return {
+        "doc_id": int(doc.id),
+        "doc_title": str(doc.title or ""),
+        "topics": topic_items,
+        "total_topics": len(topic_items),
+        "unreviewed_count": int(unreviewed_count),
+    }
     
