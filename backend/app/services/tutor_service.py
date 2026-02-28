@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import json
+import re
+import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.models.agent_log import AgentLog
+from app.models.classroom import ClassroomMember
+from app.models.document_topic import DocumentTopic
 from app.schemas.tutor import TutorChatData, TutorGenerateQuestionsData
 from app.services.user_service import ensure_user_exists
 from app.services.corrective_rag import corrective_retrieve_and_log
@@ -15,6 +21,112 @@ from app.services.text_quality import filter_chunks_by_quality
 from app.services.llm_service import llm_available, chat_json, pack_chunks
 from app.services.quiz_service import clean_mcq_questions, _generate_mcq_from_chunks
 from app.services.topic_service import build_topic_details
+
+
+OFF_TOPIC_PATTERNS = [
+    r"thời tiết|nhiệt độ|dự báo",
+    r"ăn gì|nhà hàng|quán|món",
+    r"phim|nhạc|ca sĩ|diễn viên",
+    r"giá cổ phiếu|tỷ giá|bitcoin",
+    r"tình yêu|yêu đương|người yêu",
+    r"chính trị|bầu cử|tổng thống",
+]
+
+TUTOR_REFUSAL_MESSAGE = """
+Xin lỗi, mình chỉ có thể hỗ trợ các câu hỏi **liên quan đến tài liệu học tập**
+mà giáo viên đã upload.
+
+Câu hỏi của bạn có vẻ nằm ngoài phạm vi tài liệu hiện tại.
+
+👉 Bạn có thể:
+- Hỏi về **lý thuyết, khái niệm, bài tập** trong tài liệu đang học
+- Nêu rõ **chủ đề (topic) hoặc chương** bạn cần giải đáp
+- Nếu cần hỗ trợ khác, hãy liên hệ giáo viên trực tiếp
+""".strip()
+
+
+def is_clearly_off_topic(question: str) -> bool:
+    q_lower = (question or "").lower()
+    return any(re.search(p, q_lower) for p in OFF_TOPIC_PATTERNS)
+
+
+def _suggest_topics(db: Session, *, document_ids: Optional[List[int]], top_k: int = 3) -> List[str]:
+    ids = [int(x) for x in (document_ids or []) if x is not None]
+    if not ids:
+        return []
+    rows = (
+        db.query(DocumentTopic.display_title, DocumentTopic.title, func.max(DocumentTopic.extraction_confidence).label("conf"))
+        .filter(DocumentTopic.document_id.in_(ids))
+        .group_by(DocumentTopic.display_title, DocumentTopic.title)
+        .order_by(func.max(DocumentTopic.extraction_confidence).desc())
+        .limit(int(max(1, top_k)))
+        .all()
+    )
+    out: List[str] = []
+    for display_title, title, _ in rows:
+        val = str(display_title or title or "").strip()
+        if val and val not in out:
+            out.append(val)
+    return out[:top_k]
+
+
+def _log_tutor_flagged_question(
+    db: Session,
+    *,
+    user_id: int,
+    question: str,
+    topic: Optional[str],
+    reason: str,
+    suggested_topics: Optional[List[str]] = None,
+):
+    row = AgentLog(
+        event_id=uuid.uuid4().hex,
+        event_type="tutor_off_topic",
+        agent_name="ai_tutor",
+        user_id=int(user_id),
+        input_payload={"question": question, "topic": topic},
+        output_summary={
+            "was_answered": False,
+            "off_topic_reason": reason,
+            "suggested_topics": suggested_topics or [],
+        },
+        status="success",
+    )
+    db.add(row)
+    db.commit()
+
+
+def get_classroom_tutor_logs(db: Session, *, classroom_id: int, flagged: bool = False) -> List[Dict[str, Any]]:
+    student_ids = [
+        int(uid)
+        for (uid,) in db.query(ClassroomMember.user_id)
+        .filter(ClassroomMember.classroom_id == int(classroom_id))
+        .all()
+    ]
+    if not student_ids:
+        return []
+
+    q = db.query(AgentLog).filter(AgentLog.agent_name == "ai_tutor", AgentLog.user_id.in_(student_ids))
+    if flagged:
+        q = q.filter(AgentLog.event_type == "tutor_off_topic")
+    rows = q.order_by(AgentLog.created_at.desc()).limit(200).all()
+
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        out.append(
+            {
+                "id": int(row.id),
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "user_id": int(row.user_id) if row.user_id is not None else None,
+                "question": (row.input_payload or {}).get("question"),
+                "topic": (row.input_payload or {}).get("topic"),
+                "event_type": row.event_type,
+                "was_answered": (row.output_summary or {}).get("was_answered"),
+                "off_topic_reason": (row.output_summary or {}).get("off_topic_reason"),
+                "suggested_topics": (row.output_summary or {}).get("suggested_topics") or [],
+            }
+        )
+    return out
 
 
 def _src_preview(text: str, n: int = 180) -> str:
@@ -65,6 +177,28 @@ def tutor_chat(
         auto = auto_document_ids_for_query(db, topic or q, preferred_user_id=settings.DEFAULT_TEACHER_ID, max_docs=3)
         if auto:
             doc_ids = auto
+    suggested_topics = _suggest_topics(db, document_ids=doc_ids, top_k=3)
+
+    # PRE-CHECK: explicit personal-life off-topic patterns.
+    if is_clearly_off_topic(q):
+        _log_tutor_flagged_question(
+            db,
+            user_id=int(user_id),
+            question=q,
+            topic=topic,
+            reason="clearly_off_topic_pattern",
+            suggested_topics=suggested_topics,
+        )
+        return TutorChatData(
+            answer_md=TUTOR_REFUSAL_MESSAGE,
+            was_answered=False,
+            off_topic_reason="clearly_off_topic_pattern",
+            suggested_topics=suggested_topics,
+            follow_up_questions=[],
+            quick_check_mcq=[],
+            sources=[],
+            retrieval={"note": "PRECHECK_OFF_TOPIC_PATTERN"},
+        ).model_dump()
 
     filters = {"document_ids": doc_ids} if doc_ids else {}
     query = f"{topic.strip()}: {q}" if topic and topic.strip() else q
@@ -77,7 +211,7 @@ def tutor_chat(
         topic=topic,
     )
 
-    # If retrieval is clearly irrelevant, politely refuse (user requirement: tutor should not answer off-topic).
+    # POST-CHECK: guardrail when retrieval is empty/low relevance.
     corr = rag.get("corrective") or {}
     attempts = corr.get("attempts") or []
     last_try = attempts[-1] if isinstance(attempts, list) and attempts else {}
@@ -87,29 +221,28 @@ def tutor_chat(
         best_rel = 0.0
 
     chunks = rag.get("chunks") or []
-    # Heuristic: if even the best chunk barely matches the query, we treat it as out-of-scope.
-    # (CRAG grading is lexical so we keep the threshold permissive.)
-    try:
-        import re
-
-        q_words = len(re.findall(r"[\wÀ-ỹ]+", query or ""))
-    except Exception:
-        q_words = 0
-    if chunks and q_words >= 2 and best_rel < float(settings.CRAG_MIN_RELEVANCE) * 0.55:
-        scope = _topic_scope(topic)
-        redirect_hint = _build_redirect_hint(topic)
-        answer = (
-            f"Xin lỗi, câu hỏi này nằm ngoài nội dung môn học hiện tại ({scope}).\n"
-            "Tôi chỉ có thể hỗ trợ các câu hỏi liên quan đến tài liệu học tập.\n"
-            f"Bạn có thể hỏi về: {redirect_hint}"
+    relevance_threshold = float(settings.CRAG_MIN_RELEVANCE) * 0.55
+    has_low_relevance = bool(chunks) and best_rel < relevance_threshold
+    if (not chunks) or has_low_relevance:
+        reason = "no_retrieved_chunks" if not chunks else f"low_relevance:{best_rel:.3f}"
+        _log_tutor_flagged_question(
+            db,
+            user_id=int(user_id),
+            question=q,
+            topic=topic,
+            reason=reason,
+            suggested_topics=suggested_topics,
         )
-        return {
-            "answer": answer,
-            "off_topic": True,
-            "redirect_hint": redirect_hint,
-            "topic_scope": scope,
-            "sources": [],
-        }
+        return TutorChatData(
+            answer_md=TUTOR_REFUSAL_MESSAGE,
+            was_answered=False,
+            off_topic_reason=reason,
+            suggested_topics=suggested_topics,
+            follow_up_questions=[],
+            quick_check_mcq=[],
+            sources=[],
+            retrieval={**corr, "note": "POSTCHECK_OFF_TOPIC"},
+        ).model_dump()
     good, bad = filter_chunks_by_quality(chunks, min_score=float(settings.OCR_MIN_QUALITY_SCORE))
     bad_ratio = float(len(bad)) / float(max(1, len(chunks)))
     if (not good) or (bad_ratio >= float(settings.OCR_BAD_CHUNK_RATIO) and len(good) < 2):
@@ -125,6 +258,9 @@ def tutor_chat(
 
         return TutorChatData(
             answer_md=msg,
+            was_answered=False,
+            off_topic_reason="ocr_quality_too_low",
+            suggested_topics=suggested_topics,
             follow_up_questions=[
                 "Bạn đang hỏi trong chương/mục nào của tài liệu?",
                 "Bạn có thể dán đoạn văn liên quan (10–30 dòng) không?",
@@ -222,6 +358,9 @@ def tutor_chat(
 
                 data = TutorChatData(
                     answer_md=answer_md,
+                    was_answered=True,
+                    off_topic_reason=None,
+                    suggested_topics=suggested_topics,
                     follow_up_questions=fu[:3],
                     quick_check_mcq=mcq[:2],
                     sources=sources,
@@ -254,6 +393,9 @@ def tutor_chat(
 
     data = TutorChatData(
         answer_md=answer_md,
+        was_answered=bool(bullets),
+        off_topic_reason=None if bullets else "insufficient_context",
+        suggested_topics=suggested_topics,
         follow_up_questions=[],
         quick_check_mcq=quick_mcq,
         sources=sources,

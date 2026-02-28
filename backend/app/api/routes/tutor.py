@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 
+from app.api.deps import require_teacher
 from app.db.session import get_db
+from app.models.classroom import Classroom
+from app.models.user import User
 from app.schemas.tutor import TutorChatRequest, TutorGenerateQuestionsRequest
-from app.services.tutor_service import tutor_chat, tutor_generate_questions
+from app.services.tutor_service import get_classroom_tutor_logs, tutor_chat, tutor_generate_questions
 
 router = APIRouter(tags=["tutor"])
 
@@ -62,4 +65,18 @@ def generate_questions(request: Request, payload: TutorGenerateQuestionsRequest,
     )
     return {"request_id": request.state.request_id, "data": safe, "error": None}
 
+@router.get("/teacher/tutor-logs/{classroom_id}")
+def teacher_tutor_logs(
+    request: Request,
+    classroom_id: int,
+    flagged: bool = Query(default=False),
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    row = db.query(Classroom).filter(Classroom.id == int(classroom_id)).first()
+    if not row or int(row.teacher_id) != int(teacher.id):
+        raise HTTPException(status_code=404, detail="Classroom not found")
+
+    data = get_classroom_tutor_logs(db, classroom_id=int(classroom_id), flagged=bool(flagged))
+    return {"request_id": request.state.request_id, "data": data, "error": None}
 

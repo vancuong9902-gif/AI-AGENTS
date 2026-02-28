@@ -26,6 +26,9 @@ class TutorSource(BaseModel):
 
 class TutorChatData(BaseModel):
     answer_md: str
+    was_answered: bool = True
+    off_topic_reason: Optional[str] = None
+    suggested_topics: List[str] = Field(default_factory=list)
     follow_up_questions: List[str] = Field(default_factory=list)
     quick_check_mcq: List[Dict[str, Any]] = Field(default_factory=list)
     sources: List[TutorSource] = Field(default_factory=list)
