@@ -299,6 +299,8 @@ def list_document_topics(request: Request, document_id: int, db: Session = Depen
             "keywords": t.keywords or [],
             "start_chunk_index": t.start_chunk_index,
             "end_chunk_index": t.end_chunk_index,
+            "has_original_exercises": bool((t.metadata_json or {}).get("has_original_exercises")),
+            "original_exercise_count": len((t.metadata_json or {}).get("original_exercises") or []),
         }
 
         st_tight = topic_range_stats(
@@ -458,6 +460,10 @@ def regenerate_document_topics(
                 end_chunk_index=e_idx,
                 page_start=page_start,
                 page_end=page_end,
+                metadata_json={
+                    "original_exercises": (t.get("original_exercises") or []),
+                    "has_original_exercises": bool(t.get("has_original_exercises")),
+                },
             )
             topic_models.append(tm)
 
@@ -500,6 +506,8 @@ def regenerate_document_topics(
                         'page_range': [tm.page_start, tm.page_end],
                         'summary': tm.summary,
                         'keywords': tm.keywords or [],
+                        'has_original_exercises': bool((tm.metadata_json or {}).get('has_original_exercises')),
+                        'original_exercise_count': len((tm.metadata_json or {}).get('original_exercises') or []),
                         'start_chunk_index': tm.start_chunk_index,
                         'end_chunk_index': tm.end_chunk_index,
                         'chunk_span': stats_tight.get('chunk_span', 0),
@@ -566,6 +574,8 @@ def get_document_topic_detail(
         "keywords": t.keywords or [],
         "start_chunk_index": t.start_chunk_index,
         "end_chunk_index": t.end_chunk_index,
+        "has_original_exercises": bool((t.metadata_json or {}).get("has_original_exercises")),
+        "original_exercise_count": len((t.metadata_json or {}).get("original_exercises") or []),
     }
 
     body = ''
@@ -954,6 +964,10 @@ async def upload_document(
                     end_chunk_index=e_idx,
                     page_start=page_start,
                     page_end=page_end,
+                    metadata_json={
+                        "original_exercises": (t.get("original_exercises") or []),
+                        "has_original_exercises": bool(t.get("has_original_exercises")),
+                    },
                 )
                 topic_models.append(tm)
 
@@ -1005,6 +1019,8 @@ async def upload_document(
                             "page_range": [tm.page_start, tm.page_end],
                             "summary": tm.summary,
                             "keywords": tm.keywords or [],
+                            "has_original_exercises": bool((tm.metadata_json or {}).get("has_original_exercises")),
+                            "original_exercise_count": len((tm.metadata_json or {}).get("original_exercises") or []),
                             "start_chunk_index": tm.start_chunk_index,
                             "end_chunk_index": tm.end_chunk_index,
                             # richer topic profile (computed during extraction)
