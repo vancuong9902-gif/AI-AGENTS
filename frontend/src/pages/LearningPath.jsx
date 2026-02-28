@@ -524,7 +524,7 @@ export default function LearningPath() {
                         </div>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-start" }}>
                           <button onClick={() => nav(`/topics/${task?.topic_id || ""}`)} disabled={!task?.topic_id}>📚 Học bài</button>
-                          <button onClick={() => nav(`/practice/${task?.topic_id || ""}`)} disabled={!task?.topic_id}>✏️ Làm bài tập</button>
+                          <button onClick={() => nav(`/practice/${task?.topic_id || ""}`)} disabled={!task?.topic_id}>📝 Làm bài tập</button>
                           <button onClick={() => { setSelectedDay(dayIndex); toggleTask(dayIndex, taskIndex, true); }}>✅ Đánh dấu hoàn thành</button>
                         </div>
                       </div>
