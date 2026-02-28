@@ -45,6 +45,7 @@
 .badge.success { background: color-mix(in srgb, var(--success) 16%, transparent); color: var(--success); }
 .badge.warning { background: color-mix(in srgb, var(--warning) 16%, transparent); color: var(--warning); }
 .badge.info { background: var(--primary-soft); color: var(--primary); }
+.badge.danger { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
 
 .banner { border-radius: var(--radius-md); padding: 10px 12px; border: 1px solid var(--border); }
 .banner.info { background: var(--primary-soft); color: var(--text); }

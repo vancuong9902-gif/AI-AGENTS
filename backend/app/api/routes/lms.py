@@ -11,6 +11,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -49,16 +50,25 @@ from app.services.lms_service import (
     persist_multidim_profile,
     generate_student_evaluation_report,
     per_student_bloom_analysis,
+    get_student_progress_comparison,
     get_student_homework_results,
     resolve_student_name,
     score_breakdown,
     assign_topic_materials,
     assign_learning_path,
     teacher_report as build_teacher_report,
+    generate_full_teacher_report,
 )
 
 
 router = APIRouter(tags=["lms"])
+_report_cache: dict[int, dict] = {}
+_report_cache_time: dict[int, float] = {}
+
+_templates = Environment(
+    loader=FileSystemLoader(str(Path(__file__).resolve().parents[2] / "templates")),
+    autoescape=select_autoescape(["html", "xml"]),
+)
 
 _FINAL_EXAM_JOBS: dict[str, dict] = {}
 
@@ -616,7 +626,7 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
                     "quiz_set_id": int(quiz_id),
                     "score": int(base.get("total_score_percent") or base.get("score_percent") or 0),
                     "breakdown": base.get("breakdown") or [],
-                    "student_level": classify_student_level(int(base.get("total_score_percent") or base.get("score_percent") or 0)),
+                    "student_level": classify_student_level(int(base.get("total_score_percent") or base.get("score_percent") or 0))["level_key"],
                     "document_ids": [int(quiz.source_query_id)] if getattr(quiz, "source_query_id", None) else [],
                 },
                 trace_id=getattr(request.state, "request_id", None),
@@ -727,7 +737,7 @@ def assign_path_by_quiz(
     result = assign_learning_path(
         db,
         user_id=int(payload.user_id),
-        student_level=level,
+        student_level=str(level["level_key"]),
         document_ids=doc_ids,
         classroom_id=int(payload.classroom_id or 0),
     )
@@ -799,6 +809,12 @@ def student_recommendations(request: Request, student_id: int, db: Session = Dep
         for r in recs
     ]
     return {"request_id": request.state.request_id, "data": {"student_id": student_id, "recommendations": recs, "assignments": assignments}, "error": None}
+
+
+@router.get("/students/{user_id}/progress")
+def student_progress_comparison(request: Request, user_id: int, classroomId: int = Query(..., ge=1), db: Session = Depends(get_db)):
+    data = get_student_progress_comparison(user_id=int(user_id), classroom_id=int(classroomId), db=db)
+    return {"request_id": request.state.request_id, "data": data, "error": None}
 
 
 
@@ -902,7 +918,7 @@ def lms_submit_attempt(request: Request, assessment_id: int, payload: SubmitAtte
             path_result = assign_learning_path(
                 db,
                 user_id=int(payload.user_id),
-                student_level=level,
+                student_level=str(level["level_key"]),
                 document_ids=[int(x) for x in doc_ids],
             )
             base["assigned_learning_path"] = path_result
@@ -919,7 +935,7 @@ def lms_submit_attempt(request: Request, assessment_id: int, payload: SubmitAtte
                 db,
                 student_id=int(payload.user_id),
                 classroom_id=int(getattr(q, "classroom_id", 0) or 0),
-                student_level=level,
+                student_level=str(level["level_key"]),
                 weak_topics=breakdown.get("weak_topics") or [],
                 document_id=int(doc_ids[0]),
             )
@@ -975,7 +991,13 @@ def get_multidim_profile(request: Request, user_id: int, db: Session = Depends(g
 
 @router.get("/lms/teacher/report/{classroom_id}")
 def teacher_report(request: Request, classroom_id: int, db: Session = Depends(get_db)):
-    report = build_teacher_report(db=db, classroom_id=int(classroom_id))
+    classroom_id = int(classroom_id)
+    if classroom_id in _report_cache and time.time() - _report_cache_time.get(classroom_id, 0) < 1800:
+        report = _report_cache[classroom_id]
+    else:
+        report = generate_full_teacher_report(classroom_id=classroom_id, db=db)
+        _report_cache[classroom_id] = report
+        _report_cache_time[classroom_id] = time.time()
     return {
         "request_id": request.state.request_id,
         "data": report,
@@ -1049,43 +1071,31 @@ def _render_teacher_report_html(report: dict[str, object]) -> str:
 def export_teacher_report(
     request: Request,
     classroom_id: int,
-    format: str = Query("pdf"),
+    format: str = Query("html"),
     db: Session = Depends(get_db),
 ):
-    export_format = str(format or "pdf").strip().lower()
-    report = build_teacher_report(db=db, classroom_id=int(classroom_id))
+    export_format = str(format or "html").strip().lower()
+    classroom_id = int(classroom_id)
+    if classroom_id in _report_cache and time.time() - _report_cache_time.get(classroom_id, 0) < 1800:
+        report = _report_cache[classroom_id]
+    else:
+        report = generate_full_teacher_report(classroom_id=classroom_id, db=db)
+        _report_cache[classroom_id] = report
+        _report_cache_time[classroom_id] = time.time()
 
     if export_format == "html":
-        return HTMLResponse(content=_render_teacher_report_html(report), media_type="text/html; charset=utf-8")
+        template = _templates.get_template("teacher_report.html")
+        rendered = template.render(report=report, generated_date=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"))
+        return HTMLResponse(content=rendered, media_type="text/html; charset=utf-8")
 
-    if export_format != "pdf":
-        raise HTTPException(status_code=400, detail="Only html and pdf formats are supported")
-
-    student_count = (
-        db.query(ClassroomMember)
-        .filter(ClassroomMember.classroom_id == int(classroom_id))
-        .count()
-    )
-    if student_count > 30:
-        job = enqueue(task_export_teacher_report_pdf, int(classroom_id), queue_name="default")
+    if export_format == "json":
         return {
             "request_id": request.state.request_id,
-            "data": {
-                "queued": True,
-                "job_id": job.get("job_id"),
-                "note": "Lớp đông hơn 30 học sinh, báo cáo được tạo ở background task.",
-            },
+            "data": report,
             "error": None,
         }
 
-    html = _render_teacher_report_html(report)
-    with tempfile.NamedTemporaryFile(prefix=f"classroom_{classroom_id}_", suffix=".html", delete=False, mode="w", encoding="utf-8") as f:
-        f.write(html)
-        html_path = f.name
-
-    pdf_path = build_classroom_report_pdf(classroom_id=int(classroom_id), db=db)
-    Path(html_path).unlink(missing_ok=True)
-    return FileResponse(pdf_path, media_type="application/pdf", filename=f"classroom_{classroom_id}_report.pdf")
+    raise HTTPException(status_code=400, detail="Only html and json formats are supported")
 
 
 @router.get("/lms/classroom/{classroom_id}/final-report")

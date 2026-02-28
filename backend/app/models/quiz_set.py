@@ -27,4 +27,7 @@ class QuizSet(Base):
     excluded_from_quiz_ids: Mapped[list[int]] = mapped_column(JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb"))
     generation_seed: Mapped[str | None] = mapped_column(String(128), nullable=True)
     is_final_exam: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    time_limit_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -44,6 +44,8 @@ export default function TeacherAssessments() {
   const [selectedTopics, setSelectedTopics] = useState([]);
   const [examConfig, setExamConfig] = useState({ examType: DEFAULT_EXAM_TYPE.value, ...DEFAULT_EXAM_TYPE.defaults });
   const [generatedQuiz, setGeneratedQuiz] = useState(null);
+  const [diagnosticConfig, setDiagnosticConfig] = useState({ easy: 5, medium: 5, hard: 5 });
+  const [diagnosticCreated, setDiagnosticCreated] = useState(null);
 
   const [creating, setCreating] = useState(false);
   const [assigning, setAssigning] = useState(false);
@@ -74,6 +76,7 @@ export default function TeacherAssessments() {
           docId,
           docTitle,
           name,
+          rawId: Number(topic?.id || topic?.topic_id || topic?.topicId || 0) || null,
           chunkCount: getTopicChunks(topic),
           preview: getTopicPreview(topic),
         };
@@ -241,6 +244,40 @@ export default function TeacherAssessments() {
     }
   };
 
+  const createDiagnostic = async () => {
+    if (!classroomId) {
+      setError("Bạn cần chọn classroom.");
+      return;
+    }
+    const topicIds = allTopics
+      .filter((t) => selectedTopicSet.has(t.name))
+      .map((t) => Number(t.rawId || t.topicId || 0))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    if (!topicIds.length) {
+      setError("Vui lòng chọn topic hợp lệ để tạo bài đầu vào.");
+      return;
+    }
+
+    setCreating(true);
+    setError("");
+    try {
+      const data = await apiJson("/assessments/generate-diagnostic", {
+        method: "POST",
+        body: {
+          classroom_id: Number(classroomId),
+          topic_ids: topicIds,
+          difficulty_config: diagnosticConfig,
+        },
+      });
+      setDiagnosticCreated(data);
+      await loadList(classroomId);
+    } catch (e) {
+      setError(e?.message || "Tạo bài kiểm tra đầu vào thất bại");
+    } finally {
+      setCreating(false);
+    }
+  };
+
   const selectedTopicSet = new Set(selectedTopics);
   const questions = extractQuestions(generatedQuiz);
   const grouped = {
@@ -252,6 +289,37 @@ export default function TeacherAssessments() {
   return (
     <div style={{ maxWidth: 980, margin: "0 auto", padding: 16 }}>
       <h2>👩‍🏫 Quản lý bài kiểm tra theo topic</h2>
+
+      <div style={{ marginTop: 12, background: "#fff", padding: 12, borderRadius: 12, border: "1px solid #e6f4ff" }}>
+        <div style={{ fontWeight: 900, marginBottom: 10 }}>Tạo Bài Kiểm Tra Đầu Vào</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 10 }}>
+          {["easy", "medium", "hard"].map((k) => (
+            <label key={k} style={{ fontSize: 13 }}>
+              {k.toUpperCase()}: <b>{diagnosticConfig[k]}</b>
+              <input
+                type="range"
+                min={1}
+                max={10}
+                value={diagnosticConfig[k]}
+                onChange={(e) => setDiagnosticConfig((prev) => ({ ...prev, [k]: Number(e.target.value) || 1 }))}
+                style={{ width: "100%" }}
+              />
+            </label>
+          ))}
+        </div>
+        <div style={{ marginTop: 8, color: "#555" }}>
+          Tổng: <b>{diagnosticConfig.easy + diagnosticConfig.medium + diagnosticConfig.hard} câu</b> | Thời gian ước tính: <b>{(diagnosticConfig.easy + diagnosticConfig.medium + diagnosticConfig.hard) * 2} phút</b>
+        </div>
+        <div style={{ marginTop: 10 }}>
+          <button onClick={createDiagnostic} disabled={creating} style={{ padding: "10px 14px" }}>Tạo bài kiểm tra</button>
+        </div>
+        {diagnosticCreated?.quiz_set_id ? (
+          <div style={{ marginTop: 10, padding: 10, border: "1px solid #b7eb8f", borderRadius: 10, background: "#f6ffed" }}>
+            {diagnosticCreated.message} — Link chia sẻ: <Link to={`/assessments/${diagnosticCreated.quiz_set_id}`}>/assessments/{diagnosticCreated.quiz_set_id}</Link>
+          </div>
+        ) : null}
+      </div>
+
 
       <div style={{ background: "#fff", padding: 12, borderRadius: 12, boxShadow: "0 2px 10px rgba(0,0,0,0.06)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>

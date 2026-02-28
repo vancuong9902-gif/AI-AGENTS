@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from collections import defaultdict
+
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -14,6 +17,7 @@ from app.models.quiz_set import QuizSet
 from app.models.user import User
 from app.infra.queue import enqueue
 from app.tasks.report_tasks import task_generate_class_final_report
+from app.services.llm_service import chat_text, llm_available
 from app.schemas.assessment import (
     AssessmentGenerateRequest,
     AssessmentSubmitRequest,
@@ -21,6 +25,7 @@ from app.schemas.assessment import (
 )
 from app.services.assessment_service import (
     generate_assessment,
+    generate_diagnostic_assessment,
     get_assessment,
     submit_assessment,
     start_assessment_session,
@@ -36,6 +41,143 @@ from app.services.assessment_service import (
 router = APIRouter(tags=["assessments"])
 teacher_router = APIRouter(tags=["teacher"])
 
+_RECOMMENDATION_CACHE: dict[tuple[str, str, str], str] = {}
+
+
+def _classify_percentage(percentage: float) -> tuple[str, str]:
+    pct = float(percentage or 0)
+    if pct >= 85:
+        return "gioi", "Giỏi"
+    if pct >= 70:
+        return "kha", "Khá"
+    if pct >= 50:
+        return "trung_binh", "Trung Bình"
+    return "yeu", "Yếu"
+
+
+def _difficulty_breakdown(answer_review: list[dict]) -> dict:
+    buckets = {
+        "easy": {"correct": 0, "total": 0, "percentage": 0.0},
+        "medium": {"correct": 0, "total": 0, "percentage": 0.0},
+        "hard": {"correct": 0, "total": 0, "percentage": 0.0},
+    }
+    for item in answer_review:
+        key = str(item.get("difficulty") or "medium").lower()
+        if key not in buckets:
+            key = "medium"
+        buckets[key]["total"] += 1
+        if item.get("is_correct"):
+            buckets[key]["correct"] += 1
+
+    for key in buckets:
+        total = int(buckets[key]["total"])
+        correct = int(buckets[key]["correct"])
+        buckets[key]["percentage"] = round((correct / max(1, total)) * 100, 1)
+    return buckets
+
+
+def _topic_breakdown(answer_review: list[dict]) -> list[dict]:
+    topic_stats: dict[str, dict[str, int]] = defaultdict(lambda: {"correct": 0, "total": 0})
+    for item in answer_review:
+        topic = str(item.get("topic") or "Chưa phân loại").strip() or "Chưa phân loại"
+        topic_stats[topic]["total"] += 1
+        if item.get("is_correct"):
+            topic_stats[topic]["correct"] += 1
+
+    rows = []
+    for topic, stats in topic_stats.items():
+        total = int(stats["total"])
+        correct = int(stats["correct"])
+        percentage = round((correct / max(1, total)) * 100, 1)
+        rows.append(
+            {
+                "topic": topic,
+                "correct": correct,
+                "total": total,
+                "percentage": percentage,
+                "weak": bool(percentage < 50),
+            }
+        )
+    rows.sort(key=lambda x: x["percentage"])
+    return rows
+
+
+def _recommendation_text(*, percentage: float, classification_label: str, topics: list[dict]) -> str:
+    weak_topics = [t["topic"] for t in topics if float(t.get("percentage") or 0) < 50]
+    strong_topics = [t["topic"] for t in topics if float(t.get("percentage") or 0) >= 80]
+
+    weak_text = ", ".join(weak_topics[:4]) or "các nền tảng còn yếu"
+    strong_text = ", ".join(strong_topics[:4]) or "một số chủ đề cốt lõi"
+    cache_key = (classification_label.lower(), weak_text, strong_text)
+
+    if not llm_available():
+        if cache_key not in _RECOMMENDATION_CACHE:
+            _RECOMMENDATION_CACHE[cache_key] = f"Tiếp tục ôn luyện {weak_text}. Bạn làm tốt ở {strong_text}."
+        return _RECOMMENDATION_CACHE[cache_key]
+
+    prompt = (
+        f"Học sinh đạt {round(float(percentage or 0), 1)}% ({classification_label}).\n"
+        f"Điểm yếu: {weak_text}. Điểm mạnh: {strong_text}.\n"
+        "Viết 2-3 câu khuyến nghị học tập bằng tiếng Việt, ngắn gọn, cụ thể.\n"
+        "Không dùng từ 'bạn' quá nhiều. Tập trung vào action items."
+    )
+    try:
+        output = chat_text(
+            messages=[
+                {"role": "system", "content": "Bạn là trợ lý học tập tiếng Việt, trả lời ngắn gọn và thực tế."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=180,
+            timeout_sec=1.2,
+        )
+        cleaned = str(output or "").strip()
+        if cleaned:
+            return cleaned
+    except Exception:
+        pass
+
+    if cache_key not in _RECOMMENDATION_CACHE:
+        _RECOMMENDATION_CACHE[cache_key] = f"Tiếp tục ôn luyện {weak_text}. Bạn làm tốt ở {strong_text}."
+    return _RECOMMENDATION_CACHE[cache_key]
+
+
+def _build_detailed_result(raw: dict) -> dict:
+    answer_review = list(raw.get("answer_review") or [])
+    percentage = round(float(raw.get("total_score_percent") or raw.get("score_percent") or 0), 1)
+    classification, classification_label = _classify_percentage(percentage)
+    by_difficulty = _difficulty_breakdown(answer_review)
+    by_topic = _topic_breakdown(answer_review)
+
+    detailed = {
+        "score": int(round(percentage)),
+        "max_score": 100,
+        "percentage": percentage,
+        "classification": classification,
+        "classification_label": classification_label,
+        "time_taken_seconds": int(raw.get("duration_sec") or 0),
+        "breakdown_by_difficulty": by_difficulty,
+        "breakdown_by_topic": by_topic,
+        "ai_recommendation": _recommendation_text(
+            percentage=percentage,
+            classification_label=classification_label,
+            topics=by_topic,
+        ),
+    }
+
+    assessment_kind = str(raw.get("assessment_kind") or "").lower()
+    if assessment_kind == "final_exam":
+        detailed["improvement_vs_diagnostic"] = raw.get("improvement_vs_entry")
+
+    return {**raw, **detailed}
+
+
+
+
+class DiagnosticGenerateRequest(BaseModel):
+    classroom_id: int
+    topic_ids: list[int] = Field(default_factory=list)
+    difficulty_config: dict[str, int] | None = None
 
 def _check_and_trigger_class_report(db: Session, *, assessment_id: int, user_id: int) -> None:
     _ = user_id
@@ -125,6 +267,32 @@ def assessments_generate(
             document_ids=payload.document_ids,
             topics=payload.topics,
             kind=payload.kind,
+        )
+        return {"request_id": request.state.request_id, "data": data, "error": None}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+
+
+@router.post("/assessments/generate-diagnostic")
+def assessments_generate_diagnostic(
+    request: Request,
+    payload: DiagnosticGenerateRequest,
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    c = db.query(Classroom).filter(Classroom.id == int(payload.classroom_id)).first()
+    if not c or int(c.teacher_id) != int(teacher.id):
+        raise HTTPException(status_code=404, detail="Classroom not found")
+
+    try:
+        data = generate_diagnostic_assessment(
+            db,
+            teacher_id=int(teacher.id),
+            classroom_id=int(payload.classroom_id),
+            topic_ids=[int(t) for t in (payload.topic_ids or [])],
+            difficulty_config=payload.difficulty_config or {"easy": 5, "medium": 5, "hard": 5},
         )
         return {"request_id": request.state.request_id, "data": data, "error": None}
     except ValueError as e:
@@ -223,13 +391,62 @@ def assessments_submit(
             assessment_id=assessment_id,
             user_id=int(user.id),
             answers=[a.model_dump() for a in (payload.answers or [])],
+            duration_sec=payload.duration_sec,
         )
+        data = _build_detailed_result(data)
         _check_and_trigger_class_report(db, assessment_id=assessment_id, user_id=int(user.id))
         return {"request_id": request.state.request_id, "data": data, "error": None}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/assessments/quiz-sets/{quiz_set_id}/start")
+def quiz_set_start(
+    request: Request,
+    quiz_set_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    if (getattr(user, "role", "student") or "student") == "student":
+        if not _student_can_access_assessment(db, student_id=int(user.id), assessment_id=int(quiz_set_id)):
+            raise HTTPException(status_code=404, detail="Assessment not found")
+
+    try:
+        data = start_assessment_session(db, assessment_id=int(quiz_set_id), user_id=int(user.id))
+        return {"request_id": request.state.request_id, "data": data, "error": None}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/assessments/quiz-sets/{quiz_set_id}/submit")
+def quiz_set_submit(
+
+@router.post("/assessments/quiz-sets/{quiz_set_id}/submit")
+def assessments_submit_quiz_set(
+    request: Request,
+    quiz_set_id: int,
+    payload: AssessmentSubmitRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    if (getattr(user, "role", "student") or "student") == "student":
+        if not _student_can_access_assessment(db, student_id=int(user.id), assessment_id=int(quiz_set_id)):
+            raise HTTPException(status_code=404, detail="Assessment not found")
+
+    try:
+        data = submit_assessment(
+            db,
+            assessment_id=int(quiz_set_id),
+            user_id=int(user.id),
+            answers=[a.model_dump() for a in (payload.answers or [])],
+            duration_sec=payload.duration_sec,
+        )
+        _check_and_trigger_class_report(db, assessment_id=int(quiz_set_id), user_id=int(user.id))
+        return {"request_id": request.state.request_id, "data": data, "error": None}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return assessments_submit(request=request, assessment_id=quiz_set_id, payload=payload, db=db, user=user)
 # -----------------------
 # Teacher endpoints
 # -----------------------

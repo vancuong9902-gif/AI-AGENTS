@@ -38,7 +38,7 @@ def test_score_breakdown_and_classification_and_recommendation():
     assert "medium" in scored["by_difficulty"] or "hard" in scored["by_difficulty"]
 
     level = classify_student_level(int(scored["overall"]["percent"]))
-    assert level == "yeu"
+    assert level["level_key"] == "yeu"
 
     recs = build_recommendations(breakdown=scored, document_topics=["hàm", "vòng lặp"])
     assert recs

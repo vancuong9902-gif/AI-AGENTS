@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { apiJson } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import { DonutGauge, MetricCard, ProgressBar, Sparkline, pct } from "../components/AnalyticsWidgets";
-
+import StudentLevelBadge from "../components/StudentLevelBadge";
+import ProgressComparison from "../components/ProgressComparison";
 function num(v, d = 0) {
   const n = Number(v);
   if (!Number.isFinite(n)) return null;
@@ -30,6 +31,8 @@ export default function StudentAnalyticsDashboard() {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [levelDetails, setLevelDetails] = useState(null);
+  const [comparison, setComparison] = useState(null);
 
   const loadDocs = async () => {
     try {
@@ -57,11 +60,20 @@ export default function StudentAnalyticsDashboard() {
       const h = await apiJson(histUrl);
       setHistory(Array.isArray(h?.points) ? h.points : []);
 
+      const cid = Number(localStorage.getItem("active_classroom_id"));
+      if (Number.isFinite(cid) && cid > 0) {
+        const comp = await apiJson(`/v1/students/${Number(userId ?? 1)}/progress?classroomId=${cid}`);
+        setComparison(comp || null);
+      } else {
+        setComparison(null);
+      }
+
       if (did) localStorage.setItem("student_analytics_document_id", String(did));
     } catch (e) {
       setError(e?.message || "Không load được analytics");
       setDashboard(null);
       setHistory([]);
+      setComparison(null);
     } finally {
       setLoading(false);
     }
@@ -72,6 +84,11 @@ export default function StudentAnalyticsDashboard() {
     loadDocs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [role]);
+
+  useEffect(() => {
+    if (role !== "student") return;
+    apiJson(`/v1/students/${userId}/level`).then((d) => setLevelDetails(d || null)).catch(() => setLevelDetails(null));
+  }, [role, userId]);
 
   useEffect(() => {
     if (role !== "student") return;
@@ -115,6 +132,11 @@ export default function StudentAnalyticsDashboard() {
         <div>
           <h2 style={{ marginBottom: 4 }}>📊 My Learning Analytics</h2>
           <div style={{ color: "#666" }}>Theo dõi FinalScore + thành phần + rủi ro dropout (explainable).</div>
+          {levelDetails ? (
+            <div style={{ marginTop: 8, maxWidth: 360 }}>
+              <StudentLevelBadge level={levelDetails} size="md" />
+            </div>
+          ) : null}
         </div>
         <button onClick={() => load(documentId)} disabled={loading} style={{ padding: "8px 12px" }}>
           Refresh
@@ -144,6 +166,13 @@ export default function StudentAnalyticsDashboard() {
 
       {error ? <div style={{ marginTop: 12, background: "#fff3f3", border: "1px solid #ffd0d0", padding: 12, borderRadius: 12 }}>{error}</div> : null}
       {loading ? <div style={{ marginTop: 12, color: "#666" }}>Đang tải…</div> : null}
+
+      {!loading && comparison && (
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontWeight: 900, marginBottom: 8 }}>Tiến bộ tổng thể</div>
+          <ProgressComparison comparison={comparison} showTopics />
+        </div>
+      )}
 
       {!loading && a && (
         <>
