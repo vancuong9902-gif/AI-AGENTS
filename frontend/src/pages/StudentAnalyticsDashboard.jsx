@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { apiJson } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 import { DonutGauge, MetricCard, ProgressBar, Sparkline, pct } from "../components/AnalyticsWidgets";
+import ProgressComparison from "../components/ProgressComparison";
 
 function num(v, d = 0) {
   const n = Number(v);
@@ -30,6 +31,7 @@ export default function StudentAnalyticsDashboard() {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [comparison, setComparison] = useState(null);
 
   const loadDocs = async () => {
     try {
@@ -57,11 +59,20 @@ export default function StudentAnalyticsDashboard() {
       const h = await apiJson(histUrl);
       setHistory(Array.isArray(h?.points) ? h.points : []);
 
+      const cid = Number(localStorage.getItem("active_classroom_id"));
+      if (Number.isFinite(cid) && cid > 0) {
+        const comp = await apiJson(`/v1/students/${Number(userId ?? 1)}/progress?classroomId=${cid}`);
+        setComparison(comp || null);
+      } else {
+        setComparison(null);
+      }
+
       if (did) localStorage.setItem("student_analytics_document_id", String(did));
     } catch (e) {
       setError(e?.message || "Không load được analytics");
       setDashboard(null);
       setHistory([]);
+      setComparison(null);
     } finally {
       setLoading(false);
     }
@@ -144,6 +155,13 @@ export default function StudentAnalyticsDashboard() {
 
       {error ? <div style={{ marginTop: 12, background: "#fff3f3", border: "1px solid #ffd0d0", padding: 12, borderRadius: 12 }}>{error}</div> : null}
       {loading ? <div style={{ marginTop: 12, color: "#666" }}>Đang tải…</div> : null}
+
+      {!loading && comparison && (
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontWeight: 900, marginBottom: 8 }}>Tiến bộ tổng thể</div>
+          <ProgressComparison comparison={comparison} showTopics />
+        </div>
+      )}
 
       {!loading && a && (
         <>
