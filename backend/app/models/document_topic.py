@@ -38,6 +38,7 @@ class DocumentTopic(Base):
     teacher_edited_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     teacher_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false", index=True)
 
     start_chunk_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     end_chunk_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
