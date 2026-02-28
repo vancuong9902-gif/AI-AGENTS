@@ -60,7 +60,7 @@ export default function Upload() {
   return (
     <div style={{ maxWidth: 980, margin: '0 auto', display: 'grid', gap: 16 }}>
       <Card>
-        <h2 style={{ marginTop: 0, marginBottom: 8 }}>Upload tài liệu giáo viên</h2>
+        <h2 style={{ marginTop: 0, marginBottom: 8 }}>Tải lên tài liệu giáo viên</h2>
         <p style={{ marginTop: 0, opacity: 0.8 }}>
           Hỗ trợ định dạng <b>.pdf</b>, <b>.docx</b>, <b>.pptx</b>. Tags nhập theo dạng: <i>python, chương 1</i>.
         </p>
@@ -95,6 +95,7 @@ export default function Upload() {
                 setFile(e.target.files?.[0] || null);
                 setError('');
                 setResult(null);
+                setHint('');
               }}
             />
           </label>
@@ -107,6 +108,8 @@ export default function Upload() {
             {!file ? <Badge>Chưa chọn file</Badge> : <Badge tone="success">{file.name}</Badge>}
             {parsedTags.length ? <Badge tone="success">{parsedTags.length} tag</Badge> : null}
           </div>
+          {!file ? <p style={{ margin: 0, opacity: 0.8 }}>Hãy chọn tệp để bật nút “Tải lên”.</p> : null}
+          {uploading ? <p style={{ margin: 0, opacity: 0.8 }}>Đang tải lên và xử lý tài liệu, vui lòng chờ...</p> : null}
         </form>
 
         {hint ? <p style={{ marginBottom: 0 }}>{hint}</p> : null}
@@ -115,10 +118,11 @@ export default function Upload() {
 
       {result ? (
         <Card>
-          <h3 style={{ marginTop: 0 }}>Kết quả upload</h3>
+          <h3 style={{ marginTop: 0 }}>Kết quả tải lên</h3>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
             <div><b>Document ID:</b> {result?.document_id ?? 'N/A'}</div>
             <div><b>Tên file:</b> {result?.filename || file?.name || 'N/A'}</div>
+            <div><b>Tags:</b> {(result?.tags || parsedTags).length ? (result?.tags || parsedTags).join(', ') : 'N/A'}</div>
             <div><b>Số trang:</b> {result?.pdf_report?.page_count ?? 'N/A'}</div>
             <div><b>Extractor:</b> {extractorName}</div>
           </div>
@@ -153,7 +157,7 @@ export default function Upload() {
           </div>
 
           <div style={{ marginTop: 14 }}>
-            <Link to="/teacher/files">Xem trong Thư viện tài liệu</Link>
+            <Link to="/teacher/files">Xem thư viện tài liệu</Link>
           </div>
         </Card>
       ) : null}
