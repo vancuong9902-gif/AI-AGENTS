@@ -228,9 +228,10 @@ def _extract_by_chapters(full_text: str) -> List[Dict[str, Any]]:
                 rest = (m.group(2) or "").strip()
                 n = int(idx_raw) if idx_raw.isdigit() else (_roman_to_int(idx_raw) or None)
                 if n is not None and isinstance(toc_map, dict) and toc_map.get(n):
-                    title = f"Chương {n}: {toc_map.get(n)}"[:255]
+                    title = f"Chương {n} - {toc_map.get(n)}"[:255]
                 elif rest:
-                    title = f"Chương {idx_raw}: {rest}"[:255]
+                    cleaned_rest = rest.lstrip(":").strip()
+                    title = f"Chương {idx_raw} - {cleaned_rest}"[:255]
         except Exception:
             title = raw_title
 
@@ -2888,9 +2889,22 @@ def extract_topics(
     NOTE: content_preview is bounded; full content can be reconstructed later from chunks by (start_chunk_index,end_chunk_index).
     """
 
-    from app.services.vietnamese_font_fix import fix_vietnamese_font_encoding
+    try:
+        from app.services.vietnamese_font_fix import (
+            detect_broken_vn_font,
+            fix_vietnamese_font_encoding,
+        )
+        if full_text and detect_broken_vn_font(full_text):
+            full_text = fix_vietnamese_font_encoding(full_text)
+        if chunks_texts:
+            chunks_texts = [
+                fix_vietnamese_font_encoding(c) if detect_broken_vn_font(c or "") else (c or "")
+                for c in chunks_texts
+            ]
+    except ImportError:
+        pass
 
-    full_text = fix_vietnamese_font_encoding(full_text or "")
+    full_text = full_text or ""
 
     # Repair common PDF/OCR spacing artifacts before any splitting/quality checks.
     try:
