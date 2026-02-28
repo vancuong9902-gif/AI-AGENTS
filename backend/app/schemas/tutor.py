@@ -13,6 +13,7 @@ class TutorChatRequest(BaseModel):
     # retrieval controls
     top_k: int = 6
     document_ids: Optional[List[int]] = None
+    allowed_topics: Optional[List[str]] = None
 
 
 class TutorSource(BaseModel):
@@ -55,6 +56,7 @@ class TutorGenerateQuestionsRequest(BaseModel):
     # retrieval controls
     top_k: int = 8
     document_ids: Optional[List[int]] = None
+    allowed_topics: Optional[List[str]] = None
 
 
 class TutorPracticeQuestion(BaseModel):

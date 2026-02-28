@@ -575,6 +575,7 @@ def tutor_chat(
     topic: Optional[str] = None,
     top_k: int = 6,
     document_ids: Optional[List[int]] = None,
+    allowed_topics: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Virtual AI Tutor (RAG). Answers using only retrieved evidence and suggests follow-ups."""
 
@@ -583,6 +584,43 @@ def tutor_chat(
     q = (question or "").strip()
     if not q:
         raise HTTPException(status_code=422, detail="Missing question")
+
+    if allowed_topics and llm_available():
+        topic_list = [str(t).strip() for t in allowed_topics if str(t).strip()][:10]
+        if topic_list:
+            topic_list_str = "\n".join(f"- {t}" for t in topic_list)
+            classification_prompt = (
+                f"Danh sách chủ đề học tập được phép:\n{topic_list_str}\n\n"
+                f"Câu hỏi của học sinh: \"{q}\"\n\n"
+                "Hãy trả lời CHỈ bằng JSON: {\"relevant\": true/false, \"matched_topic\": \"tên topic nếu có hoặc null\", \"reason\": \"lý do ngắn\"}\n"
+                "Câu hỏi được coi là relevant nếu nó liên quan đến BẤT KỲ topic nào trong danh sách trên, "
+                "hoặc là câu hỏi chung về cách học, phương pháp, hoặc xin giải thích khái niệm trong sách."
+            )
+            try:
+                check_result = chat_json(
+                    messages=[{"role": "user", "content": classification_prompt}],
+                    temperature=0.0,
+                    max_tokens=150,
+                )
+                is_relevant = bool((check_result or {}).get("relevant", True))
+                if not is_relevant:
+                    top = [str(t) for t in topic_list]
+                    return {
+                        "answer": (
+                            "Xin lỗi bạn! Câu hỏi này có vẻ nằm ngoài phạm vi các chủ đề đang học. "
+                            f"Hiện tại chúng ta đang tập trung vào: {', '.join(top[:3])}{'...' if len(top) > 3 else ''}. "
+                            "Bạn có muốn hỏi điều gì về các chủ đề đó không? 😊"
+                        ),
+                        "off_topic": True,
+                        "allowed_topics": top,
+                        "sources": [],
+                        "follow_up_questions": [
+                            f"Bạn có thể giải thích về {top[0]}?",
+                            f"Cho tôi ví dụ về {top[0]}?",
+                        ] if top else [],
+                    }
+            except Exception:
+                pass
 
     session = _load_tutor_session(int(user_id))
     recent_questions = [str(x).strip() for x in (session.get("recent_questions") or []) if str(x).strip()]

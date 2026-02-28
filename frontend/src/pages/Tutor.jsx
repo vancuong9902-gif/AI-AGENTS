@@ -11,6 +11,7 @@ export default function Tutor() {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [learningPlan, setLearningPlan] = useState(null);
   const questionInputRef = useRef(null);
 
   const selectedDoc = (docs || []).find((d) => String(d.document_id) === String(docId));
@@ -34,8 +35,20 @@ export default function Tutor() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const data = await apiJson(`/lms/student/${userId ?? 1}/my-path`);
+        setLearningPlan(data || null);
+      } catch {
+        // ignore
+      }
+    })();
+  }, [userId]);
+
   const ask = async (overrideQuestion) => {
-    const q = (overrideQuestion ?? question || "").trim();
+    const q = ((overrideQuestion ?? question) || "").trim();
     if (!q || loading) return;
     setError("");
     setLoading(true);
@@ -51,11 +64,11 @@ export default function Tutor() {
           topic: (topic || "").trim() || null,
           top_k: 6,
           document_ids: docId ? [Number(docId)] : null,
+          allowed_topics: Array.isArray(learningPlan?.topics) ? learningPlan.topics : [],
         }),
       });
 
       const answer = data?.answer || data?.answer_md || "(Không có câu trả lời)";
-      const isOffTopic = data?.is_off_topic === true;
       const isOffTopic = data?.is_off_topic === true || data?.off_topic === true;
       setMessages((prev) => [...prev, { role: "assistant", text: answer, meta: data, offTopic: isOffTopic }]);
     } catch (e) {
