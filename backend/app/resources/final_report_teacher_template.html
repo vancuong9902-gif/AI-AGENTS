@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <title>{{ report_title }}</title>
+  <style>
+    body { font-family: 'Noto Sans', Arial, sans-serif; color: #1f2937; margin: 24px; }
+    h1 { margin-bottom: 4px; }
+    .muted { color: #6b7280; margin-bottom: 16px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+    th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; }
+    th { background: #f3f4f6; }
+  </style>
+</head>
+<body>
+  <h1>{{ report_title }}</h1>
+  <div class="muted">Giai đoạn: {{ period_from }} → {{ period_to }}</div>
+
+  <h2>Tổng quan lớp</h2>
+  <ul>
+    <li>Sĩ số: {{ total_students }}</li>
+    <li>Hoàn thành đủ entry + final: {{ completed_both_tests }}</li>
+    <li>Điểm TB entry/final: {{ avg_entry_score }} / {{ avg_final_score }}</li>
+    <li>Tỷ lệ cải thiện: {{ improvement_rate }}%</li>
+  </ul>
+
+  <h2>Phân tích chủ đề</h2>
+  {{ topic_rows_html }}
+
+  <h2>Danh sách học sinh</h2>
+  {{ student_rows_html }}
+
+  <h2>Nhận xét tổng quan</h2>
+  <p>{{ ai_class_narrative }}</p>
+</body>
+</html>

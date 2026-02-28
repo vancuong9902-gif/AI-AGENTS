@@ -17,6 +17,11 @@ VALID_RANGES = ((0x00C0, 0x024F), (0x1E00, 0x1EFF))
 FAST_PATH_CHARS = {"¸", "\u00ad", "¬", "×", "®", "¦", "§", "©", "¹", "µ", "°", "±"}
 EXTRA_SUSPECT_CHARS = {"¨", "ä", "Ë", "Ö", "î"}
 ACTIVE_MAP_BYTES = {0xA8, 0xAC, 0xAD, 0xAE, 0xB5, 0xB8, 0xB9, 0xCB, 0xD6, 0xD7, 0xE4, 0xEE}
+NOTO_SANS_CANDIDATES = (
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansDisplay-Regular.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSans-Regular.ttf",
+)
 
 
 def _build_256_map(overrides: dict[int, str]) -> dict[int, str]:
@@ -169,3 +174,10 @@ def fix_vietnamese_font_encoding(text: str) -> str:
 def fix_vietnamese_encoding(text: str) -> str:
     """Backward-compatible alias used by pipeline/services."""
     return fix_vietnamese_font_encoding(text)
+
+
+def get_noto_sans_font_path() -> str | None:
+    for path in NOTO_SANS_CANDIDATES:
+        if Path(path).exists():
+            return path
+    return None
