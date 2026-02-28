@@ -147,18 +147,17 @@ def lms_generate_final(request: Request, payload: GenerateLmsQuizIn, db: Session
 
     placement_ids: list[int] = []
     try:
-        placement_attempts = (
-            db.query(Attempt)
+        placement_rows = (
+            db.query(Attempt.quiz_set_id)
             .join(QuizSet, QuizSet.id == Attempt.quiz_set_id)
             .filter(
                 Attempt.user_id == int(payload.teacher_id),
                 QuizSet.kind == "diagnostic_pre",
-                QuizSet.user_id == int(payload.teacher_id),
             )
+            .distinct()
             .all()
         )
-        placement_ids = sorted({int(a.quiz_set_id)
-                               for a in placement_attempts if a and a.quiz_set_id})
+        placement_ids = [int(r[0]) for r in placement_rows]
     except Exception:
         placement_ids = []
 
@@ -173,7 +172,7 @@ def lms_generate_final(request: Request, payload: GenerateLmsQuizIn, db: Session
         hard_count=int(payload.hard_count),
         document_ids=[int(x) for x in payload.document_ids],
         topics=payload.topics,
-        exclude_assessment_ids=placement_ids,
+        exclude_quiz_ids=placement_ids,
         similarity_threshold=0.75,
     )
     data["difficulty_plan"] = {
@@ -181,47 +180,32 @@ def lms_generate_final(request: Request, payload: GenerateLmsQuizIn, db: Session
         "medium": int(payload.medium_count),
         "hard": int(payload.hard_count),
     }
-    data["excluded_from"] = placement_ids
+    data["excluded_from_count"] = len(placement_ids)
     return {"request_id": request.state.request_id, "data": data, "error": None}
 
 
-@router.get("/lms/assessments/compare-overlap/{id1}/{id2}")
-def compare_assessment_overlap(request: Request, id1: int, id2: int, db: Session = Depends(get_db)):
-    """Compare stem overlap between two assessments for QA/debug usage."""
+@router.get("/lms/debug/quiz-overlap/{id1}/{id2}")
+def debug_quiz_overlap(request: Request, id1: int, id2: int, db: Session = Depends(get_db)):
     from difflib import SequenceMatcher
 
-    stems1 = [str(r[0] or "") for r in db.query(
-        Question.stem).filter(Question.quiz_set_id == int(id1)).all()]
-    stems2 = [str(r[0] or "") for r in db.query(
-        Question.stem).filter(Question.quiz_set_id == int(id2)).all()]
+    s1 = [str(r[0] or "") for r in db.query(Question.stem).filter(Question.quiz_set_id == id1).all()]
+    s2 = [str(r[0] or "") for r in db.query(Question.stem).filter(Question.quiz_set_id == id2).all()]
 
-    duplicates: list[dict[str, object]] = []
-    for s1 in stems1:
-        s1_norm = s1.lower().strip()
-        if not s1_norm:
-            continue
-        for s2 in stems2:
-            s2_norm = s2.lower().strip()
-            if not s2_norm:
-                continue
-            ratio = SequenceMatcher(None, s1_norm, s2_norm).ratio()
+    dups: list[dict[str, object]] = []
+    for a in s1:
+        for b in s2:
+            ratio = SequenceMatcher(None, a.lower(), b.lower()).ratio()
             if ratio >= 0.75:
-                duplicates.append(
-                    {
-                        "stem1": s1[:80],
-                        "stem2": s2[:80],
-                        "similarity": round(float(ratio), 3),
-                    }
-                )
+                dups.append({"s1": a[:80], "s2": b[:80], "sim": round(float(ratio), 3)})
 
     return {
         "request_id": request.state.request_id,
         "data": {
-            "assessment_1_count": len(stems1),
-            "assessment_2_count": len(stems2),
-            "duplicate_count": len(duplicates),
-            "overlap_percent": round(len(duplicates) / max(1, len(stems1)) * 100, 1),
-            "duplicates": duplicates[:20],
+            "overlap_count": len(dups),
+            "overlap_pct": round(len(dups) / max(1, len(s1)) * 100, 1),
+            "quiz1_total": len(s1),
+            "quiz2_total": len(s2),
+            "samples": dups[:10],
         },
         "error": None,
     }
