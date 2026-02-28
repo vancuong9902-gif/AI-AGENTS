@@ -22,6 +22,24 @@ from app.schemas.profile import (
 from app.services.llm_service import chat_json, llm_available, pack_chunks
 
 
+def build_personalized_content_plan(
+    db: Session,
+    user_id: int,
+    quiz_attempt_result: Dict[str, Any],
+    document_topics: List[str] | List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Proxy personalized planning to LMS service for reuse in learning-plan flows."""
+
+    from app.services.lms_service import build_personalized_content_plan as _build_plan
+
+    return _build_plan(
+        db=db,
+        user_id=int(user_id),
+        quiz_attempt_result=quiz_attempt_result or {},
+        document_topics=document_topics or [],
+    )
+
+
 def _mode(val: Optional[str], *, default: str = "auto") -> str:
     m = (val or default).strip().lower()
     if m in {"0", "false", "no"}:
