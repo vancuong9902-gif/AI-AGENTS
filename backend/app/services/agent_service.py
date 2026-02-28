@@ -4,6 +4,7 @@ import json
 import math
 import re
 import hashlib
+from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
@@ -200,6 +201,225 @@ _INTERNAL_TO_QTYPE = {
     "analytical": "analytical",
     "complex": "complex",
 }
+
+
+def _normalize_stem_for_fingerprint(stem: str) -> str:
+    text = re.sub(r"[^\w\sÀ-ỹ]", " ", str(stem or "").lower(), flags=re.UNICODE)
+    return " ".join(text.split())
+
+
+def _stem_fingerprint(stem: str) -> str:
+    normalized = _normalize_stem_for_fingerprint(stem)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def generate_diagnostic_pre_payload(
+    *,
+    selected_topics: List[str],
+    evidence_chunks: List[Dict[str, Any]],
+    config: Dict[str, Any],
+    time_policy: str,
+    duration_seconds: int,
+    exclude_history: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Generate a strict diagnostic_pre payload for Assessment Agent contract."""
+    topics = [str(t).strip() for t in (selected_topics or []) if str(t).strip()]
+    if not topics:
+        raise HTTPException(status_code=422, detail="selected_topics is required")
+    if not evidence_chunks:
+        raise HTTPException(status_code=422, detail="evidence_chunks is required")
+
+    easy_count = int(config.get("easy_count") or 0)
+    medium_count = int(config.get("medium_count") or 0)
+    hard_count = int(config.get("hard_count") or 0)
+    target_by_difficulty = {"easy": easy_count, "medium": medium_count, "hard": hard_count}
+    total_needed = easy_count + medium_count + hard_count
+    if total_needed <= 0:
+        raise HTTPException(status_code=422, detail="config question counts must be > 0")
+
+    valid_chunk_ids = {int(c.get("chunk_id")) for c in evidence_chunks if c.get("chunk_id") is not None}
+    valid_chunk_ids.discard(None)
+    if not valid_chunk_ids:
+        raise HTTPException(status_code=422, detail="evidence_chunks must include chunk_id")
+
+    lang = "Vietnamese"
+    blocked = {str(x).strip() for x in (exclude_history or []) if str(x).strip()}
+    collected: List[Dict[str, Any]] = []
+
+    for _ in range(3):
+        prompts_blocked = sorted(list(blocked | {q["fingerprint"] for q in collected}))[:150]
+        sys = (
+            "Bạn là Assessment Agent. Tạo BÀI KIỂM TRA ĐẦU VÀO. "
+            "Chỉ dùng thông tin trong evidence_chunks, không bịa. "
+            "Trả JSON hợp lệ duy nhất."
+        )
+        user = {
+            "selected_topics": topics,
+            "evidence_chunks": evidence_chunks,
+            "config": {
+                "easy_count": easy_count,
+                "medium_count": medium_count,
+                "hard_count": hard_count,
+            },
+            "time_policy": time_policy,
+            "duration_seconds": int(duration_seconds),
+            "exclude_history": prompts_blocked,
+            "requirements": [
+                "100% câu hỏi phải map topic thuộc selected_topics.",
+                "Mỗi câu có type, stem, explanation, bloom_level, difficulty, topic, sources, estimated_minutes.",
+                "Hard nên có 1-2 essay nếu evidence đủ.",
+                "estimated_minutes trong [1..6].",
+                "sources: ít nhất 1 chunk_id có trong evidence_chunks.",
+                "Với mcq: options + correct_index; với essay: expected_answer + rubric.",
+            ],
+            "output_format": {
+                "questions": [
+                    {
+                        "type": "mcq",
+                        "stem": "...",
+                        "options": ["A", "B", "C", "D"],
+                        "correct_index": 0,
+                        "explanation": "...",
+                        "bloom_level": "remember",
+                        "difficulty": "easy",
+                        "topic": topics[0],
+                        "sources": [{"chunk_id": int(next(iter(valid_chunk_ids)))}],
+                        "estimated_minutes": 2,
+                    }
+                ]
+            },
+            "language": lang,
+        }
+
+        obj = chat_json(
+            messages=[
+                {"role": "system", "content": sys},
+                {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+            ],
+            temperature=0.2,
+            max_tokens=2600,
+        )
+        raw = obj.get("questions") if isinstance(obj, dict) else None
+        if not isinstance(raw, list):
+            continue
+
+        for q in raw:
+            if not isinstance(q, dict):
+                continue
+            difficulty = str(q.get("difficulty") or "").strip().lower()
+            if difficulty not in target_by_difficulty:
+                continue
+            if len([x for x in collected if x.get("difficulty") == difficulty]) >= target_by_difficulty[difficulty]:
+                continue
+
+            qtype = str(q.get("type") or "").strip().lower()
+            if qtype not in {"mcq", "essay"}:
+                continue
+
+            topic = str(q.get("topic") or "").strip()
+            if topic not in topics:
+                continue
+
+            stem = " ".join(str(q.get("stem") or "").split()).strip()
+            if len(stem) < 8:
+                continue
+            fp = _stem_fingerprint(stem)
+            if fp in blocked or any(fp == it.get("fingerprint") for it in collected):
+                continue
+
+            sources = q.get("sources")
+            if isinstance(sources, dict):
+                sources = [sources]
+            cleaned_sources: List[Dict[str, int]] = []
+            if isinstance(sources, list):
+                for it in sources:
+                    cid = (it.get("chunk_id") if isinstance(it, dict) else it)
+                    try:
+                        cid_i = int(cid)
+                    except Exception:
+                        continue
+                    if cid_i in valid_chunk_ids:
+                        src = {"chunk_id": cid_i}
+                        if isinstance(it, dict) and it.get("page") is not None:
+                            try:
+                                src["page"] = int(it.get("page"))
+                            except Exception:
+                                pass
+                        cleaned_sources.append(src)
+            if not cleaned_sources:
+                continue
+
+            try:
+                est = int(q.get("estimated_minutes") or 0)
+            except Exception:
+                est = 0
+            if est <= 0:
+                est = {"easy": 2, "medium": 3, "hard": 5}.get(difficulty, 2)
+            est = max(1, min(6, est))
+
+            item: Dict[str, Any] = {
+                "type": qtype,
+                "stem": stem,
+                "explanation": " ".join(str(q.get("explanation") or "").split()).strip(),
+                "bloom_level": str(q.get("bloom_level") or "understand").strip().lower(),
+                "difficulty": difficulty,
+                "topic": topic,
+                "sources": cleaned_sources[:2],
+                "estimated_minutes": est,
+                "fingerprint": fp,
+            }
+            if qtype == "mcq":
+                options = q.get("options") if isinstance(q.get("options"), list) else []
+                options = [" ".join(str(o).split()).strip() for o in options if str(o).strip()]
+                if len(options) != 4:
+                    continue
+                try:
+                    correct_index = int(q.get("correct_index"))
+                except Exception:
+                    continue
+                if correct_index not in (0, 1, 2, 3):
+                    continue
+                item.update({"options": options, "correct_index": correct_index})
+            else:
+                expected_answer = " ".join(str(q.get("expected_answer") or "").split()).strip()
+                rubric = q.get("rubric") if isinstance(q.get("rubric"), list) else []
+                if not expected_answer or not rubric:
+                    continue
+                item.update({"expected_answer": expected_answer, "rubric": rubric})
+
+            collected.append(item)
+
+        done = all(len([x for x in collected if x.get("difficulty") == d]) >= c for d, c in target_by_difficulty.items())
+        if done:
+            break
+
+    counts = Counter(str(q.get("difficulty")) for q in collected)
+    if any(int(counts.get(d, 0)) < int(c) for d, c in target_by_difficulty.items()):
+        raise HTTPException(status_code=422, detail="Unable to generate enough unique questions matching constraints")
+
+    questions: List[Dict[str, Any]] = []
+    for d in ("easy", "medium", "hard"):
+        need = target_by_difficulty[d]
+        picked = [q for q in collected if q.get("difficulty") == d][:need]
+        questions.extend(picked)
+
+    if hard_count > 0:
+        hard_essays = [q for q in questions if q.get("difficulty") == "hard" and q.get("type") == "essay"]
+        if not hard_essays:
+            raise HTTPException(status_code=422, detail="Hard section requires essay evidence but none generated")
+
+    total_estimated = sum(int(q.get("estimated_minutes") or 0) for q in questions)
+    limit_from_estimate = int(math.ceil(total_estimated * 1.1))
+    limit_from_duration = int(math.ceil(int(duration_seconds) / 60.0))
+    time_limit_minutes = min(limit_from_estimate, limit_from_duration)
+
+    topic_title = ", ".join(topics[:3])
+    return {
+        "title": f"Bài kiểm tra đầu vào - {topic_title}",
+        "kind": "diagnostic_pre",
+        "time_limit_minutes": int(time_limit_minutes),
+        "questions": questions,
+    }
 
 
 def _build_exam_retrieval_context(
