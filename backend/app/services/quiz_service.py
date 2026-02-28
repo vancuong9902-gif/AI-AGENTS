@@ -324,6 +324,7 @@ def _generate_mcq_with_llm(
     question_count: int,
     chunks: List[Dict[str, Any]],
     extra_system_hint: str | None = None,
+    excluded_stems: List[str] | None = None,
 ) -> List[Dict[str, Any]]:
     """LLM-based MCQ generator (high quality + grounded to teacher materials).
 
@@ -415,6 +416,18 @@ def _generate_mcq_with_llm(
 
     if extra_system_hint:
         system = f"{system}\n\n{str(extra_system_hint).strip()}"
+
+    if excluded_stems:
+        blocked = [str(x or "").strip() for x in excluded_stems if str(x or "").strip()]
+        blocked = blocked[:40]
+        if blocked:
+            blocked_payload = json.dumps(blocked, ensure_ascii=False)
+            system = (
+                f"{system}\n\n"
+                "KHÔNG tạo câu hỏi giống/na ná với danh sách stem đã dùng trước đó. "
+                "Nếu ý tưởng gần giống, hãy đổi ngữ cảnh, dữ kiện và cách hỏi hoàn toàn. "
+                f"Danh sách stem cần tránh: {blocked_payload}"
+            )
 
     # Desired mix by level (team rule) + Bloom distribution (6-level)
     mix_text = {
