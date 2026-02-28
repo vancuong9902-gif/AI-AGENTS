@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.db.session import get_db
 from app.main import app
+from app.services import lms_service
 
 
 class _FakeQuery:
@@ -48,6 +49,7 @@ class _FakeDB:
 
 def test_teacher_report_returns_full_shape(monkeypatch):
     app.dependency_overrides[get_db] = lambda: _FakeDB()
+    lms_service._TEACHER_REPORT_CACHE.clear()
 
     def _fake_score_breakdown(_):
         _fake_score_breakdown.calls += 1
@@ -74,5 +76,93 @@ def test_teacher_report_returns_full_shape(monkeypatch):
     assert "ai_recommendations" in data
     assert data["summary"]["total_students"] == 2
     assert set(data["class_analytics"]["score_distribution"].keys()) == {"gioi", "kha", "trung_binh", "yeu"}
+
+    app.dependency_overrides.clear()
+
+
+def test_teacher_report_contains_new_ai_structure(monkeypatch):
+    app.dependency_overrides[get_db] = lambda: _FakeDB()
+    lms_service._TEACHER_REPORT_CACHE.clear()
+
+    def _fake_score_breakdown(_):
+        _fake_score_breakdown.calls += 1
+        if _fake_score_breakdown.calls == 1:
+            return {"overall": {"percent": 50.0}, "by_topic": {"ham_so": {"percent": 50.0}}}
+        return {"overall": {"percent": 80.0}, "by_topic": {"ham_so": {"percent": 80.0}}}
+
+    _fake_score_breakdown.calls = 0
+    monkeypatch.setattr("app.services.lms_service.score_breakdown", _fake_score_breakdown)
+    monkeypatch.setattr(
+        "app.services.lms_service._build_student_ai_evaluation",
+        lambda student_data: {
+            "summary": "Có tiến bộ.",
+            "strengths": ["Nắm kiến thức cơ bản"],
+            "improvements": ["Luyện thêm bài nâng cao"],
+            "recommendation": "Ôn 30 phút mỗi ngày",
+        },
+    )
+
+    async def _fake_comment(_stats):
+        return "Nhận xét lớp tổng quan"
+
+    monkeypatch.setattr("app.services.lms_service.generate_class_ai_comment", _fake_comment)
+
+    client = TestClient(app)
+    response = client.get("/api/lms/teacher/report/1")
+    assert response.status_code == 200
+    data = response.json()["data"]
+
+    assert "students" in data
+    assert "class_summary" in data
+    assert data["students"][0]["ai_evaluation"]["summary"] == "Có tiến bộ."
+    assert "overall_assessment" in data["class_summary"]
+
+    app.dependency_overrides.clear()
+
+
+def test_teacher_report_export_html_v1(monkeypatch):
+    class _CountQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def count(self):
+            return 1
+
+    class _DB:
+        def query(self, *entities):
+            return _CountQuery()
+
+    app.dependency_overrides[get_db] = lambda: _DB()
+
+    monkeypatch.setattr(
+        "app.api.routes.lms.build_teacher_report",
+        lambda db, classroom_id: {
+            "classroom_id": classroom_id,
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "students": [
+                {
+                    "name": "HS A",
+                    "diagnostic_score": 50.0,
+                    "final_score": 70.0,
+                    "improvement_pct": 20.0,
+                    "level": "kha",
+                    "topic_scores": {"ham_so": 70.0},
+                    "ai_evaluation": {"summary": "Tiến bộ tốt."},
+                }
+            ],
+            "class_summary": {
+                "avg_improvement": 20.0,
+                "top_performers": ["HS A"],
+                "needs_attention": [],
+                "overall_assessment": "Tổng quan tích cực",
+            },
+        },
+    )
+
+    client = TestClient(app)
+    response = client.get("/api/v1/lms/teacher/report/1/export?format=html")
+    assert response.status_code == 200
+    assert "text/html" in response.headers.get("content-type", "")
+    assert "HS A" in response.text
 
     app.dependency_overrides.clear()

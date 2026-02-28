@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import statistics
 
 from statistics import mean
@@ -35,6 +35,10 @@ from app.models.classroom_assessment import ClassroomAssessment
 from app.core.config import settings
 from app.infra.event_bus import RedisEventBus
 from app.services.external_sources import fetch_external_snippets
+
+
+_TEACHER_REPORT_CACHE: dict[int, dict[str, Any]] = {}
+_TEACHER_REPORT_CACHE_TTL = timedelta(minutes=30)
 
 
 @dataclass
@@ -893,8 +897,53 @@ async def generate_class_ai_comment(class_stats: dict) -> str:
         return "Lớp có xu hướng cải thiện, nên tiếp tục hỗ trợ nhóm học sinh còn yếu theo từng chủ đề cụ thể."
 
 
+def _build_student_ai_evaluation(*, student_data: dict[str, Any]) -> dict[str, Any]:
+    fallback = {
+        "summary": "Học sinh có tiến bộ nhất định, cần tiếp tục duy trì nhịp học đều đặn.",
+        "strengths": ["Hoàn thành được các nội dung trọng tâm"],
+        "improvements": ["Tăng cường luyện tập các topic còn yếu", "Duy trì thời lượng học ổn định mỗi tuần"],
+        "recommendation": "Theo dõi kết quả theo topic hàng tuần và bổ sung bài tập mục tiêu.",
+    }
+    if not llm_available():
+        return fallback
+
+    system_prompt = (
+        "Bạn là giáo viên AI. Hãy viết nhận xét tổng quát ngắn gọn (3-5 câu) về học sinh dựa trên dữ liệu sau. "
+        "Nhận xét phải: khách quan, mang tính xây dựng, đề xuất cải thiện cụ thể. "
+        "Trả về JSON: {summary: str, strengths: [str], improvements: [str], recommendation: str}"
+    )
+    try:
+        data = chat_json(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": str(student_data)},
+            ],
+            temperature=0.2,
+            max_tokens=300,
+        )
+    except Exception:
+        data = {}
+
+    payload = data if isinstance(data, dict) else {}
+    return {
+        "summary": str(payload.get("summary") or fallback["summary"]).strip(),
+        "strengths": [str(x).strip() for x in (payload.get("strengths") or fallback["strengths"]) if str(x).strip()][:5],
+        "improvements": [
+            str(x).strip() for x in (payload.get("improvements") or fallback["improvements"]) if str(x).strip()
+        ][:5],
+        "recommendation": str(payload.get("recommendation") or fallback["recommendation"]).strip(),
+    }
+
+
 def teacher_report(db: Session, classroom_id: int) -> dict[str, Any]:
     classroom_id = int(classroom_id)
+    now_dt = datetime.now(timezone.utc)
+    cached = _TEACHER_REPORT_CACHE.get(classroom_id)
+    if cached:
+        generated_at = cached.get("generated_at_dt")
+        if isinstance(generated_at, datetime) and (now_dt - generated_at) <= _TEACHER_REPORT_CACHE_TTL:
+            return dict(cached.get("report") or {})
+
     student_ids = [
         int(uid)
         for uid, in db.query(ClassroomMember.user_id).filter(ClassroomMember.classroom_id == classroom_id).all()
@@ -905,7 +954,7 @@ def teacher_report(db: Session, classroom_id: int) -> dict[str, Any]:
         .filter(ClassroomAssessment.classroom_id == classroom_id)
         .all()
     ]
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = now_dt.isoformat()
 
     if not student_ids:
         return {
@@ -1017,6 +1066,20 @@ def teacher_report(db: Session, classroom_id: int) -> dict[str, Any]:
 
         planned_days = max(1, plan_days_map.get(uid, 0) or sub_count_by_student.get(uid, 0) or 1)
         homework_rate = round((sub_count_by_student.get(uid, 0) / planned_days) * 100, 2)
+        duration_values = [float(getattr(at, "duration_sec", 0) or 0) for at in attempts_by_student.get(uid, [])]
+        avg_study_time = round(mean(duration_values), 1) if duration_values else 0.0
+
+        topic_scores = {k: round(v, 1) for k, v in sorted_topics}
+        ai_evaluation = _build_student_ai_evaluation(
+            student_data={
+                "name": str((user_map.get(uid).full_name if user_map.get(uid) else None) or f"Student {uid}"),
+                "diagnostic_score": round(float(entry or 0.0), 2),
+                "final_score": round(float(final or 0.0), 2),
+                "topic_scores": topic_scores,
+                "completed_exercises": int(sub_count_by_student.get(uid, 0)),
+                "avg_study_time_seconds": avg_study_time,
+            }
+        )
 
         last_attempt_at = attempts_by_student.get(uid, [])[-1].created_at if attempts_by_student.get(uid) else None
         last_activity = max(x for x in [last_attempt_at, last_submission_by_student.get(uid)] if x is not None) if (last_attempt_at or last_submission_by_student.get(uid)) else None
@@ -1033,9 +1096,14 @@ def teacher_report(db: Session, classroom_id: int) -> dict[str, Any]:
                 "strong_topics": strong_topics,
                 "weak_topics": weak_topics,
                 "homework_completion_rate": homework_rate,
+                "avg_study_time_seconds": avg_study_time,
                 "last_activity": last_activity.isoformat() if last_activity else None,
+                "ai_evaluation": ai_evaluation,
             }
         )
+
+    top_performers = [x["name"] for x in sorted(student_list, key=lambda s: float(s.get("final_score") or 0.0), reverse=True)[:3]]
+    needs_attention = [x["name"] for x in student_list if str(x.get("level") or "") == "yeu"][:5]
 
     completed_entry = sum(1 for v in entry_scores.values() if v is not None)
     completed_final = sum(1 for v in final_scores.values() if v is not None)
@@ -1070,9 +1138,31 @@ def teacher_report(db: Session, classroom_id: int) -> dict[str, Any]:
         )
     )
 
-    return {
+    report = {
         "classroom_id": classroom_id,
         "generated_at": now_iso,
+        "students": [
+            {
+                "user_id": int(s["student_id"]),
+                "name": str(s["name"]),
+                "diagnostic_score": s["entry_score"],
+                "final_score": s["final_score"],
+                "improvement_pct": s["improvement"],
+                "level": s["level"],
+                "topic_scores": {
+                    k: round(float((v or {}).get("percent") or 0.0), 1)
+                    for k, v in ((latest_breakdown.get(int(s["student_id"])) or {}).get("by_topic") or {}).items()
+                },
+                "ai_evaluation": s.get("ai_evaluation") or {},
+            }
+            for s in student_list
+        ],
+        "class_summary": {
+            "avg_improvement": avg_improvement,
+            "top_performers": top_performers,
+            "needs_attention": needs_attention,
+            "overall_assessment": ai_recommendations,
+        },
         "summary": {
             "total_students": total_students,
             "completed_entry_test": completed_entry,
@@ -1089,6 +1179,8 @@ def teacher_report(db: Session, classroom_id: int) -> dict[str, Any]:
         },
         "ai_recommendations": ai_recommendations,
     }
+    _TEACHER_REPORT_CACHE[classroom_id] = {"generated_at_dt": now_dt, "report": report}
+    return report
 
 
 def _topic_body_len(topic: DocumentTopic) -> int:
