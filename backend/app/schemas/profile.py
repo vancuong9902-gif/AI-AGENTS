@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 Level = Literal["beginner", "intermediate", "advanced"]
@@ -108,14 +108,27 @@ class HomeworkMCQQuestion(BaseModel):
     """
 
     question_id: str
-    stem: str
+    question_text: str = ""
+    stem: str = ""
     options: List[str] = Field(default_factory=list)
     correct_index: int = Field(..., ge=0)
     explanation: Optional[str] = None
     hint: Optional[str] = None
     related_concept: Optional[str] = None
+    bloom_level: str = "remember"
+    explanation: str = ""
+    hint: str = ""
+    related_concept: str = ""
     max_points: int = 1
     sources: List[Dict[str, int]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def sync_question_text_and_stem(self):
+        if not self.question_text and self.stem:
+            self.question_text = self.stem
+        if not self.stem and self.question_text:
+            self.stem = self.question_text
+        return self
 
 
 class HomeworkPrompt(BaseModel):

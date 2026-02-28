@@ -413,6 +413,47 @@ def per_student_bloom_analysis(*, by_student_breakdowns: dict[int, list[dict]]) 
         )
 
     return result
+def per_student_bloom_analysis(attempts: list, quiz_kind_map: dict) -> list[dict]:
+    """Tính Bloom breakdown và weak topics cho từng học sinh."""
+
+    _ = quiz_kind_map
+    bloom_levels = ["remember", "understand", "apply", "analyze", "evaluate", "create"]
+    student_data = defaultdict(
+        lambda: {
+            "bloom": defaultdict(lambda: {"correct": 0, "total": 0}),
+            "topics": defaultdict(lambda: {"correct": 0, "total": 0}),
+        }
+    )
+
+    for at in attempts or []:
+        uid = int(at.user_id)
+        for item in (at.breakdown_json or []):
+            bloom = normalize_bloom_level(str(item.get("bloom_level") or "remember").lower())
+            topic = str(item.get("topic") or "unknown")
+            correct = bool(item.get("is_correct", False))
+            student_data[uid]["bloom"][bloom]["total"] += 1
+            if correct:
+                student_data[uid]["bloom"][bloom]["correct"] += 1
+            student_data[uid]["topics"][topic]["total"] += 1
+            if correct:
+                student_data[uid]["topics"][topic]["correct"] += 1
+
+    results = []
+    for uid, data in sorted(student_data.items()):
+        bloom_pct = {
+            lvl: round(data["bloom"][lvl]["correct"] / max(1, data["bloom"][lvl]["total"]) * 100, 1)
+            for lvl in bloom_levels
+        }
+        weak_topics = sorted(
+            [
+                {"topic": t, "accuracy": round(v["correct"] / max(1, v["total"]) * 100, 1)}
+                for t, v in data["topics"].items()
+            ],
+            key=lambda x: x["accuracy"],
+        )[:3]
+        results.append({"student_id": uid, "bloom_accuracy": bloom_pct, "weak_topics": weak_topics})
+    return results
+
 
 def generate_class_narrative(
     *,
@@ -420,6 +461,7 @@ def generate_class_narrative(
     level_dist: dict,
     weak_topics: list[dict],
     avg_improvement: float,
+    per_student_data: list[dict] | None = None,
 ) -> str:
     """Gọi LLM tạo báo cáo tiếng Việt cho GV. Fallback nếu LLM không có."""
 
@@ -428,13 +470,29 @@ def generate_class_narrative(
     gioi = round(level_dist.get("gioi", 0) / total * 100)
     yeu = round(level_dist.get("yeu", 0) / total * 100)
     imp = f"tăng {abs(avg_improvement):.1f}%" if avg_improvement >= 0 else f"giảm {abs(avg_improvement):.1f}%"
+    weakest_students = sorted(
+        per_student_data or [],
+        key=lambda x: min((x.get("bloom_accuracy") or {"remember": 100}).values() or [100]),
+    )[:3]
+
+    weakest_summary = []
+    for item in weakest_students:
+        bloom_data = item.get("bloom_accuracy") or {}
+        if not bloom_data:
+            continue
+        weakest_level = min(bloom_data, key=bloom_data.get)
+        weakest_summary.append(
+            f"HS {item.get('student_id')}: {weakest_level} ({float(bloom_data.get(weakest_level) or 0):.1f}%)"
+        )
+    weakest_summary_text = ", ".join(weakest_summary) or "chưa đủ dữ liệu"
 
     if not llm_available():
         return (
             f"Lớp có {total_students} học sinh. "
             f"Tỷ lệ giỏi {gioi}%, yếu {yeu}%. "
             f"Điểm trung bình {imp} so với đầu kỳ. "
-            f"Cần chú ý các phần: {wt}."
+            f"Cần chú ý các phần: {wt}. "
+            f"3 học sinh yếu theo Bloom: {weakest_summary_text}."
         )
 
     system = (
@@ -450,9 +508,11 @@ def generate_class_narrative(
         f"  Yếu: {level_dist.get('yeu', 0)} ({yeu}%)\n"
         f"  Tiến bộ so với đầu kỳ: điểm TB {imp}\n"
         f"  Top 3 phần yếu: {wt}\n\n"
+        f"  Top 3 học sinh yếu nhất theo Bloom: {weakest_summary_text}\n\n"
         "Viết 5-6 câu liền mạch: (1) nhận xét tổng quan, "
         "(2) điểm yếu cụ thể, (3) nhận xét tiến bộ, "
-        "(4) 2 hành động cụ thể cho GV tuần tới."
+        "(4) nêu rõ Bloom level học sinh còn yếu nhất, "
+        "(5) 2 hành động cụ thể cho GV tuần tới."
     )
     try:
         return str(

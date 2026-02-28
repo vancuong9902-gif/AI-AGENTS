@@ -176,7 +176,7 @@ def grade_homework_from_plan(
         if not isinstance(it, dict):
             continue
         qid = str(it.get("question_id") or "").strip()
-        stem = str(it.get("stem") or "").strip()
+        stem = str(it.get("question_text") or it.get("stem") or "").strip()
         options = it.get("options") or []
         try:
             correct = int(it.get("correct_index"))
@@ -191,16 +191,30 @@ def grade_homework_from_plan(
             # stable fallback id
             qid = f"mcq_{len(mcq_breakdown)+1}"
 
+        explanation = str(it.get("explanation") or "").strip()
+        hint = str(it.get("hint") or "").strip()
+        related_concept = str(it.get("related_concept") or "").strip()
+
         chosen = ans_map.get(qid)
         is_correct = (chosen is not None) and (int(chosen) == int(correct))
         sp = int(mp if is_correct else 0)
         mcq_score += sp
         mcq_max += mp
 
+        feedback = {
+            "is_correct": bool(is_correct),
+            "correct_index": int(correct) if correct is not None else None,
+            "explanation": explanation,
+            "related_concept": related_concept,
+        }
+        if (not is_correct) and hint:
+            feedback["hint"] = hint
+
         mcq_breakdown.append(
             {
                 "type": "mcq",
                 "question_id": qid,
+                "question_text": stem,
                 "stem": stem,
                 "options": options,
                 "chosen_index": int(chosen) if chosen is not None else None,
@@ -211,6 +225,10 @@ def grade_homework_from_plan(
                 "explanation": it.get("explanation") or None,
                 "hint": it.get("hint") or None,
                 "related_concept": it.get("related_concept") or None,
+                "explanation": explanation,
+                "hint": hint if (not is_correct and hint) else None,
+                "related_concept": related_concept,
+                "feedback": feedback,
                 "sources": it.get("sources") or [],
             }
         )
@@ -249,6 +267,11 @@ def grade_homework_from_plan(
     if essay_comment:
         comment_parts.append(essay_comment)
 
+
+    selected_feedback = None
+    if mcq_breakdown:
+        answered = [x for x in mcq_breakdown if x.get("chosen_index") is not None]
+        selected_feedback = (answered[0] if answered else mcq_breakdown[0]).get("feedback")
     result: Dict[str, Any] = {
         # Backward-compatible keys
         "score_points": int(total_score),
@@ -263,6 +286,7 @@ def grade_homework_from_plan(
         "essay_max_points": int(essay_max),
         "essay_comment": essay_comment or None,
         "mcq_breakdown": mcq_breakdown,
+        "feedback": selected_feedback,
     }
 
     # Upsert submission

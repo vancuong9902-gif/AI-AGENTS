@@ -275,3 +275,100 @@ Yêu cầu:
         comment = "Bài làm đã được chấm theo rubric."
 
     return {"score_points": sp, "max_points": mp, "comment": comment, "rubric_breakdown": out_rb, "explanation": "Điểm tự luận được tổng hợp từ rubric_breakdown.", "hint": "Ưu tiên cải thiện tiêu chí có điểm thấp nhất trong rubric_breakdown."}
+    return {"score_points": sp, "max_points": mp, "comment": comment, "rubric_breakdown": out_rb}
+
+
+def _normalize_original_exercises(original: Any) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    if not isinstance(original, list):
+        return out
+    for item in original:
+        if not isinstance(item, dict):
+            continue
+        question = _compact(str(item.get("question") or ""))
+        if not question:
+            continue
+        q_type = _compact(str(item.get("type") or "exercise")).lower() or "exercise"
+        if q_type not in {"mcq", "essay", "exercise"}:
+            q_type = "exercise"
+        options = item.get("options")
+        if not isinstance(options, list):
+            options = None
+        answer = item.get("answer")
+        answer = _compact(str(answer)) if answer is not None and _compact(str(answer)) else None
+        out.append(
+            {
+                "type": q_type,
+                "question": question,
+                "options": options,
+                "answer": answer,
+                "source": "original_pdf",
+            }
+        )
+    return out
+
+
+def _generate_ai_exercises(topic: Any, n_questions: int = 5) -> List[Dict[str, Any]]:
+    title = _compact(str(getattr(topic, "title", "") or ""))
+    summary = _compact(str(getattr(topic, "summary", "") or ""))
+    if llm_available() and title:
+        prompt = (
+            "Tạo bộ bài tập học tập bằng tiếng Việt dưới dạng JSON array. "
+            "Mỗi phần tử gồm type (mcq/essay/exercise), question, options (array hoặc null), answer (string hoặc null), source='ai_generated'. "
+            f"Chủ đề: {title}. Tóm tắt: {summary}. Số lượng: {int(n_questions)}."
+        )
+        try:
+            data = chat_json(messages=[{"role": "user", "content": prompt}], max_tokens=1200)
+            if isinstance(data, list):
+                out: List[Dict[str, Any]] = []
+                for x in data[: max(1, int(n_questions))]:
+                    if not isinstance(x, dict):
+                        continue
+                    q = _compact(str(x.get("question") or ""))
+                    if not q:
+                        continue
+                    out.append(
+                        {
+                            "type": _compact(str(x.get("type") or "exercise")).lower() or "exercise",
+                            "question": q,
+                            "options": x.get("options") if isinstance(x.get("options"), list) else None,
+                            "answer": _compact(str(x.get("answer") or "")) or None,
+                            "source": "ai_generated",
+                        }
+                    )
+                if out:
+                    return out[: max(1, int(n_questions))]
+        except Exception:
+            pass
+
+    # deterministic fallback
+    count = max(1, int(n_questions))
+    base = title or "chủ đề"
+    return [
+        {
+            "type": "exercise",
+            "question": f"Trình bày ngắn gọn kiến thức trọng tâm của {base} (câu {i+1}).",
+            "options": None,
+            "answer": None,
+            "source": "ai_generated",
+        }
+        for i in range(count)
+    ]
+
+
+def _mix_original_and_ai(original: List[Dict[str, Any]], topic: Any, n_questions: int = 5) -> List[Dict[str, Any]]:
+    count = max(1, int(n_questions))
+    original_norm = _normalize_original_exercises(original)
+    if len(original_norm) >= count:
+        return original_norm[:count]
+    missing = count - len(original_norm)
+    ai = _generate_ai_exercises(topic, missing)
+    return (original_norm + ai)[:count]
+
+
+def generate_homework(topic: Any, n_questions: int = 5) -> List[Dict[str, Any]]:
+    metadata = getattr(topic, "metadata_json", None) or {}
+    original = metadata.get("original_exercises", []) if isinstance(metadata, dict) else []
+    if original:
+        return _mix_original_and_ai(original, topic, n_questions)
+    return _generate_ai_exercises(topic, n_questions)

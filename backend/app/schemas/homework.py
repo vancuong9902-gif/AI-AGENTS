@@ -22,7 +22,6 @@ class HomeworkGradeResult(BaseModel):
     hint: Optional[str] = None
     rubric_breakdown: List[Dict[str, Any]] = Field(default_factory=list)
 
-
 class HomeworkMCQQuestion(BaseModel):
     question_id: str
     stem: str
@@ -33,3 +32,22 @@ class HomeworkMCQQuestion(BaseModel):
     related_concept: Optional[str] = None
     max_points: int = 1
     sources: List[Dict[str, int]] = Field(default_factory=list)
+class HomeworkSubmitRequest(BaseModel):
+    user_id: int
+    day_index: int
+    answer_text: str = ""
+    question_id: str
+    chosen_index: int
+
+
+class HomeworkSubmitFeedback(BaseModel):
+    is_correct: bool
+    correct_index: int
+    explanation: str = ""
+    related_concept: str = ""
+    hint: Optional[str] = None
+
+
+class HomeworkSubmitResponse(BaseModel):
+    question_id: str
+    feedback: HomeworkSubmitFeedback

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections import defaultdict
 from datetime import datetime, timezone
 import asyncio
@@ -37,8 +39,8 @@ from app.services.lms_service import (
     generate_class_narrative,
     persist_multidim_profile,
     generate_student_evaluation_report,
+    per_student_bloom_analysis,
     get_student_homework_results,
-    generate_class_narrative,
     resolve_student_name,
     score_breakdown,
     assign_topic_materials,
@@ -162,6 +164,7 @@ def _publish_mas_event_non_blocking(db: Session, *, event: Event) -> None:
     except Exception:
         # Fallback an toàn nếu không có event loop khả dụng trong context hiện tại.
         pass
+    return int(getattr(quiz, "duration_seconds", 1800) or 1800)
 
 
 @router.post("/lms/placement/generate")
@@ -183,6 +186,13 @@ def lms_generate_final(request: Request, payload: GenerateLmsQuizIn, db: Session
 
     placement_ids: list[int] = []
     try:
+        student_ids = [
+            int(r[0])
+            for r in db.query(ClassroomMember.user_id)
+            .filter(ClassroomMember.classroom_id == int(payload.classroom_id))
+            .all()
+        ] or [int(payload.teacher_id)]
+
         placement_rows = (
             db.query(Attempt.quiz_set_id)
             .join(QuizSet, QuizSet.id == Attempt.quiz_set_id)
@@ -348,6 +358,45 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
         duration_sec=spent,
         answers=payload.answers,
     )
+
+    # Auto-trigger learning plan generation for diagnostic entry test submissions.
+    try:
+        if quiz.kind == "diagnostic_pre":
+            from app.mas.base import AgentContext
+            from app.mas.contracts import Event
+            from app.mas.orchestrator import Orchestrator
+
+            orch = Orchestrator(db=db)
+            event = Event(
+                type="ENTRY_TEST_SUBMITTED",
+                user_id=int(started.user_id),
+                payload={
+                    "attempt_id": int(base.get("attempt_id") or 0),
+                    "quiz_set_id": int(quiz_id),
+                    "score": int(base.get("total_score_percent") or base.get("score_percent") or 0),
+                    "breakdown": base.get("breakdown") or [],
+                    "student_level": classify_student_level(int(base.get("total_score_percent") or base.get("score_percent") or 0)),
+                    "document_ids": [int(quiz.source_query_id)] if getattr(quiz, "source_query_id", None) else [],
+                },
+                trace_id=getattr(request.state, "request_id", None),
+            )
+            ctx = AgentContext(
+                user_id=int(started.user_id),
+                document_ids=[int(quiz.source_query_id)] if getattr(quiz, "source_query_id", None) else [],
+            )
+
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(asyncio.to_thread(orch.run, event, ctx))
+                else:
+                    orch.run(event, ctx)
+            except Exception:
+                orch.run(event, ctx)  # synchronous fallback
+    except Exception as exc:
+        # Log warning but do not fail main submit flow.
+        logging.getLogger(__name__).warning("Auto learning plan failed: %s", exc)
+
     breakdown = score_breakdown(base.get("breakdown") or [])
     level = classify_student_level(
         int(round(float(breakdown["overall"]["percent"]))))
@@ -634,6 +683,7 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
         int(qid): str(kind or "")
         for qid, kind in db.query(QuizSet.id, QuizSet.kind).filter(QuizSet.id.in_(assessment_ids)).all()
     }
+    per_student = per_student_bloom_analysis(attempts, quiz_kind_map)
 
     for at in attempts:
         br = score_breakdown(at.breakdown_json or [])
@@ -682,7 +732,22 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
         level_dist=level_distribution,
         weak_topics=weak_topics[:3],
         avg_improvement=avg_improvement,
+        per_student_data=per_student,
     )
+
+    per_student_map = {int(item.get("student_id") or 0): item for item in per_student}
+    student_segments = {
+        "nhom_gioi": [
+            int(r.get("student_id"))
+            for r in rows
+            if str(r.get("level") or "") in {"gioi", "kha"}
+        ],
+        "nhom_can_ho_tro": [
+            int(r.get("student_id"))
+            for r in rows
+            if str(r.get("level") or "") in {"trung_binh", "yeu"}
+        ],
+    }
 
     student_evaluations = []
     per_student_bloom = per_student_bloom_analysis(by_student_breakdowns=by_student_breakdowns)
@@ -707,6 +772,17 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
                 "ai_comment": eval_report.get("ai_comment", ""),
                 "strengths": eval_report.get("strengths") or [],
                 "weaknesses": eval_report.get("weaknesses") or [],
+                "bloom_accuracy": (per_student_map.get(uid) or {}).get("bloom_accuracy") or {},
+                "weak_topics": (per_student_map.get(uid) or {}).get("weak_topics") or [],
+                "segment": "nhom_gioi" if uid in student_segments["nhom_gioi"] else "nhom_can_ho_tro",
+                "ai_teacher_actions": [
+                    f"Tập trung cải thiện Bloom '{min(((per_student_map.get(uid) or {}).get('bloom_accuracy') or {'remember': 100}), key=((per_student_map.get(uid) or {}).get('bloom_accuracy') or {'remember': 100}).get)}' trong 1 tuần tới.",
+                    (
+                        f"Giao 5 bài luyện cho chủ đề yếu: {', '.join(t.get('topic') for t in ((per_student_map.get(uid) or {}).get('weak_topics') or [])[:3])}."
+                        if ((per_student_map.get(uid) or {}).get("weak_topics") or [])
+                        else "Duy trì bài tập củng cố theo tiến độ hiện tại."
+                    ),
+                ],
             }
         )
 
@@ -720,6 +796,8 @@ def teacher_report(request: Request, classroom_id: int, db: Session = Depends(ge
             "progress_chart": progress_chart,
             "student_evaluations": student_evaluations,
             "per_student_bloom": per_student_bloom,
+            "per_student_bloom": per_student,
+            "student_segments": student_segments,
         },
         "error": None,
     }
