@@ -216,57 +216,44 @@ def assign_learning_path(
     user_id: int,
     student_level: str,
     document_ids: list[int],
-    classroom_id: int,
+    classroom_id: int = 0,
 ) -> dict[str, Any]:
-    """Auto-assigns topic + quiz by learner level and persists profile + learning path."""
-    all_topics = (
-        db.query(DocumentTopic)
-        .filter(DocumentTopic.document_id.in_([int(doc_id) for doc_id in (document_ids or [])]))
-        .order_by(DocumentTopic.id)
-        .all()
+    """Gán topics + quizzes theo level, lưu vào LearnerProfile + LearningPlan."""
+
+    level_cfg = {
+        "yeu": {"max_topics": 3, "sort_by_len": True, "quiz_level": "beginner"},
+        "trung_binh": {"max_topics": 5, "sort_by_len": False, "quiz_level": "intermediate"},
+        "kha": {"max_topics": 7, "sort_by_len": False, "quiz_level": "intermediate"},
+        "gioi": {"max_topics": 20, "sort_by_len": False, "quiz_level": "advanced"},
+    }
+    cfg = level_cfg.get(student_level, level_cfg["trung_binh"])
+
+    query = db.query(DocumentTopic).filter(
+        DocumentTopic.document_id.in_([int(doc_id) for doc_id in (document_ids or [])])
     )
+    if cfg["sort_by_len"]:
+        query = query.order_by(DocumentTopic.body_len.asc().nullslast())
+    all_topics = query.all()
+    selected = all_topics[: int(cfg["max_topics"])]
 
-    level_config = {
-        "yeu": {"max_topics": 3, "prefer_short": True, "max_body_len": 2500},
-        "trung_binh": {"max_topics": 5, "prefer_short": False, "max_body_len": 5000},
-        "kha": {"max_topics": 7, "prefer_short": False, "max_body_len": 99999},
-        "gioi": {"max_topics": 99, "prefer_short": False, "max_body_len": 99999},
-    }
-    cfg = level_config.get(student_level, level_config["trung_binh"])
-
-    sorted_topics = sorted(
-        all_topics, key=_topic_body_len) if cfg["prefer_short"] else all_topics
-    selected_topics = [t for t in sorted_topics if _topic_body_len(
-        t) <= int(cfg["max_body_len"])][: int(cfg["max_topics"])]
-
-    quiz_level_map = {
-        "yeu": "beginner",
-        "trung_binh": "intermediate",
-        "kha": "intermediate",
-        "gioi": "advanced",
-    }
-    q_level = quiz_level_map.get(student_level, "intermediate")
-
-    reason_map = {
-        "yeu": "Nội dung cơ bản, phù hợp để xây dựng nền tảng",
-        "trung_binh": "Nội dung vừa sức, giúp củng cố và mở rộng",
-        "kha": "Nội dung nâng cao, phát triển tư duy sâu hơn",
-        "gioi": "Nội dung chuyên sâu, thách thức và mở rộng toàn diện",
+    reasons = {
+        "yeu": "Nội dung cơ bản — xây nền tảng vững chắc",
+        "trung_binh": "Nội dung vừa sức — củng cố và mở rộng",
+        "kha": "Nội dung nâng cao — phát triển tư duy sâu hơn",
+        "gioi": "Toàn bộ nội dung + thách thức chuyên sâu",
     }
 
     assigned_tasks: list[dict[str, Any]] = []
-    for topic in selected_topics:
+    for topic in selected:
         quiz = (
             db.query(QuizSet)
             .filter(
-                QuizSet.topic.ilike(f"%{str(topic.title or '')[:30]}%"),
-                QuizSet.level == q_level,
-                QuizSet.kind.in_(["practice", "quiz"]),
+                QuizSet.level == str(cfg["quiz_level"]),
+                QuizSet.kind.in_(["practice", "quiz", "assessment"]),
             )
+            .filter(QuizSet.topic.ilike(f"%{str(topic.title or '')[:20]}%"))
             .first()
-        )
-        if not quiz:
-            quiz = db.query(QuizSet).filter(QuizSet.level == q_level).first()
+        ) or db.query(QuizSet).filter(QuizSet.level == str(cfg["quiz_level"])).first()
 
         assigned_tasks.append(
             {
@@ -274,9 +261,9 @@ def assign_learning_path(
                 "topic_title": str(topic.title),
                 "document_id": int(topic.document_id),
                 "quiz_id": int(quiz.id) if quiz else None,
-                "quiz_level": q_level,
+                "quiz_level": str(cfg["quiz_level"]),
                 "status": "pending",
-                "recommended_reason": reason_map.get(student_level, ""),
+                "reason": reasons.get(student_level, ""),
             }
         )
 
@@ -291,9 +278,9 @@ def assign_learning_path(
 
     plan = LearningPlan(
         user_id=int(user_id),
-        classroom_id=int(classroom_id),
+        classroom_id=int(classroom_id or 0),
         level=student_level,
-        plan_json={"tasks": assigned_tasks},
+        plan_json={"assigned_tasks": assigned_tasks, "student_level": student_level},
     )
     db.add(plan)
     db.commit()
@@ -307,7 +294,7 @@ def assign_learning_path(
                 "id": t["topic_id"],
                 "title": t["topic_title"],
                 "document_id": t["document_id"],
-                "reason": t["recommended_reason"],
+                "reason": t["reason"],
             }
             for t in assigned_tasks
         ],
