@@ -547,19 +547,19 @@ def generate_exam(
             classroom_id=classroom_id,
             title="Final Exam",
             level="intermediate",
-            kind="diagnostic_post",
+            kind="final_exam",
             easy_count=8,
             medium_count=14,
             hard_count=8,
             document_ids=document_ids,
             topics=topics,
             excluded_question_ids=excluded_question_ids,
+            attempt_user_id=int(user_id),
         )
         quiz_id = int(final_assessment.get("assessment_id"))
         qs = db.query(QuizSet).filter(QuizSet.id == quiz_id).first()
         if qs:
             qs.user_id = int(user_id)
-            qs.kind = "final_exam"
             qs.topic = "Final Exam"
             qs.excluded_from_quiz_ids = [int(x) for x in excluded_quiz_ids]
             qs.generation_seed = generation_seed
