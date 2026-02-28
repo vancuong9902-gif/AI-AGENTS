@@ -32,6 +32,7 @@ import StudentDashboard from "../pages/StudentDashboard";
 import AgentFlow from "../pages/AgentFlow";
 import TopicDetail from "../pages/TopicDetail";
 import StudentPractice from "../pages/StudentPractice";
+import FinalExam from "../pages/FinalExam";
 
 export default function AppRoutes() {
   return (
@@ -145,6 +146,15 @@ export default function AppRoutes() {
         element={
           <ProtectedRoute allow={["student"]}>
             <AssessmentTake />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/final-exam/:classroomId"
+        element={
+          <ProtectedRoute allow={["student"]}>
+            <FinalExam />
           </ProtectedRoute>
         }
       />
