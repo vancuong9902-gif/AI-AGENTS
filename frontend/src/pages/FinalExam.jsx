@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useExamTimer } from "../hooks/useExamTimer";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import Card from "../ui/Card";
 import Button from "../ui/Button";
@@ -8,14 +9,6 @@ import Badge from "../ui/Badge";
 import Spinner from "../ui/Spinner";
 import { apiJson } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
-
-function formatClock(totalSec = 0) {
-  const sec = Math.max(0, Math.floor(Number(totalSec) || 0));
-  const hh = String(Math.floor(sec / 3600)).padStart(2, "0");
-  const mm = String(Math.floor((sec % 3600) / 60)).padStart(2, "0");
-  const ss = String(sec % 60).padStart(2, "0");
-  return `${hh}:${mm}:${ss}`;
-}
 
 function classify(score = 0) {
   const safeScore = Number(score) || 0;
@@ -56,7 +49,7 @@ export default function FinalExam() {
   const [error, setError] = useState("");
   const [questions, setQuestions] = useState([]);
   const [answers, setAnswers] = useState({});
-  const [timeLeftSec, setTimeLeftSec] = useState(0);
+  const [durationSeconds, setDurationSeconds] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
   const [openSubmitModal, setOpenSubmitModal] = useState(false);
@@ -64,7 +57,6 @@ export default function FinalExam() {
   const [assessmentId, setAssessmentId] = useState(null);
 
   const autoSubmittedRef = useRef(false);
-  const warningRef = useRef({ ten: false, five: false, one: false });
   const [warningMessage, setWarningMessage] = useState("");
 
   const entryScore = useMemo(() => {
@@ -110,7 +102,6 @@ export default function FinalExam() {
     setWarningMessage("");
     setResult(null);
     autoSubmittedRef.current = false;
-    warningRef.current = { ten: false, five: false, one: false };
 
     try {
       const resolvedTopicIds = await loadTopics();
@@ -130,7 +121,7 @@ export default function FinalExam() {
       setQuestions(normalizedQuestions);
       setAnswers({});
       setAssessmentId(data?.assessment_id || data?.quiz_id || data?.id || null);
-      setTimeLeftSec(Number.isFinite(durationSec) && durationSec > 0 ? durationSec : 45 * 60);
+      setDurationSeconds(Number.isFinite(durationSec) && durationSec > 0 ? durationSec : 45 * 60);
 
       if (Array.isArray(data?.topic_ids) && data.topic_ids.length > 0) {
         setTopicIds(data.topic_ids.map((item) => Number(item)).filter((item) => Number.isFinite(item)));
@@ -146,33 +137,6 @@ export default function FinalExam() {
     loadFinalExam();
   }, [loadFinalExam]);
 
-  useEffect(() => {
-    if (loading || result || submitting || timeLeftSec <= 0) return undefined;
-
-    const timerId = setInterval(() => {
-      setTimeLeftSec((prev) => Math.max(0, prev - 1));
-    }, 1000);
-
-    return () => clearInterval(timerId);
-  }, [loading, result, submitting, timeLeftSec]);
-
-  useEffect(() => {
-    if (result || submitting) return;
-    if (timeLeftSec <= 600 && !warningRef.current.ten) {
-      warningRef.current.ten = true;
-      setWarningMessage("⚠️ Cảnh báo: còn 10 phút. Hãy tăng tốc và kiểm tra lại đáp án.");
-      return;
-    }
-    if (timeLeftSec <= 300 && !warningRef.current.five) {
-      warningRef.current.five = true;
-      setWarningMessage("⚠️ Cảnh báo: còn 5 phút. Chuẩn bị nộp bài ngay.");
-      return;
-    }
-    if (timeLeftSec <= 60 && !warningRef.current.one) {
-      warningRef.current.one = true;
-      setWarningMessage("🚨 Cảnh báo khẩn: còn 1 phút. Hệ thống sẽ tự động nộp.");
-    }
-  }, [result, submitting, timeLeftSec]);
 
   const submitExam = useCallback(
     async (autoSubmit = false) => {
@@ -211,11 +175,21 @@ export default function FinalExam() {
     [answers, assessmentId, questions, result, submitting, userId],
   );
 
-  useEffect(() => {
-    if (timeLeftSec !== 0 || autoSubmittedRef.current || result || loading || submitting) return;
-    autoSubmittedRef.current = true;
-    submitExam(true);
-  }, [loading, result, submitExam, submitting, timeLeftSec]);
+  const { timeLeft: timeLeftSec, formattedTime } = useExamTimer({
+    totalSeconds: !loading && !result && !submitting ? durationSeconds : 0,
+    onWarning: (secsLeft) => {
+      if (secsLeft === 600) setWarningMessage("⏰ Còn 10 phút. Hãy rà soát lại đáp án.");
+      if (secsLeft === 300) setWarningMessage("⚠️ Còn 5 phút. Chuẩn bị nộp bài.");
+      if (secsLeft === 60) setWarningMessage("🚨 Cảnh báo khẩn: còn 1 phút. Hệ thống sẽ tự động nộp.");
+    },
+    onTimeUp: () => {
+      if (!autoSubmittedRef.current && !result && !loading && !submitting) {
+        autoSubmittedRef.current = true;
+        submitExam(true);
+      }
+    },
+  });
+
 
   const topicBreakdown = useMemo(() => {
     const stats = {};
@@ -274,7 +248,7 @@ export default function FinalExam() {
           <Card style={{ minWidth: 220 }}>
             <div style={{ fontSize: 13, color: "#475569" }}>Thời gian còn lại</div>
             <div style={{ fontSize: 34, fontWeight: 800, color: timeLeftSec <= 60 ? "#b91c1c" : "#0f172a", letterSpacing: 1 }}>
-              {formatClock(timeLeftSec)}
+              {formattedTime.includes(":") && formattedTime.split(":").length === 2 ? `00:${formattedTime}` : formattedTime}
             </div>
             <div style={{ color: "#64748b", fontSize: 12 }}>Đồng hồ đếm ngược, không thể tạm dừng</div>
           </Card>
