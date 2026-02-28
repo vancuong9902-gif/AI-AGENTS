@@ -237,7 +237,8 @@ def _build_latest_report_data(db: Session, classroom_id: int) -> dict:
         final = float(post_scores.get(uid, 0.0))
         delta = final - entry
         level = classify_student_level(int(round(final if final > 0 else entry)))
-        level_dist[level] = int(level_dist.get(level, 0)) + 1
+        level_key = str(level["level_key"])
+        level_dist[level_key] = int(level_dist.get(level_key, 0)) + 1
         deltas.append(delta)
         if delta > 0:
             improved_count += 1
@@ -246,7 +247,7 @@ def _build_latest_report_data(db: Session, classroom_id: int) -> dict:
                 "name": resolve_student_name(uid, db),
                 "entry_score": entry,
                 "final_score": final,
-                "level": level,
+                "level": level_key,
             }
         )
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import tempfile
 import unicodedata
+import re
 from pathlib import Path
 from typing import Dict
 
@@ -174,6 +175,35 @@ def fix_vietnamese_font_encoding(text: str) -> str:
 def fix_vietnamese_encoding(text: str) -> str:
     """Backward-compatible alias used by pipeline/services."""
     return fix_vietnamese_font_encoding(text)
+
+
+_MOJIBAKE_PATTERNS = ("áº", "â€", "Ä", "Ã", "Â")
+
+
+def _looks_like_vietnamese(text: str) -> bool:
+    vn_chars = re.findall(r"[àáảãạăắằẳẵặâấầẩẫậđèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵ]", text.lower())
+    vn_words = re.findall(r"\b(?:và|của|những|trong|không|được|học|bài|chương|phương|trình)\b", text.lower())
+    return len(vn_chars) >= 2 or len(vn_words) >= 2
+
+
+def fix_mojibake_topic(text: str) -> str:
+    """Fix common mojibake topic titles without worsening clean text."""
+    source = str(text or "")
+    if not source:
+        return ""
+
+    if not any(marker in source for marker in _MOJIBAKE_PATTERNS):
+        return source
+
+    for enc in ("cp1252", "latin-1", "windows-1252"):
+        try:
+            repaired = source.encode(enc).decode("utf-8").strip()
+        except Exception:
+            continue
+        if repaired and _looks_like_vietnamese(repaired):
+            return unicodedata.normalize("NFC", repaired)
+
+    return source
 
 
 def get_noto_sans_font_path() -> str | None:
