@@ -5,7 +5,7 @@
 // requests to the backend container. This avoids browser CORS issues when the frontend is
 // opened via a LAN/"Network" IP (e.g. 172.x / LAN IP) instead of "localhost".
 
-export const API_BASE = (import.meta?.env?.VITE_API_BASE_URL || "/api").replace(/\/+$/, "");
+export const API_BASE = (import.meta?.env?.VITE_API_URL || import.meta?.env?.VITE_API_BASE_URL || "/api").replace(/\/+$/, "");
 
 function _isEnvelope(obj) {
   return obj && typeof obj === "object" && ("data" in obj || "error" in obj);
