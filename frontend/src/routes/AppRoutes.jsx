@@ -161,6 +161,15 @@ export default function AppRoutes() {
       />
 
       <Route
+        path="/final-exam"
+        element={
+          <ProtectedRoute allow={["student"]}>
+            <FinalExam />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
         path="/final-exam/:classroomId"
         element={
           <ProtectedRoute allow={["student"]}>

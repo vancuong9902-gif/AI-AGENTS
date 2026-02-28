@@ -39,6 +39,7 @@ from app.models.learning_plan import LearningPlan, LearningPlanHomeworkSubmissio
 from app.models.notification import Notification
 from app.models.user import User
 from app.services.assessment_service import generate_assessment, submit_assessment
+from app.services.notification_service import notify_teacher_student_finished
 from app.services.lms_service import (
     per_student_bloom_analysis,
     analyze_topic_weak_points,
@@ -89,6 +90,7 @@ class GenerateLmsQuizIn(BaseModel):
     easy_count: int = 4
     medium_count: int = 4
     hard_count: int = 2
+    duration_seconds: int = 1800
 
 
 class SubmitAttemptIn(BaseModel):
@@ -387,12 +389,28 @@ def _generate_assessment_lms(*, request: Request, db: Session, payload: Generate
         document_ids=[int(x) for x in payload.document_ids],
         topics=payload.topics,
     )
+    quiz_id = int(data.get("quiz_id") or data.get("assessment_id") or 0)
+    if quiz_id > 0:
+        quiz = db.query(QuizSet).filter(QuizSet.id == quiz_id).first()
+        if quiz:
+            quiz.duration_seconds = int(payload.duration_seconds or 1800)
+            db.add(quiz)
+            db.commit()
     return {"request_id": request.state.request_id, "data": data, "error": None}
 
 
 def _quiz_duration_map(quiz: QuizSet) -> int:
     try:
-        return int(getattr(quiz, "duration_seconds", 1800) or 1800)
+        duration = int(getattr(quiz, "duration_seconds", 0) or 0)
+        if duration > 0:
+            return duration
+
+        level = str(getattr(quiz, "level", "") or "").lower()
+        if "hard" in level or "advanced" in level:
+            return 2700
+        if "easy" in level or "beginner" in level:
+            return 1200
+        return 1800
     except Exception:
         return 1800
 
@@ -413,7 +431,6 @@ def _publish_mas_event_non_blocking(db: Session, *, event: Event) -> None:
     except Exception:
         # Fallback an toàn nếu không có event loop khả dụng trong context hiện tại.
         pass
-    return int(getattr(quiz, "duration_seconds", 1800) or 1800)
 
 
 @router.post("/lms/placement/generate")
@@ -599,8 +616,9 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
     started_at = (started.started_at or now)
     if started_at.tzinfo is None:
         started_at = started_at.replace(tzinfo=timezone.utc)
+    GRACE_PERIOD_SECONDS = 60
     spent = max(0, int((now - started_at).total_seconds()))
-    timed_out = spent > int(duration_seconds)
+    timed_out = spent > int(duration_seconds) + GRACE_PERIOD_SECONDS
 
     base = submit_assessment(
         db,
@@ -663,7 +681,63 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
         breakdown=breakdown, document_topics=topics, multidim_profile=multidim_profile)
 
     if timed_out:
-        base["notes"] = "Nộp quá thời gian; hệ thống chấm theo câu trả lời tại thời điểm nộp."
+        base["is_late_submission"] = True
+        base["late_by_seconds"] = spent - int(duration_seconds)
+        base["notes"] = (
+            f"⚠️ Bài nộp trễ {spent - int(duration_seconds)} giây. "
+            f"Điểm được tính theo câu trả lời tại thời điểm hết giờ. "
+            f"Kết quả có thể ảnh hưởng đến xếp loại."
+        )
+    else:
+        base["is_late_submission"] = False
+        base["notes"] = "Bài nộp đúng hạn."
+
+    # === AUTO-ASSIGN LEARNING PATH SAU KHI PHÂN LOẠI ===
+    classroom_id_for_path = int(getattr(quiz, "classroom_id", 0) or 0)
+    try:
+        doc_ids = []
+        if quiz and quiz.document_ids_json:
+            import json as _json
+
+            doc_ids = [int(x) for x in (_json.loads(quiz.document_ids_json) or [])]
+
+        if not doc_ids:
+            ca = db.query(ClassroomAssessment).filter(
+                ClassroomAssessment.assessment_id == quiz_id
+            ).first()
+            if ca:
+                classroom_id_for_path = int(ca.classroom_id)
+
+        auto_plan = assign_learning_path(
+            db,
+            user_id=int(started.user_id),
+            student_level=str(level.get("level_key") or "trung_binh"),
+            document_ids=doc_ids,
+            classroom_id=int(classroom_id_for_path) if classroom_id_for_path else 0,
+        )
+        base["learning_path_assigned"] = True
+        base["learning_plan_id"] = auto_plan.get("plan_id")
+    except Exception as _e:
+        logging.getLogger(__name__).warning(f"Auto-assign learning path failed: {_e}")
+        base["learning_path_assigned"] = False
+
+    try:
+        ca_for_notify = db.query(ClassroomAssessment).filter(
+            ClassroomAssessment.assessment_id == quiz_id
+        ).first()
+        if ca_for_notify:
+            quiz_for_notify = db.query(QuizSet).filter(QuizSet.id == quiz_id).first()
+            exam_kind_for_notify = getattr(quiz_for_notify, "kind", "unknown")
+            notify_teacher_student_finished(
+                db,
+                student_id=int(started.user_id),
+                classroom_id=int(ca_for_notify.classroom_id),
+                exam_kind=exam_kind_for_notify,
+                score_percent=float(breakdown["overall"]["percent"]),
+                classification=str(level.get("level_key") or "trung_binh"),
+            )
+    except Exception:
+        pass
 
     if str(getattr(quiz, "kind", "") or "") == "diagnostic_pre":
         evt = Event(
@@ -709,6 +783,22 @@ def assign_student_path(
         classroom_id=int(payload.classroom_id),
     )
     return {"request_id": request.state.request_id, "data": result, "error": None}
+
+
+@router.get("/teacher/notifications")
+def get_teacher_notifications(request: Request, teacher_id: int, db: Session = Depends(get_db)):
+    from app.services.notification_service import get_notifications_for_teacher
+
+    notifs = get_notifications_for_teacher(int(teacher_id))
+    return {"request_id": request.state.request_id, "data": notifs, "error": None}
+
+
+@router.post("/teacher/notifications/{notif_id}/read")
+def mark_notification_read(request: Request, notif_id: int, db: Session = Depends(get_db)):
+    from app.services.notification_service import mark_read
+
+    mark_read(int(notif_id))
+    return {"request_id": request.state.request_id, "data": {"ok": True}, "error": None}
 
 
 @router.post("/lms/assign-path")

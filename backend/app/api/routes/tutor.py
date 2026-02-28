@@ -24,6 +24,7 @@ def chat(request: Request, payload: TutorChatRequest, db: Session = Depends(get_
         topic=payload.topic,
         top_k=payload.top_k,
         document_ids=payload.document_ids,
+        allowed_topics=payload.allowed_topics,
     )
 
     # Safety: ensure response is JSON-serializable.
@@ -54,6 +55,7 @@ def generate_questions(request: Request, payload: TutorGenerateQuestionsRequest,
         question_count=payload.question_count,
         top_k=payload.top_k,
         document_ids=payload.document_ids,
+        allowed_topics=payload.allowed_topics,
     )
 
     safe = jsonable_encoder(

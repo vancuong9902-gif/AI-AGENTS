@@ -35,6 +35,10 @@ export default function Upload() {
   const [error, setError] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [statusData, setStatusData] = useState(null);
+  const [uploadStep, setUploadStep] = useState('upload');
+  const [suggestedTopics, setSuggestedTopics] = useState([]);
+  const [confirmedTopics, setConfirmedTopics] = useState([]);
+  const [docId, setDocId] = useState(null);
 
   const stageText = useMemo(
     () => processingMessage(statusData?.status, statusData?.progress_pct ?? 0),
@@ -59,7 +63,7 @@ export default function Upload() {
   }, [uploadedDoc?.doc_id]);
 
   useEffect(() => {
-    if (statusData?.status === 'ready' && uploadedDoc?.doc_id) {
+    if (statusData?.status === 'ready' && uploadedDoc?.doc_id && uploadStep !== 'confirm_topics') {
       const timeout = setTimeout(() => navigate(`/topics/preview/${uploadedDoc.doc_id}`), 1000);
       return () => clearTimeout(timeout);
     }
@@ -67,7 +71,7 @@ export default function Upload() {
       clearInterval(pollRef.current);
     }
     return undefined;
-  }, [navigate, statusData?.status, uploadedDoc?.doc_id]);
+  }, [navigate, statusData?.status, uploadedDoc?.doc_id, uploadStep]);
 
   const selectFile = (candidate) => {
     const validationError = isValidPdfFile(candidate);
@@ -98,6 +102,7 @@ export default function Upload() {
     setError(null);
     setStatusData({ status: 'pending', progress_pct: 0, topic_count: 0 });
     setUploadedDoc(null);
+    setUploadStep('upload');
 
     const formData = new FormData();
     formData.append('file', file);
@@ -125,7 +130,16 @@ export default function Upload() {
             throw new Error(body?.detail || body?.error?.message || 'Upload thất bại.');
           }
           setUploadProgress(100);
-          setUploadedDoc(body?.data || body);
+          const payload = body?.data || body;
+          setUploadedDoc(payload);
+          const topics = payload?.topics || [];
+          setDocId(payload?.document_id || payload?.doc_id || null);
+          if (Array.isArray(topics) && topics.length > 0) {
+            const names = topics.map((t) => (typeof t === 'string' ? t : (t?.title || t?.name || ''))).filter(Boolean);
+            setSuggestedTopics(names);
+            setConfirmedTopics(names);
+            setUploadStep('confirm_topics');
+          }
           resolve();
         } catch (e) {
           reject(e);
@@ -202,6 +216,49 @@ export default function Upload() {
           </>
         ) : null}
       </Card>
+
+      {uploadStep === 'confirm_topics' && (
+        <Card className='span-12' style={{ marginTop: 16 }}>
+          <h2 style={{ marginTop: 0 }}>📚 AI đã đề xuất {suggestedTopics.length} chủ đề</h2>
+          <p style={{ color: '#666' }}>Kiểm tra, chỉnh sửa rồi xác nhận để tiếp tục.</p>
+          <div style={{ display: 'grid', gap: 8 }}>
+            {confirmedTopics.map((topic, idx) => (
+              <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  value={topic}
+                  onChange={(e) => {
+                    const next = [...confirmedTopics];
+                    next[idx] = e.target.value;
+                    setConfirmedTopics(next);
+                  }}
+                  style={{ flex: 1, padding: 10, border: '1px solid #ddd', borderRadius: 10 }}
+                />
+                <Button onClick={() => setConfirmedTopics(confirmedTopics.filter((_, i) => i !== idx))}>Xoá</Button>
+              </div>
+            ))}
+          </div>
+          <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+            <Button onClick={() => setConfirmedTopics([...confirmedTopics, 'Chủ đề mới'])}>+ Thêm chủ đề</Button>
+            <Button
+              onClick={async () => {
+                try {
+                  await apiJson(`/documents/${docId}/confirm-topics`, {
+                    method: 'POST',
+                    body: { topics: confirmedTopics.filter((t) => String(t || '').trim()) },
+                  });
+                  setUploadStep('done');
+                  if (uploadedDoc?.doc_id) navigate(`/topics/preview/${uploadedDoc.doc_id}`);
+                } catch (e) {
+                  setError(e?.message || 'Xác nhận topics thất bại.');
+                }
+              }}
+            >
+              ✅ Xác nhận {confirmedTopics.length} chủ đề
+            </Button>
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
+

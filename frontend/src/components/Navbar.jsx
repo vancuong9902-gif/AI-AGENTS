@@ -1,8 +1,12 @@
+import { useEffect, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { apiJson } from '../lib/api';
 
 export default function Navbar({ onNavigate }) {
   const { role, userId, logout } = useAuth();
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
   const nav = useNavigate();
   const student = [
     ['/classrooms', 'Lớp học'],
@@ -24,6 +28,25 @@ export default function Navbar({ onNavigate }) {
   ];
   const items = role === 'teacher' ? teacher : role === 'student' ? student : [];
 
+
+  useEffect(() => {
+    if (role !== 'teacher' || !userId) return undefined;
+    const poll = async () => {
+      try {
+        const res = await apiJson(`/teacher/notifications?teacher_id=${userId}`);
+        const arr = Array.isArray(res) ? res : [];
+        setNotifications(arr);
+        setUnreadCount(arr.length);
+      } catch {
+        // ignore polling errors
+      }
+    };
+    poll();
+    const interval = setInterval(poll, 30000);
+    return () => clearInterval(interval);
+  }, [role, userId]);
+
+
   return (
     <>
       <div className='brand'>🎓 AI-Agents LMS</div>
@@ -34,6 +57,9 @@ export default function Navbar({ onNavigate }) {
         <NavLink onClick={onNavigate} className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} to='/health'>Health</NavLink>
       </div>
       <div style={{ marginTop: 16, fontSize: 13, color: 'var(--muted)' }}>Role: <b>{role || 'guest'}</b> · User ID: <b>{userId ?? 1}</b></div>
+      {role === 'teacher' && (
+        <div style={{ marginTop: 8, fontSize: 13 }} title={(notifications[0]?.message || '')}>🔔 Thông báo mới: <b>{unreadCount}</b></div>
+      )}
       <button aria-label='Đăng xuất' className='logout-btn focus-ring' style={{ marginTop: 10 }} onClick={() => { logout(); nav('/'); onNavigate?.(); }}>Logout</button>
     </>
   );

@@ -886,6 +886,39 @@ def confirm_document_topics(
     if not isinstance(raw_topics, list) or not raw_topics:
         raise HTTPException(status_code=422, detail='topics is required')
 
+    # Support both payload styles:
+    # 1) [{id, name, confirmed}] (legacy)
+    # 2) ["topic A", "topic B"] (simple confirm flow)
+    if raw_topics and all(not isinstance(item, dict) for item in raw_topics):
+        titles = [str(t).strip() for t in raw_topics if str(t).strip()]
+        if not titles:
+            raise HTTPException(status_code=422, detail='Cần ít nhất 1 topic')
+
+        db.query(DocumentTopic).filter(DocumentTopic.document_id == int(doc_id)).delete()
+        now = datetime.now(timezone.utc)
+        for order, title in enumerate(titles):
+            cleaned, _warnings = validate_and_clean_topic_title(title)
+            row = DocumentTopic(
+                document_id=int(doc_id),
+                title=(cleaned or title)[:255],
+                topic_index=int(order),
+                status='approved',
+                is_confirmed=True,
+                confirmed_by_teacher=True,
+                reviewed_at=now,
+            )
+            db.add(row)
+        db.commit()
+        return {
+            'request_id': request.state.request_id,
+            'data': {
+                'document_id': int(doc_id),
+                'topics_confirmed': len(titles),
+                'topics': titles,
+            },
+            'error': None,
+        }
+
     db_topics = {
         int(t.id): t
         for t in db.query(DocumentTopic).filter(DocumentTopic.document_id == int(doc_id)).all()
@@ -911,6 +944,7 @@ def confirm_document_topics(
         touched_ids.add(topic_id)
         confirmed = bool(item.get('confirmed', True))
         topic.is_confirmed = confirmed
+        topic.confirmed_by_teacher = confirmed
 
         if 'name' in item:
             new_title = str(item.get('name') or '').strip()
@@ -927,6 +961,7 @@ def confirm_document_topics(
     for topic_id, topic in db_topics.items():
         if topic_id not in touched_ids:
             topic.is_confirmed = False
+            topic.confirmed_by_teacher = False
             db.add(topic)
 
     for order, topic_id in enumerate(ordered_confirmed_ids):
