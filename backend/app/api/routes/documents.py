@@ -29,6 +29,7 @@ from app.services.topic_service import (
     clean_topic_text_for_display,
     split_study_and_practice,
     is_appendix_title,
+    validate_and_clean_topic_title,
 )
 from app.services import vector_store
 from app.infra.queue import is_async_enabled, enqueue
@@ -46,6 +47,23 @@ def _is_pdf(mime_type: str | None, filename: str | None) -> bool:
 
 
 
+
+
+
+def _infer_page_range_from_chunks(chunks: list[DocumentChunk], start_idx: int | None, end_idx: int | None) -> tuple[int | None, int | None]:
+    if start_idx is None or end_idx is None:
+        return (None, None)
+    vals: list[int] = []
+    for c in chunks[int(start_idx): int(end_idx) + 1]:
+        meta = getattr(c, 'meta', {}) or {}
+        for k in ('page', 'page_num', 'page_number'):
+            v = meta.get(k)
+            if isinstance(v, int):
+                vals.append(int(v))
+                break
+    if not vals:
+        return (None, None)
+    return (min(vals), max(vals))
 
 def _dynamic_topic_target(full_text: str, estimated_pages: int | None = None) -> float:
     full_len = len(full_text or '')
@@ -245,13 +263,11 @@ def list_document_chunks(request: Request, document_id: int, db: Session = Depen
 
 
 @router.get('/documents/{document_id}/topics')
-def list_document_topics(request: Request, document_id: int, db: Session = Depends(get_db), detail: int = 0):
-    topics = (
-        db.query(DocumentTopic)
-        .filter(DocumentTopic.document_id == document_id)
-        .order_by(DocumentTopic.topic_index.asc())
-        .all()
-    )
+def list_document_topics(request: Request, document_id: int, db: Session = Depends(get_db), detail: int = 0, filter: str | None = None):
+    topics_q = db.query(DocumentTopic).filter(DocumentTopic.document_id == document_id)
+    if (filter or '').strip().lower() == 'needs_review':
+        topics_q = topics_q.filter(DocumentTopic.needs_review.is_(True))
+    topics = topics_q.order_by(func.coalesce(DocumentTopic.page_start, 10**9).asc(), DocumentTopic.topic_index.asc()).all()
 
     # Preload chunk lengths for fast "quiz_ready" stats (no extra heavy per-topic queries).
     chunk_rows = (
@@ -275,7 +291,10 @@ def list_document_topics(request: Request, document_id: int, db: Session = Depen
             "topic_index": t.topic_index,
             "title": t.title,
             # Frontend can show ordering using topic_index; keep titles clean.
-            "display_title": t.title,
+            "display_title": t.display_title or t.title,
+            "needs_review": bool(t.needs_review),
+            "extraction_confidence": float(t.extraction_confidence or 0.0),
+            "page_range": [t.page_start, t.page_end],
             "summary": t.summary,
             "keywords": t.keywords or [],
             "start_chunk_index": t.start_chunk_index,
@@ -357,9 +376,10 @@ def list_document_topics(request: Request, document_id: int, db: Session = Depen
                 item["practice_len"] = len(pv)
                 item["has_more_practice"] = len(pv) > 900
         out.append(item)
+    needs_review_count = sum(1 for x in out if bool(x.get('needs_review')))
     return {
         'request_id': request.state.request_id,
-        'data': {'document_id': document_id, 'topics': out},
+        'data': {'document_id': document_id, 'topics': out, 'needs_review_count': needs_review_count},
         'error': None,
     }
 
@@ -423,14 +443,21 @@ def regenerate_document_topics(
 
         topic_models: list[DocumentTopic] = []
         for i, (t, (s_idx, e_idx)) in enumerate(zip(topics, ranges)):
+            cleaned_title, title_warnings = validate_and_clean_topic_title(str(t.get('title') or '').strip()[:255])
+            page_start, page_end = _infer_page_range_from_chunks(chunks, s_idx, e_idx)
             tm = DocumentTopic(
                 document_id=int(document_id),
                 topic_index=i,
-                title=str(t.get('title') or '').strip()[:255],
+                title=(cleaned_title or str(t.get('title') or '').strip())[:255],
+                display_title=(cleaned_title or str(t.get('title') or '').strip())[:255],
+                needs_review=bool(t.get('needs_review') or title_warnings),
+                extraction_confidence=float(t.get('extraction_confidence') or 0.0),
                 summary=str(t.get('summary') or '').strip(),
                 keywords=[str(x).strip() for x in (t.get('keywords') or []) if str(x).strip()],
                 start_chunk_index=s_idx,
                 end_chunk_index=e_idx,
+                page_start=page_start,
+                page_end=page_end,
             )
             topic_models.append(tm)
 
@@ -467,7 +494,10 @@ def regenerate_document_topics(
                         'topic_id': tm.id,
                         'topic_index': tm.topic_index,
                         'title': tm.title,
-                        'display_title': tm.title,
+                        'display_title': tm.display_title or tm.title,
+                        'needs_review': bool(tm.needs_review),
+                        'extraction_confidence': float(tm.extraction_confidence or 0.0),
+                        'page_range': [tm.page_start, tm.page_end],
                         'summary': tm.summary,
                         'keywords': tm.keywords or [],
                         'start_chunk_index': tm.start_chunk_index,
@@ -528,7 +558,10 @@ def get_document_topic_detail(
         "topic_id": t.id,
         "topic_index": t.topic_index,
         "title": t.title,
-        "display_title": t.title,
+        "display_title": t.display_title or t.title,
+        "needs_review": bool(t.needs_review),
+        "extraction_confidence": float(t.extraction_confidence or 0.0),
+        "page_range": [t.page_start, t.page_end],
         "summary": t.summary,
         "keywords": t.keywords or [],
         "start_chunk_index": t.start_chunk_index,
@@ -570,6 +603,59 @@ def get_document_topic_detail(
             item["practice"] = practice_view
 
     return {"request_id": request.state.request_id, "data": item, "error": None}
+
+
+@router.put('/documents/{document_id}/topics/{topic_id}')
+def update_document_topic(
+    request: Request,
+    document_id: int,
+    topic_id: int,
+    payload: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    doc = db.query(Document).filter(Document.id == int(document_id)).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail='Document not found')
+    if int(doc.user_id) != int(getattr(teacher, 'id')):
+        raise HTTPException(status_code=403, detail='Not allowed')
+
+    topic = (
+        db.query(DocumentTopic)
+        .filter(DocumentTopic.document_id == int(document_id))
+        .filter(DocumentTopic.id == int(topic_id))
+        .first()
+    )
+    if not topic:
+        raise HTTPException(status_code=404, detail='Topic not found')
+
+    new_title = str(payload.get('title') or '').strip()
+    if not new_title:
+        raise HTTPException(status_code=422, detail='Title cannot be empty')
+
+    cleaned, warnings = validate_and_clean_topic_title(new_title)
+    topic.title = (cleaned or new_title)[:255]
+    topic.display_title = (cleaned or new_title)[:255]
+    topic.needs_review = bool(warnings)
+    topic.extraction_confidence = max(float(topic.extraction_confidence or 0.0), 0.95)
+
+    db.add(topic)
+    db.commit()
+    db.refresh(topic)
+
+    return {
+        'request_id': request.state.request_id,
+        'data': {
+            'topic_id': int(topic.id),
+            'document_id': int(document_id),
+            'title': topic.title,
+            'display_title': topic.display_title,
+            'needs_review': bool(topic.needs_review),
+            'extraction_confidence': float(topic.extraction_confidence or 0.0),
+            'page_range': [topic.page_start, topic.page_end],
+        },
+        'error': None,
+    }
 
 
 def _parse_tags(tags: Optional[str]) -> list[str]:
@@ -853,14 +939,21 @@ async def upload_document(
 
             topic_models: list[DocumentTopic] = []
             for i, (t, (s_idx, e_idx)) in enumerate(zip(topics, ranges)):
+                cleaned_title, title_warnings = validate_and_clean_topic_title(str(t.get("title") or "").strip()[:255])
+                page_start, page_end = _infer_page_range_from_chunks(chunk_models, s_idx, e_idx)
                 tm = DocumentTopic(
                     document_id=doc.id,
                     topic_index=i,
-                    title=str(t.get("title") or "").strip()[:255],
+                    title=(cleaned_title or str(t.get("title") or "").strip())[:255],
+                    display_title=(cleaned_title or str(t.get("title") or "").strip())[:255],
+                    needs_review=bool(t.get("needs_review") or title_warnings),
+                    extraction_confidence=float(t.get("extraction_confidence") or 0.0),
                     summary=str(t.get("summary") or "").strip(),
                     keywords=[str(x).strip() for x in (t.get("keywords") or []) if str(x).strip()],
                     start_chunk_index=s_idx,
                     end_chunk_index=e_idx,
+                    page_start=page_start,
+                    page_end=page_end,
                 )
                 topic_models.append(tm)
 
@@ -906,7 +999,10 @@ async def upload_document(
                             "topic_id": tm.id,
                             "topic_index": tm.topic_index,
                             "title": tm.title,
-                            "display_title": tm.title,
+                            "display_title": tm.display_title or tm.title,
+                            "needs_review": bool(tm.needs_review),
+                            "extraction_confidence": float(tm.extraction_confidence or 0.0),
+                            "page_range": [tm.page_start, tm.page_end],
                             "summary": tm.summary,
                             "keywords": tm.keywords or [],
                             "start_chunk_index": tm.start_chunk_index,
