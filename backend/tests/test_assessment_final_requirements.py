@@ -59,7 +59,7 @@ def test_generate_final_exam_uses_required_structure(monkeypatch):
     assert captured["easy_count"] == 4
     assert captured["medium_count"] == 8
     assert captured["hard_count"] == 8
-    assert captured["time_limit_minutes"] == 60
+    assert captured["time_limit_minutes"] == 90
     assert captured["topics"] == ["Topic A", "Topic B"]
 
 

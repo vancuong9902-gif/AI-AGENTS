@@ -69,11 +69,13 @@ _TRAILING_PUNCT_RE = re.compile(r"[\s\?\!\.,;:]+$")
 
 def _normalize_stem_for_dedup(stem: str, *, max_chars: int = 120) -> str:
     """Normalize question stem so duplicate checks are stable across paraphrases."""
-    s = " ".join(str(stem or "").strip().lower().split())
+    s = str(stem or "").strip().lower()
+    s = _STEM_PUNCT_RE.sub(" ", s)
+    s = " ".join(s.split())
     s = _TRAILING_PUNCT_RE.sub("", s)
     if max_chars > 0:
         s = s[:max_chars]
-    return s
+    return s.strip()
 
 
 def _is_dup(stem: str, excluded_stems: set[str] | None = None, similarity_threshold: float = 0.72) -> bool:
@@ -110,6 +112,11 @@ def get_used_question_stems(db: Session, *, user_id: int, kinds: list[str]) -> s
         if norm:
             out.add(norm)
     return out
+
+
+def _get_used_question_stems(db: Session, user_id: int) -> set[str]:
+    """Load stems used by a user's entry_test attempts for final-exam exclusion."""
+    return get_used_question_stems(db, user_id=int(user_id), kinds=["entry_test"])
 _TOK_RE = re.compile(r"[\wÀ-ỹ]+", re.UNICODE)
 
 
@@ -1770,21 +1777,28 @@ def generate_assessment(
         qrows = db.query(Question.stem).filter(Question.id.in_(list(_excluded_question_ids))).all()
         _excluded_stems.update({_normalize_stem_for_dedup(str(r[0] or "")) for r in qrows if r and r[0]})
 
+    final_exam_llm_system_hint = (
+        "Đây là bài kiểm tra cuối kỳ tổng hợp. Câu hỏi phải đánh giá khả năng VẬN DỤNG và "
+        "TỔNG HỢP kiến thức từ nhiều chủ đề, không phải chỉ ghi nhớ đơn thuần. Mức độ khó "
+        "phải cao hơn bài kiểm tra đầu vào."
+    )
+    dedup_similarity_threshold = 0.7 if kind == "final_exam" else float(similarity_threshold)
+
     if kind == "final_exam":
         dedup_uid = int(dedup_user_id) if dedup_user_id is not None else int(teacher_id)
-        entry_stems = get_used_question_stems(db, user_id=dedup_uid, kinds=["diagnostic_pre"])
-        _excluded_stems.update(entry_stems)
+        used_entry_stems = _get_used_question_stems(db, dedup_uid)
+        _excluded_stems.update(used_entry_stems)
         topic_rows = (
             db.query(QuizSet.topic)
             .join(Attempt, Attempt.quiz_set_id == QuizSet.id)
-            .filter(Attempt.user_id == dedup_uid, QuizSet.kind.in_(["diagnostic_pre"]))
+            .filter(Attempt.user_id == dedup_uid, QuizSet.kind.in_(["entry_test"]))
             .all()
         )
         entry_topics = sorted({str(r[0] or "").strip() for r in topic_rows if r and str(r[0] or "").strip()})
-        if len(entry_stems) > 20:
+        if len(used_entry_stems) > 20:
             logging.getLogger(__name__).warning(
-                "Final exam dedup excludes %s stems from diagnostic_pre; generation may be under-supplied",
-                len(entry_stems),
+                "Final exam dedup excludes %s stems from entry_test; generation may be under-supplied",
+                len(used_entry_stems),
             )
 
     _excluded_stems = {x for x in _excluded_stems if x}
@@ -1817,7 +1831,7 @@ def generate_assessment(
         dedup_topics_from_entry = sorted(topic_seen)
 
     def _is_dup_local(stem: str) -> bool:
-        return _is_dup(stem, _excluded_stems, similarity_threshold)
+        return _is_dup(stem, _excluded_stems, dedup_similarity_threshold)
 
     # Auto-scope to teacher documents if UI did not pass document_ids
     doc_ids = list(document_ids or [])
@@ -1924,13 +1938,25 @@ def generate_assessment(
                             "4) tối thiểu 40% câu dạng scenario-based."
                         )
                         hint = (hint + "\n" + final_rules) if hint else final_rules
-                    qs = _generate_mcq_with_llm(
-                        t,
-                        level,
-                        cnt,
-                        chunks,
-                        extra_system_hint=hint,
-                    )
+                    if (kind or "").lower() == "final_exam":
+                        hint = (hint + "\n" + final_exam_llm_system_hint) if hint else final_exam_llm_system_hint
+                    try:
+                        qs = _generate_mcq_with_llm(
+                            t,
+                            level,
+                            cnt,
+                            chunks,
+                            extra_system_hint=hint,
+                            excluded_stems=sorted(excluded_stems or set()),
+                        )
+                    except TypeError:
+                        qs = _generate_mcq_with_llm(
+                            t,
+                            level,
+                            cnt,
+                            chunks,
+                            extra_system_hint=hint,
+                        )
                 except HTTPException:
                     raise
                 except Exception:
@@ -1941,7 +1967,7 @@ def generate_assessment(
             random.shuffle(llm_mcqs)
             for i, q in enumerate(llm_mcqs):
                 stem = str((q or {}).get("stem") or (q or {}).get("question", ""))
-                if _is_dup(stem, excluded_stems, similarity_threshold):
+                if _is_dup(stem, excluded_stems, dedup_similarity_threshold):
                     continue
                 out.append(_normalize_question_bloom(q, allowed, target_blooms, i))
                 if len(out) >= int(count):
@@ -1964,7 +1990,7 @@ def generate_assessment(
         random.shuffle(offline_mcqs)
         for i, q in enumerate(offline_mcqs):
             stem = str((q or {}).get("stem") or (q or {}).get("question", ""))
-            if _is_dup(stem, excluded_stems, similarity_threshold):
+            if _is_dup(stem, excluded_stems, dedup_similarity_threshold):
                 continue
             out.append(_normalize_question_bloom(q, allowed, target_blooms, i))
             if len(out) >= int(count):
@@ -1989,7 +2015,7 @@ def generate_assessment(
                     source=correct["source"],
                 )
                 stem = str((q or {}).get("stem") or (q or {}).get("question", ""))
-                if _is_dup(stem, excluded_stems, similarity_threshold):
+                if _is_dup(stem, excluded_stems, dedup_similarity_threshold):
                     continue
                 out.append(_normalize_question_bloom(q, allowed, target_blooms, i))
         return out[: int(count)]
@@ -2174,13 +2200,23 @@ def generate_assessment(
             slots_left = max(1, len(topic_list) - idx)
             per_topic = max(1, (remain + slots_left - 1) // slots_left)
             try:
-                more = _generate_mcq_with_llm(
-                    topic_name,
-                    level,
-                    per_topic,
-                    chunks,
-                    extra_system_hint=extra_system_hint,
-                )
+                try:
+                    more = _generate_mcq_with_llm(
+                        topic_name,
+                        level,
+                        per_topic,
+                        chunks,
+                        extra_system_hint=extra_system_hint,
+                        excluded_stems=sorted(_excluded_stems),
+                    )
+                except TypeError:
+                    more = _generate_mcq_with_llm(
+                        topic_name,
+                        level,
+                        per_topic,
+                        chunks,
+                        extra_system_hint=extra_system_hint,
+                    )
             except HTTPException:
                 raise
             except Exception:
@@ -2217,6 +2253,21 @@ def generate_assessment(
                     }
                 )
             generated = generated[:target_total]
+
+    if kind == "final_exam" and len(topics_cycle) >= 2:
+        for i, q in enumerate(generated):
+            if not isinstance(q, dict):
+                continue
+            stem = str(q.get("stem") or "").strip()
+            if not stem:
+                continue
+            lower_stem = stem.lower()
+            has_topics = sum(1 for t in topics_cycle if t and t.lower() in lower_stem)
+            if has_topics >= 2:
+                continue
+            t1 = topics_cycle[i % len(topics_cycle)]
+            t2 = topics_cycle[(i + 1) % len(topics_cycle)]
+            q["stem"] = f"Trong bối cảnh kết hợp {t1} và {t2}: {stem}"
 
     # -------------------------
     # Estimate time per question (minutes)
@@ -2260,7 +2311,14 @@ def generate_assessment(
     except Exception:
         computed_total_minutes = 0
 
-    requested_minutes = int(time_limit_minutes) if time_limit_minutes is not None else int(computed_total_minutes)
+    if time_limit_minutes is not None:
+        requested_minutes = int(time_limit_minutes)
+    elif kind == "final_exam":
+        requested_minutes = 90
+    elif kind == "entry_test":
+        requested_minutes = 45
+    else:
+        requested_minutes = int(computed_total_minutes)
     requested_minutes = max(1, requested_minutes)
 
     quiz_set = QuizSet(
@@ -2268,6 +2326,7 @@ def generate_assessment(
         kind=kind,
         topic=title,
         level=level,
+        is_final_exam=bool(kind == "final_exam"),
         duration_seconds=int(requested_minutes * 60),
         metadata_json=quiz_metadata,
         source_query_id=None,
@@ -2338,6 +2397,7 @@ def generate_assessment(
         "title": quiz_set.topic,
         "level": quiz_set.level,
         "time_limit_minutes": int(total_minutes),
+        "exam_type_label": "Kiểm tra cuối kỳ" if kind == "final_exam" else "Kiểm tra đầu vào",
         "metadata": quiz_metadata,
         "questions": questions_out,
         "difficulty_plan": difficulty_plan,
@@ -2406,6 +2466,7 @@ def get_assessment(db: Session, *, assessment_id: int) -> Dict[str, Any]:
         "title": quiz_set.topic,
         "level": quiz_set.level,
         "kind": quiz_set.kind,
+        "exam_type_label": "Kiểm tra cuối kỳ" if _normalize_assessment_kind(getattr(quiz_set, "kind", "")) == "final_exam" else "Kiểm tra đầu vào",
         "metadata": getattr(quiz_set, "metadata_json", {}) or {},
         "time_limit_minutes": int(total_minutes),
         "questions": [
@@ -2471,7 +2532,7 @@ def generate_final_exam(
         topics=topics,
         kind="final_exam",
         exclude_quiz_ids=pre_exam_ids,
-        time_limit_minutes=60,
+        time_limit_minutes=90,
     )
 
 
