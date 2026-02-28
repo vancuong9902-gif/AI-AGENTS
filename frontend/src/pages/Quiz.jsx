@@ -1,688 +1,462 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
-import Card from '../ui/Card';
-import Button from '../ui/Button';
-import Modal from '../ui/Modal';
-import Banner from '../ui/Banner';
-import PageHeader from '../ui/PageHeader';
+import { useNavigate, useParams } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 import { apiJson } from '../lib/api';
-import { useExamTimer } from '../hooks/useExamTimer';
+import Banner from '../ui/Banner';
+import Button from '../ui/Button';
+import Card from '../ui/Card';
+import Modal from '../ui/Modal';
+import PageHeader from '../ui/PageHeader';
 
-function normalizeOption(option, index) {
-  if (typeof option === 'string') return { value: index, label: option };
-  return {
-    value: option?.id ?? option?.value ?? option?.key ?? index,
-    label: option?.label ?? option?.text ?? option?.content ?? `Lựa chọn ${index + 1}`,
-  };
+const DEFAULT_DIFFICULTY_SETTINGS = { easy: 4, medium: 4, hard: 2 };
+const DEFAULT_DURATION_SECONDS = 1800;
+
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function toNumber(value, fallback = null) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+function resolveQuestionType(question) {
+  const rawType = String(question?.type || question?.question_type || '').toLowerCase();
+  if (rawType.includes('essay') || rawType.includes('text')) return 'essay';
+  return 'mcq';
 }
 
 function normalizeQuestion(question, index) {
+  const questionId = toNumber(question?.question_id ?? question?.id, index + 1);
+  const type = resolveQuestionType(question);
+  const options = asArray(question?.options).map((option, optionIndex) => {
+    if (typeof option === 'string') return option;
+    return option?.label ?? option?.text ?? option?.content ?? `Lựa chọn ${optionIndex + 1}`;
+  });
+
   return {
-    question_id: Number(question?.question_id ?? question?.id ?? index + 1),
-    topic: question?.topic || question?.topic_name || 'Chung',
-    stem: question?.stem || question?.question_text || question?.content || `Câu hỏi ${index + 1}`,
-    options: (Array.isArray(question?.options) ? question.options : []).map(normalizeOption),
+    id: questionId,
+    type,
+    stem: question?.stem ?? question?.question_text ?? question?.content ?? `Câu hỏi ${index + 1}`,
+    options,
   };
 }
 
+function formatClock(totalSeconds) {
+  const safe = Math.max(0, toNumber(totalSeconds, 0));
+  const mm = Math.floor(safe / 60)
+    .toString()
+    .padStart(2, '0');
+  const ss = Math.floor(safe % 60)
+    .toString()
+    .padStart(2, '0');
+  return `${mm}:${ss}`;
+}
+
 export default function Quiz() {
-  const { quizSetId } = useParams();
-  const [loading, setLoading] = useState(true);
+  const { topicId } = useParams();
+  const navigate = useNavigate();
+  const { userId } = useAuth();
+
+  const [bootLoading, setBootLoading] = useState(true);
+  const [bootError, setBootError] = useState('');
+  const [classroom, setClassroom] = useState(null);
+  const [documents, setDocuments] = useState([]);
+  const [selectedDocumentId, setSelectedDocumentId] = useState(null);
+  const [topics, setTopics] = useState([]);
+  const [selectedTopicIds, setSelectedTopicIds] = useState([]);
+
   const [starting, setStarting] = useState(false);
-  const [started, setStarted] = useState(false);
-  const [error, setError] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [openConfirm, setOpenConfirm] = useState(false);
+  const [attemptId, setAttemptId] = useState(null);
   const [questions, setQuestions] = useState([]);
-  const [durationSec, setDurationSec] = useState(0);
-  const [startInfo, setStartInfo] = useState(null);
   const [answers, setAnswers] = useState({});
-  const [submitted, setSubmitted] = useState(false);
-  const [result, setResult] = useState(null);
-  const autoSubmitRef = useRef(false);
+  const [timeLeftSec, setTimeLeftSec] = useState(0);
+  const [submitError, setSubmitError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
+  const timerRef = useRef(null);
+  const submittedRef = useRef(false);
+
+  const activeClassroomId = toNumber(localStorage.getItem('active_classroom_id'), 0);
+
+  const quizActive = questions.length > 0 && !!attemptId;
   const answeredCount = useMemo(
-    () => Object.values(answers).filter((value) => value !== undefined && value !== null).length,
-    [answers],
-  );
-  const allAnswered = questions.length > 0 && answeredCount === questions.length;
-
-  const initialTimeLeft = useMemo(() => {
-    if (!startInfo?.deadline) return 0;
-    const lagBuffer = Math.max(0, Number(startInfo?.clientLagSeconds || 0) > 5 ? Number(startInfo.clientLagSeconds) : 0);
-    return Math.max(0, Math.floor((new Date(startInfo.deadline).getTime() - Date.now()) / 1000 + lagBuffer));
-  }, [startInfo]);
-
-  const handleSubmit = useCallback(
-    async (autoSubmit = false) => {
-      if (!quizSetId || submitted || submitting || !started) return;
-      if (!autoSubmit && !allAnswered) {
-        setError('Bạn cần trả lời đủ câu hỏi trước khi nộp bài.');
-        return;
-      }
-
-      setSubmitting(true);
-      setError('');
-      try {
-        const payload = {
-          user_id: Number(localStorage.getItem('user_id') || 0),
-          duration_sec: Math.max(0, durationSec - initialTimeLeft),
-          answers: questions.map((question) => ({
-            question_id: Number(question.question_id),
-            answer_index: answers[question.question_id] ?? null,
-            answer_text: null,
-          })),
-        };
-
-        const response = await apiJson(`/v1/assessments/quiz-sets/${encodeURIComponent(quizSetId)}/submit`, {
-          method: 'POST',
-          body: payload,
-        });
-        setResult({ ...response, autoSubmitted: autoSubmit });
-        setSubmitted(true);
-      } catch (submitError) {
-        setError(submitError?.message || 'Nộp bài thất bại.');
-      } finally {
-        setSubmitting(false);
-        setOpenConfirm(false);
-      }
-    },
-    [allAnswered, answers, durationSec, initialTimeLeft, questions, quizSetId, started, submitted, submitting],
+    () => questions.reduce((acc, question) => {
+      const value = answers[question.id];
+      if (question.type === 'essay') return acc + (typeof value === 'string' && value.trim().length > 0 ? 1 : 0);
+      return acc + (typeof value === 'number' ? 1 : 0);
+    }, 0),
+    [answers, questions],
   );
 
-  const { formattedTime, warningLevel } = useExamTimer({
-    totalSeconds: started && !submitted ? initialTimeLeft : 0,
-    onTimeUp: () => {
-      if (!autoSubmitRef.current) {
-        autoSubmitRef.current = true;
-        handleSubmit(true);
-      }
-    },
-    onWarning: (secsLeft) => {
-      console.info(`Còn ${secsLeft} giây!`);
-    },
-  });
+  const loadBootData = useCallback(async () => {
+    setBootLoading(true);
+    setBootError('');
 
-  const loadQuiz = useCallback(async () => {
-    if (!quizSetId) {
-      setError('Không tìm thấy quizSetId trên URL.');
-      setLoading(false);
+    if (!activeClassroomId) {
+      setBootLoading(false);
       return;
     }
 
-    setLoading(true);
-    setError('');
     try {
-      const response = await apiJson(`/v1/assessments/${encodeURIComponent(quizSetId)}`);
-      const normalizedQuestions = (Array.isArray(response?.questions) ? response.questions : []).map(normalizeQuestion);
-      if (!normalizedQuestions.length) throw new Error('Bộ đề chưa có câu hỏi.');
+      const classroomsResponse = await apiJson('/classrooms');
+      const classrooms = asArray(classroomsResponse);
+      const activeClassroom = classrooms.find((item) => toNumber(item?.id, -1) === activeClassroomId);
 
-      const apiTime = Number(response?.time_limit_minutes || 0) * 60;
-      const fallback = Number(response?.duration_seconds || 0);
-      const resolvedDuration = apiTime > 0 ? apiTime : fallback;
-      if (!resolvedDuration) throw new Error('Không xác định được thời lượng bài kiểm tra.');
+      if (!activeClassroom) throw new Error('Không tìm thấy lớp học đang hoạt động.');
+      setClassroom(activeClassroom);
+
+      const docsResponse = await apiJson('/documents');
+      const docs = asArray(docsResponse);
+      setDocuments(docs);
+
+      if (!docs.length) {
+        setSelectedDocumentId(null);
+        return;
+      }
+
+      const persistedDocId = toNumber(localStorage.getItem('active_document_id'), null);
+      const docToUse = docs.find((doc) => toNumber(doc?.id, -1) === persistedDocId)
+        || docs.reduce((latest, current) => {
+          const latestTime = new Date(latest?.created_at || 0).getTime() || 0;
+          const currentTime = new Date(current?.created_at || 0).getTime() || 0;
+          if (currentTime === latestTime) {
+            return toNumber(current?.id, 0) > toNumber(latest?.id, 0) ? current : latest;
+          }
+          return currentTime > latestTime ? current : latest;
+        }, docs[0]);
+
+      const resolvedDocId = toNumber(docToUse?.id, null);
+      setSelectedDocumentId(resolvedDocId);
+      if (resolvedDocId) {
+        localStorage.setItem('active_document_id', String(resolvedDocId));
+      }
+    } catch (error) {
+      setBootError(error?.message || 'Không thể tải dữ liệu khởi tạo Placement Test.');
+    } finally {
+      setBootLoading(false);
+    }
+  }, [activeClassroomId]);
+
+  const loadTopics = useCallback(async (documentId) => {
+    if (!documentId) {
+      setTopics([]);
+      setSelectedTopicIds([]);
+      return;
+    }
+
+    try {
+      const topicsResponse = await apiJson(`/documents/${encodeURIComponent(documentId)}/topics`);
+      const topicRows = asArray(topicsResponse);
+      setTopics(topicRows);
+
+      const persisted = (() => {
+        try {
+          const parsed = JSON.parse(localStorage.getItem('selected_topic_ids') || '[]');
+          return asArray(parsed).map((id) => toNumber(id, null)).filter((id) => id != null);
+        } catch {
+          return [];
+        }
+      })();
+
+      const availableIds = new Set(topicRows.map((item) => toNumber(item?.id, -1)));
+      const fromStorage = persisted.filter((id) => availableIds.has(id));
+      const preselectedTopicFromRoute = toNumber(topicId, null);
+
+      let nextSelected = fromStorage;
+      if (!nextSelected.length && preselectedTopicFromRoute && availableIds.has(preselectedTopicFromRoute)) {
+        nextSelected = [preselectedTopicFromRoute];
+      }
+
+      setSelectedTopicIds(nextSelected);
+      localStorage.setItem('selected_topic_ids', JSON.stringify(nextSelected));
+    } catch (error) {
+      setTopics([]);
+      setSelectedTopicIds([]);
+      setBootError(error?.message || 'Không thể tải danh sách topic.');
+    }
+  }, [topicId]);
+
+  useEffect(() => {
+    loadBootData();
+  }, [loadBootData]);
+
+  useEffect(() => {
+    if (selectedDocumentId) {
+      localStorage.setItem('active_document_id', String(selectedDocumentId));
+      loadTopics(selectedDocumentId);
+    }
+  }, [loadTopics, selectedDocumentId]);
+
+  useEffect(() => {
+    localStorage.setItem('selected_topic_ids', JSON.stringify(selectedTopicIds));
+  }, [selectedTopicIds]);
+
+  useEffect(() => {
+    if (!quizActive) return undefined;
+
+    timerRef.current = setInterval(() => {
+      setTimeLeftSec((prev) => {
+        if (prev <= 1) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [quizActive]);
+
+  const submitAttempt = useCallback(async (auto = false) => {
+    if (!attemptId || submitting || submittedRef.current) return;
+
+    submittedRef.current = true;
+    setSubmitting(true);
+    setSubmitError('');
+
+    try {
+      const payload = {
+        answers: questions.map((question) => ({
+          question_id: question.id,
+          answer_index: question.type === 'mcq' ? (typeof answers[question.id] === 'number' ? answers[question.id] : null) : null,
+          answer_text: question.type === 'essay'
+            ? (typeof answers[question.id] === 'string' && answers[question.id].trim().length > 0 ? answers[question.id].trim() : null)
+            : null,
+        })),
+      };
+
+      const response = await apiJson(`/attempts/${encodeURIComponent(attemptId)}/submit`, {
+        method: 'POST',
+        body: payload,
+      });
+
+      navigate('/result', {
+        state: { type: 'entry', result: response, autoSubmitted: auto },
+      });
+    } catch (error) {
+      submittedRef.current = false;
+      setSubmitError(error?.message || 'Nộp bài thất bại.');
+    } finally {
+      setSubmitting(false);
+      setConfirmOpen(false);
+    }
+  }, [answers, attemptId, navigate, questions, submitting]);
+
+  useEffect(() => {
+    if (!quizActive || timeLeftSec > 0) return;
+    submitAttempt(true);
+  }, [quizActive, submitAttempt, timeLeftSec]);
+
+  const handleToggleTopic = (id) => {
+    setSelectedTopicIds((prev) => {
+      if (prev.includes(id)) return prev.filter((item) => item !== id);
+      return [...prev, id];
+    });
+  };
+
+  const handleStart = async () => {
+    if (!classroom || !selectedTopicIds.length || starting) return;
+
+    setStarting(true);
+    setSubmitError('');
+    submittedRef.current = false;
+
+    try {
+      const storedMinutes = toNumber(localStorage.getItem('time_limit_minutes'), null);
+      const durationSeconds = storedMinutes && storedMinutes > 0 ? storedMinutes * 60 : DEFAULT_DURATION_SECONDS;
+
+      const placement = await apiJson('/quizzes/placement', {
+        method: 'POST',
+        body: {
+          topic_ids: selectedTopicIds,
+          difficulty_settings: DEFAULT_DIFFICULTY_SETTINGS,
+          duration_seconds: durationSeconds,
+          teacher_id: toNumber(classroom?.teacher_id ?? classroom?.teacherId, 0),
+          classroom_id: activeClassroomId,
+        },
+      });
+
+      const assessmentId = toNumber(
+        placement?.assessment_id ?? placement?.quiz_id ?? placement?.id,
+        null,
+      );
+      if (!assessmentId) throw new Error('Backend chưa trả về assessment_id hợp lệ.');
+
+      const startResp = await apiJson('/attempts/start', {
+        method: 'POST',
+        body: {
+          quiz_id: assessmentId,
+          student_id: toNumber(userId, 0),
+        },
+      });
+
+      const normalizedQuestions = asArray(placement?.questions).map(normalizeQuestion);
+      if (!normalizedQuestions.length) throw new Error('Quiz không có câu hỏi để hiển thị.');
 
       setQuestions(normalizedQuestions);
-      setDurationSec(Math.floor(resolvedDuration));
-    } catch (e) {
-      setError(e?.message || 'Không thể tải bộ câu hỏi.');
-    } finally {
-      setLoading(false);
-    }
-  }, [quizSetId]);
+      setAnswers({});
+      setAttemptId(toNumber(startResp?.attempt_id ?? startResp?.id, null));
 
-  const startQuiz = useCallback(async () => {
-    if (!quizSetId || started) return;
-    setStarting(true);
-    setError('');
-    const requestStart = Date.now();
-    try {
-      const startResp = await apiJson(`/v1/assessments/quiz-sets/${encodeURIComponent(quizSetId)}/start`, { method: 'POST' });
-      const requestEnd = Date.now();
-      const networkLagSeconds = Math.max(0, (requestEnd - requestStart) / 1000);
-      setStartInfo({ ...startResp, clientLagSeconds: networkLagSeconds });
-      setStarted(true);
-      autoSubmitRef.current = false;
-    } catch (e) {
-      setError(e?.message || 'Không thể bắt đầu bài kiểm tra.');
+      const apiDurationSec = toNumber(placement?.duration_seconds, null);
+      const apiMinutes = toNumber(placement?.time_limit_minutes, null);
+      const resolvedTime = apiDurationSec ?? (apiMinutes && apiMinutes > 0 ? apiMinutes * 60 : durationSeconds);
+      setTimeLeftSec(resolvedTime || DEFAULT_DURATION_SECONDS);
+    } catch (error) {
+      setSubmitError(error?.message || 'Không thể bắt đầu Placement Test.');
     } finally {
       setStarting(false);
     }
-  }, [quizSetId, started]);
-
-  useEffect(() => {
-    loadQuiz();
-  }, [loadQuiz]);
-
-  const timerBanner = useMemo(() => {
-    if (!started) return <Banner tone='info'>⏱ Nhấn “Bắt đầu làm bài” để khởi chạy đồng hồ.</Banner>;
-    if (warningLevel === 'critical') {
-      return <Banner tone='error'><span className='exam-timer-pulse'>🔴 CÒN {formattedTime} – Nộp bài ngay!</span></Banner>;
-    }
-    if (warningLevel === 'warning') {
-      return <Banner tone='warning'>⚠️ Còn {formattedTime} – Hãy kiểm tra lại bài!</Banner>;
-    }
-    return <Banner tone='info'>⏱ Thời gian: {formattedTime}</Banner>;
-  }, [formattedTime, started, warningLevel]);
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import { useAuth } from '../context/AuthContext'
-import Card from '../ui/Card'
-import Button from '../ui/Button'
-import Modal from '../ui/Modal'
-import Banner from '../ui/Banner'
-import Badge from '../ui/Badge'
-import Spinner from '../ui/Spinner'
-import PageHeader from '../ui/PageHeader'
-import { apiJson } from '../lib/api'
-
-const DIFFICULTY_LABEL = {
-  easy: 'Dễ',
-  medium: 'Trung bình',
-  hard: 'Khó',
-}
-
-const DIFFICULTY_TONE = {
-  easy: 'success',
-  medium: 'warning',
-  hard: 'danger',
-}
-
-const CLASSIFICATION_LABEL = {
-  gioi: 'GIỎI',
-  kha: 'KHÁ',
-  trung_binh: 'TRUNG BÌNH',
-  yeu: 'YẾU',
-}
-
-const CLASSIFICATION_COLOR = {
-  gioi: '#22c55e',
-  kha: '#3b82f6',
-  trung_binh: '#f59e0b',
-  yeu: '#ef4444',
-}
-
-const OPTION_LABELS = ['A', 'B', 'C', 'D', 'E', 'F']
-
-function formatTime(secs) {
-  const safeSecs = Math.max(0, Number(secs) || 0)
-  const m = Math.floor(safeSecs / 60).toString().padStart(2, '0')
-  const s = (safeSecs % 60).toString().padStart(2, '0')
-  return `${m}:${s}`
-}
-
-function getTimerTone(timeLeft) {
-  if (timeLeft < 60) return 'danger'
-  if (timeLeft < 300) return 'warning'
-  return 'success'
-}
-
-function isAnswered(question, value) {
-  if (question?.type === 'essay') {
-    return typeof value === 'string' && value.trim().length > 0
-  }
-  return typeof value === 'number'
-}
-
-export default function Quiz() {
-  const { quizSetId } = useParams()
-  const navigate = useNavigate()
-  const { userId } = useAuth()
-
-  const [quizSet, setQuizSet] = useState(null)
-  const [questions, setQuestions] = useState([])
-  const [answers, setAnswers] = useState({})
-  const [timeLeft, setTimeLeft] = useState(0)
-  const [phase, setPhase] = useState('loading')
-  const [result, setResult] = useState(null)
-  const [error, setError] = useState(null)
-  const [confirmOpen, setConfirmOpen] = useState(false)
-  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0)
-  const [topicExpanded, setTopicExpanded] = useState(false)
-
-  const timerRef = useRef(null)
-  const autoSubmitRef = useRef(false)
-  const startTimeRef = useRef(null)
-
-  const answeredCount = questions.reduce((count, question) => {
-    const answer = answers[question.id]
-    return count + (isAnswered(question, answer) ? 1 : 0)
-  }, 0)
-
-  const activeQuestion = questions[currentQuestionIndex] || null
-
-  const loadQuizSet = useCallback(async () => {
-    if (!quizSetId) {
-      setError('Không tìm thấy quizSetId trên URL.')
-      setPhase('result')
-      return
-    }
-
-    setPhase('loading')
-    setError(null)
-    setResult(null)
-
-    try {
-      const data = await apiJson(`/v1/assessments/quiz-sets/${encodeURIComponent(quizSetId)}`)
-      setQuizSet(data)
-      setTimeLeft(Number(data?.duration_seconds) || 0)
-      setPhase('instructions')
-    } catch (err) {
-      setError(err?.message || 'Không thể tải thông tin bài quiz.')
-      setPhase('result')
-    }
-  }, [quizSetId])
-
-  const handleSubmit = useCallback(async (autoSubmitted = false) => {
-    if (!quizSetId || phase === 'submitting' || phase === 'result') return
-
-    setPhase('submitting')
-    setError(null)
-
-    try {
-      if (timerRef.current) {
-        clearInterval(timerRef.current)
-        timerRef.current = null
-      }
-
-      const elapsed = Math.max(
-        0,
-        Math.floor((Date.now() - (startTimeRef.current || Date.now())) / 1000),
-      )
-
-      const payload = {
-        answers,
-        time_taken_seconds: elapsed,
-        auto_submitted: autoSubmitted,
-      }
-
-      const submitData = await apiJson(
-        `/v1/assessments/quiz-sets/${encodeURIComponent(quizSetId)}/submit`,
-        {
-          method: 'POST',
-          body: payload,
-        },
-      )
-
-      setResult(submitData)
-      setPhase('result')
-      setConfirmOpen(false)
-    } catch (err) {
-      setError(err?.message || 'Nộp bài thất bại.')
-      setPhase('active')
-    }
-  }, [answers, phase, quizSetId])
-
-  const startQuiz = useCallback(async () => {
-    if (!quizSetId) return
-
-    setPhase('loading')
-    setError(null)
-
-    try {
-      const data = await apiJson(
-        `/v1/assessments/quiz-sets/${encodeURIComponent(quizSetId)}/questions`,
-      )
-      const rows = Array.isArray(data) ? data : []
-
-      setQuestions(rows)
-      setAnswers({})
-      setCurrentQuestionIndex(0)
-      setTimeLeft(Number(quizSet?.duration_seconds) || 0)
-      autoSubmitRef.current = false
-      startTimeRef.current = Date.now()
-      setPhase('active')
-    } catch (err) {
-      setError(err?.message || 'Không thể tải câu hỏi quiz.')
-      setPhase('instructions')
-    }
-  }, [quizSet?.duration_seconds, quizSetId])
-
-  useEffect(() => {
-    loadQuizSet()
-  }, [loadQuizSet])
-
-  useEffect(() => {
-    if (phase !== 'active') return
-    timerRef.current = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          clearInterval(timerRef.current)
-          autoSubmitRef.current = true
-          handleSubmit(true)
-          return 0
-        }
-        return prev - 1
-      })
-    }, 1000)
-    return () => clearInterval(timerRef.current)
-  }, [phase, handleSubmit])
-
-  const handleSelectMcq = (questionId, optionIndex) => {
-    setAnswers((prev) => ({ ...prev, [questionId]: optionIndex }))
-  }
-
-  const handleEssayChange = (questionId, value) => {
-    setAnswers((prev) => ({ ...prev, [questionId]: value }))
-  }
-
-  const distribution = quizSet?.difficulty_distribution || { easy: 0, medium: 0, hard: 0 }
-  const percentage = Number(result?.percentage) || 0
-  const classification = result?.classification || 'trung_binh'
+  };
 
   return (
     <div className='container grid-12'>
       <Card className='span-12'>
         <PageHeader
-          title='Placement Quiz / Diagnostic Pre'
-          subtitle='Làm bài kiểm tra đầu vào để hệ thống đánh giá năng lực ban đầu.'
-          breadcrumbs={['Học sinh', 'Diagnostic Pre']}
-          right={timerBanner}
+          title='Placement Test'
+          subtitle='Làm bài kiểm tra đầu vào theo topic tài liệu để hệ thống phân loại năng lực.'
+          breadcrumbs={['Học sinh', 'Placement Test']}
         />
       </Card>
 
-      {loading ? <Card className='span-12'><Banner tone='info'>Đang tải bài kiểm tra...</Banner></Card> : null}
-      {!loading && error ? <Card className='span-12'><Banner tone='error'>{error}</Banner></Card> : null}
-
-      {!loading && !error && !started ? (
+      {!activeClassroomId ? (
         <Card className='span-12 stack-sm'>
-          <Banner tone='info'>Bài có {questions.length} câu hỏi · Thời lượng {Math.floor(durationSec / 60)} phút.</Banner>
-          <Button variant='primary' onClick={startQuiz} disabled={starting}>{starting ? 'Đang bắt đầu...' : 'Bắt đầu làm bài'}</Button>
+          <Banner tone='warning'>Bạn chưa chọn lớp học đang hoạt động.</Banner>
+          <Button onClick={() => navigate('/classrooms')} variant='primary'>Đi đến trang lớp học</Button>
         </Card>
       ) : null}
 
-      {!loading && !error && started && questions.length > 0 ? (
+      {activeClassroomId && bootLoading ? (
+        <Card className='span-12'>
+          <Banner tone='info'>Đang tải lớp học, tài liệu và topic...</Banner>
+        </Card>
+      ) : null}
+
+      {activeClassroomId && !bootLoading && bootError ? (
+        <Card className='span-12'>
+          <Banner tone='error'>{bootError}</Banner>
+        </Card>
+      ) : null}
+
+      {activeClassroomId && !bootLoading && !bootError && !quizActive ? (
         <Card className='span-12 stack-md'>
-          <Banner tone={allAnswered ? 'success' : 'warning'}>
-            Đã trả lời {answeredCount}/{questions.length} câu
+          <div>
+            <strong>Tài liệu</strong>
+            <div className='row' style={{ marginTop: 8, gap: 8, flexWrap: 'wrap' }}>
+              {documents.map((doc) => {
+                const docId = toNumber(doc?.id, 0);
+                return (
+                  <Button
+                    key={docId}
+                    variant={docId === selectedDocumentId ? 'primary' : 'ghost'}
+                    onClick={() => setSelectedDocumentId(docId)}
+                  >
+                    {doc?.title || doc?.name || `Document #${docId}`}
+                  </Button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <strong>Chọn topic</strong>
+            {!topics.length ? (
+              <Banner tone='warning'>Tài liệu chưa có topic để tạo Placement Test.</Banner>
+            ) : (
+              <div className='stack-sm' style={{ marginTop: 8 }}>
+                {topics.map((topic) => {
+                  const id = toNumber(topic?.id, 0);
+                  return (
+                    <label key={id}>
+                      <input
+                        type='checkbox'
+                        checked={selectedTopicIds.includes(id)}
+                        onChange={() => handleToggleTopic(id)}
+                      />{' '}
+                      {topic?.title || topic?.name || `Topic #${id}`}
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {submitError ? <Banner tone='error'>{submitError}</Banner> : null}
+
+          <Button variant='primary' onClick={handleStart} disabled={!selectedTopicIds.length || starting || !topics.length}>
+            {starting ? 'Đang tạo bài...' : 'Bắt đầu'}
+          </Button>
+        </Card>
+      ) : null}
+
+      {quizActive ? (
+        <Card className='span-12 stack-md'>
+          <Banner tone={timeLeftSec <= 60 ? 'error' : timeLeftSec <= 300 ? 'warning' : 'info'}>
+            ⏱ {formatClock(timeLeftSec)} · Đã trả lời {answeredCount}/{questions.length}
           </Banner>
 
           {questions.map((question, index) => (
-            <div key={question.question_id} className='ui-card stack-sm'>
+            <div key={question.id} className='ui-card stack-sm'>
               <strong>Câu {index + 1}</strong>
               <p style={{ margin: 0 }}>{question.stem}</p>
-              <div className='stack-sm'>
-                {question.options.map((option) => (
-                  <label key={`${question.question_id}-${option.value}`}>
-                    <input
-                      type='radio'
-                      name={`question-${question.question_id}`}
-                      checked={answers[question.question_id] === option.value}
-                      disabled={submitted || submitting}
-                      onChange={() => setAnswers((prev) => ({ ...prev, [question.question_id]: option.value }))}
-                    /> {option.label}
-                  </label>
-                ))}
-              </div>
+
+              {question.type === 'essay' ? (
+                <textarea
+                  rows={5}
+                  value={typeof answers[question.id] === 'string' ? answers[question.id] : ''}
+                  onChange={(event) => setAnswers((prev) => ({ ...prev, [question.id]: event.target.value }))}
+                  disabled={submitting}
+                  placeholder='Nhập câu trả lời tự luận...'
+                />
+              ) : (
+                <div className='stack-sm'>
+                  {question.options.map((option, optionIndex) => (
+                    <label key={`${question.id}-${optionIndex}`}>
+                      <input
+                        type='radio'
+                        name={`question-${question.id}`}
+                        checked={answers[question.id] === optionIndex}
+                        onChange={() => setAnswers((prev) => ({ ...prev, [question.id]: optionIndex }))}
+                        disabled={submitting}
+                      />{' '}
+                      {option}
+                    </label>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
 
-          <Button variant='primary' onClick={() => setOpenConfirm(true)} disabled={submitted || submitting || !allAnswered}>
+          {submitError ? <Banner tone='error'>{submitError}</Banner> : null}
+
+          <Button variant='primary' onClick={() => setConfirmOpen(true)} disabled={submitting}>
             {submitting ? 'Đang nộp...' : 'Nộp bài'}
           </Button>
         </Card>
       ) : null}
 
-      {result ? <Card className='span-12'><Banner tone='success'>Điểm: {result?.score_percent ?? 0}{result.autoSubmitted ? ' · Tự động nộp do hết giờ' : ''}</Banner></Card> : null}
-          title={quizSet?.title || 'Placement Quiz'}
-          subtitle={`Xin chào ${userId || ''}, hoàn thành bài quiz để hệ thống đánh giá đúng năng lực.`}
-          breadcrumbs={['Học sinh', 'Quiz đánh giá']}
-          right={
-            phase === 'active' ? (
-              <Banner tone={getTimerTone(timeLeft)}>⏱ {formatTime(timeLeft)}</Banner>
-            ) : null
-          }
-        />
-      </Card>
-
-      {error ? (
-        <Card className='span-12'>
-          <Banner tone='danger'>{error}</Banner>
-        </Card>
-      ) : null}
-
-      {phase === 'loading' ? (
-        <Card className='span-12'>
-          <div className='row' style={{ gap: 10 }}>
-            <Spinner />
-            <span>Đang tải dữ liệu bài quiz...</span>
-          </div>
-        </Card>
-      ) : null}
-
-      {phase === 'instructions' && quizSet ? (
-        <Card className='span-12 stack-md'>
-          <h3 style={{ margin: 0 }}>{quizSet.title}</h3>
-          <div className='row' style={{ gap: 16, flexWrap: 'wrap' }}>
-            <span>Tổng số câu: <strong>{quizSet.question_count || 0}</strong></span>
-            <span>Thời gian: <strong>{Math.floor((quizSet.duration_seconds || 0) / 60)} phút</strong></span>
-          </div>
-
-          <div className='row' style={{ gap: 8, flexWrap: 'wrap' }}>
-            <Badge tone='success'>Easy: {distribution.easy || 0}</Badge>
-            <Badge tone='warning'>Medium: {distribution.medium || 0}</Badge>
-            <Badge tone='danger'>Hard: {distribution.hard || 0}</Badge>
-          </div>
-
-          <Banner tone='info'>{quizSet.instructions || 'Đọc kỹ đề trước khi bắt đầu làm bài.'}</Banner>
-
-          <div className='row'>
-            <Button variant='primary' onClick={startQuiz}>Bắt đầu làm bài →</Button>
-          </div>
-        </Card>
-      ) : null}
-
-      {phase === 'active' && activeQuestion ? (
-        <>
-          <Card className='span-12' style={{ position: 'sticky', top: 8, zIndex: 3 }}>
-            <div className='row' style={{ justifyContent: 'space-between', gap: 12 }}>
-              <strong>Tiến độ: Câu {currentQuestionIndex + 1}/{questions.length}</strong>
-              <Badge tone={getTimerTone(timeLeft)}>{formatTime(timeLeft)}</Badge>
-            </div>
-          </Card>
-
-          <Card className='span-12 stack-md'>
-            <div className='row' style={{ gap: 8, flexWrap: 'wrap' }}>
-              <Badge tone={DIFFICULTY_TONE[activeQuestion.difficulty] || 'warning'}>
-                {DIFFICULTY_LABEL[activeQuestion.difficulty] || activeQuestion.difficulty}
-              </Badge>
-              <Badge tone='info'>{activeQuestion.topic || 'Chung'}</Badge>
-            </div>
-
-            <p style={{ margin: 0, fontWeight: 600 }}>{activeQuestion.stem}</p>
-
-            {activeQuestion.type === 'essay' ? (
-              <div className='stack-sm'>
-                <textarea
-                  rows={6}
-                  value={typeof answers[activeQuestion.id] === 'string' ? answers[activeQuestion.id] : ''}
-                  onChange={(e) => handleEssayChange(activeQuestion.id, e.target.value)}
-                  placeholder='Nhập câu trả lời tự luận...'
-                />
-                <small>
-                  Word count: {String(answers[activeQuestion.id] || '').trim().split(/\s+/).filter(Boolean).length}
-                </small>
-              </div>
-            ) : (
-              <div className='stack-sm'>
-                {(activeQuestion.options || []).map((option, index) => (
-                  <label
-                    key={`${activeQuestion.id}-${index}`}
-                    style={{
-                      display: 'block',
-                      padding: 10,
-                      borderRadius: 8,
-                      border: answers[activeQuestion.id] === index ? '1px solid #2563eb' : '1px solid #e2e8f0',
-                      background: answers[activeQuestion.id] === index ? '#eff6ff' : '#fff',
-                    }}
-                  >
-                    <input
-                      type='radio'
-                      name={`question-${activeQuestion.id}`}
-                      checked={answers[activeQuestion.id] === index}
-                      onChange={() => handleSelectMcq(activeQuestion.id, index)}
-                    />{' '}
-                    <strong>{OPTION_LABELS[index] || `${index + 1}`}. </strong>
-                    <span>{option}</span>
-                  </label>
-                ))}
-              </div>
-            )}
-
-            <div className='row' style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-              <div className='row' style={{ gap: 8 }}>
-                {questions.map((q, idx) => (
-                  <button
-                    type='button'
-                    key={q.id}
-                    onClick={() => setCurrentQuestionIndex(idx)}
-                    aria-label={`Đi tới câu ${idx + 1}`}
-                    style={{
-                      width: 12,
-                      height: 12,
-                      borderRadius: '50%',
-                      border: 'none',
-                      background: idx === currentQuestionIndex ? '#2563eb' : isAnswered(q, answers[q.id]) ? '#22c55e' : '#cbd5e1',
-                      cursor: 'pointer',
-                    }}
-                  />
-                ))}
-              </div>
-
-              <div className='row' style={{ gap: 8 }}>
-                <Button
-                  onClick={() => setCurrentQuestionIndex((prev) => Math.max(0, prev - 1))}
-                  disabled={currentQuestionIndex === 0}
-                >
-                  Prev
-                </Button>
-                <Button
-                  onClick={() => setCurrentQuestionIndex((prev) => Math.min(questions.length - 1, prev + 1))}
-                  disabled={currentQuestionIndex >= questions.length - 1}
-                >
-                  Next
-                </Button>
-              </div>
-            </div>
-          </Card>
-
-          <Card className='span-12' style={{ position: 'sticky', bottom: 8, zIndex: 3 }}>
-            <div className='row' style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-              <strong>Đã trả lời {answeredCount}/{questions.length}</strong>
-              <Button variant='primary' onClick={() => setConfirmOpen(true)}>Nộp bài</Button>
-            </div>
-          </Card>
-        </>
-      ) : null}
-
-      {phase === 'result' && result ? (
-        <Card className='span-12 stack-md'>
-          <div
-            style={{
-              padding: 16,
-              borderRadius: 12,
-              border: '1px solid #e2e8f0',
-              background: '#f8fafc',
-            }}
-          >
-            <h2 style={{ margin: 0 }}>
-              {Math.round(Number(result.score) || 0)}/100 – Phân loại: {CLASSIFICATION_LABEL[classification] || classification}
-            </h2>
-            <div style={{ marginTop: 12, height: 10, background: '#e2e8f0', borderRadius: 999 }}>
-              <div
-                style={{
-                  width: `${Math.max(0, Math.min(100, percentage))}%`,
-                  height: '100%',
-                  borderRadius: 999,
-                  background: CLASSIFICATION_COLOR[classification] || '#3b82f6',
-                }}
-              />
-            </div>
-          </div>
-
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr>
-                <th align='left'>Độ khó</th>
-                <th align='left'>Đúng</th>
-                <th align='left'>Sai</th>
-                <th align='left'>Điểm</th>
-              </tr>
-            </thead>
-            <tbody>
-              {['easy', 'medium', 'hard'].map((key) => {
-                const row = result?.breakdown_by_difficulty?.[key] || { correct: 0, total: 0 }
-                const total = Number(row.total) || 0
-                const correct = Number(row.correct) || 0
-                const wrong = Math.max(0, total - correct)
-                const pct = total > 0 ? Math.round((correct / total) * 100) : 0
-
-                return (
-                  <tr key={key}>
-                    <td>{DIFFICULTY_LABEL[key]}</td>
-                    <td>{correct}/{total}</td>
-                    <td>{wrong}</td>
-                    <td>{pct}%</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-
-          <div className='stack-sm'>
-            <Button onClick={() => setTopicExpanded((prev) => !prev)}>
-              {topicExpanded ? 'Ẩn breakdown theo topic' : 'Xem breakdown theo topic'}
-            </Button>
-            {topicExpanded ? (
-              <div className='stack-sm'>
-                {(result.breakdown_by_topic || []).map((row) => (
-                  <div key={row.topic} className='row' style={{ justifyContent: 'space-between' }}>
-                    <span>{row.topic}</span>
-                    <span>{row.correct}/{row.total} ({Math.round(row.percentage || 0)}%)</span>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-          </div>
-
-          <div
-            style={{
-              background: '#f5f3ff',
-              border: '1px solid #ddd6fe',
-              borderRadius: 10,
-              padding: 12,
-            }}
-          >
-            <strong>AI recommendation</strong>
-            <p style={{ marginBottom: 0 }}>{result.ai_recommendation || 'Chưa có gợi ý.'}</p>
-          </div>
-
-          <div className='row' style={{ gap: 8 }}>
-            <Button variant='primary' onClick={() => navigate('/learning-path')}>Xem lộ trình học</Button>
-            <Button onClick={loadQuizSet}>Làm lại bài kiểm tra</Button>
-          </div>
-        </Card>
-      ) : null}
-
       <Modal
         open={confirmOpen}
-        title='Xác nhận nộp bài'
         onClose={() => setConfirmOpen(false)}
-        actions={(
+        title='Xác nhận nộp bài'
+        footer={(
           <>
-            <Button onClick={() => setOpenConfirm(false)}>Huỷ</Button>
-            <Button variant='primary' onClick={() => handleSubmit(false)} disabled={submitting || !allAnswered}>Xác nhận nộp</Button>
+            <Button onClick={() => setConfirmOpen(false)} disabled={submitting}>Hủy</Button>
+            <Button variant='primary' onClick={() => submitAttempt(false)} disabled={submitting}>
+              {submitting ? 'Đang nộp...' : 'Xác nhận nộp'}
+            </Button>
           </>
         )}
       >
-        Xác nhận nộp bài ngay?
-            <Button onClick={() => setConfirmOpen(false)}>Hủy</Button>
-            <Button variant='primary' onClick={() => handleSubmit(false)}>Xác nhận nộp</Button>
-          </>
-        )}
-      >
-        Bạn đã trả lời {answeredCount}/{questions.length} câu. Bạn có chắc muốn nộp bài?
+        <p>Bạn đã trả lời {answeredCount}/{questions.length} câu. Bạn chắc chắn muốn nộp bài?</p>
       </Modal>
     </div>
-  )
+  );
 }
