@@ -14,6 +14,7 @@ from app.db.base_class import Base
 
 class NotificationType(str, Enum):
     learning_plan_ready = "learning_plan_ready"
+    LEARNING_PLAN_READY = "LEARNING_PLAN_READY"
     exam_result = "exam_result"
     report_ready = "report_ready"
 
