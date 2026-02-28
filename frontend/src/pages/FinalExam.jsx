@@ -1,15 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import { apiJson } from "../lib/api";
+import { useAuth } from "../context/AuthContext";
 import { useExamTimer } from "../hooks/useExamTimer";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import Card from "../ui/Card";
 import Button from "../ui/Button";
-import Modal from "../ui/Modal";
 import Banner from "../ui/Banner";
-import Badge from "../ui/Badge";
-import Spinner from "../ui/Spinner";
-import { apiJson } from "../lib/api";
-import { useAuth } from "../context/AuthContext";
+import useExamTimer from "../hooks/useExamTimer";
 
+const PHASES = {
+  ELIGIBILITY: "eligibility_check",
+  GENERATING: "generating",
+  INSTRUCTIONS: "instructions",
+  ACTIVE: "active",
+  RESULT: "result",
+};
+
+const asPercent = (n) => Math.max(0, Math.min(100, Math.round(Number(n) || 0)));
+const formatClock = (s) => `${String(Math.floor(s / 3600)).padStart(2, "0")}:${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 function classify(score = 0) {
   const safeScore = Number(score) || 0;
   if (safeScore >= 85) return "Giỏi";
@@ -41,14 +50,22 @@ function percent(correct = 0, total = 0) {
 
 export default function FinalExam() {
   const { classroomId } = useParams();
-  const { userId } = useAuth();
-  const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const { userId, role } = useAuth();
+  const nav = useNavigate();
 
-  const [loading, setLoading] = useState(true);
+  const [phase, setPhase] = useState(PHASES.ELIGIBILITY);
+  const [eligibility, setEligibility] = useState(null);
   const [error, setError] = useState("");
+
+  const [jobId, setJobId] = useState(null);
+  const [genStatus, setGenStatus] = useState({ progress: 0, topics_count: 0, status: "idle" });
+
+  const [meta, setMeta] = useState(null);
   const [questions, setQuestions] = useState([]);
   const [answers, setAnswers] = useState({});
+  const [result, setResult] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [warning, setWarning] = useState("");
   const [durationSeconds, setDurationSeconds] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
@@ -70,32 +87,25 @@ export default function FinalExam() {
     [answers],
   );
 
-  const unresolvedCount = Math.max(0, questions.length - answeredCount);
+  const warningRef = useRef({ ten: false, five: false });
+  const { timeLeftSec } = useExamTimer(meta?.duration_seconds || 0, { enabled: phase === PHASES.ACTIVE && !result });
 
-  const loadTopics = useCallback(async () => {
-    const fromQuery = (searchParams.get("topicIds") || searchParams.get("topic_ids") || "")
-      .split(",")
-      .map((value) => Number(value.trim()))
-      .filter((value) => Number.isFinite(value));
+  const entryScore = Number(localStorage.getItem("entry_test_score") || 0);
 
-    if (fromQuery.length > 0) {
-      setTopicIds([...new Set(fromQuery)]);
-      return [...new Set(fromQuery)];
-    }
-
+  const loadEligibility = useCallback(async () => {
+    if (!classroomId || !userId) return;
+    setError("");
     try {
-      const topicRows = await apiJson(`/classrooms/${classroomId}/topics`, { method: "GET" });
-      const ids = (Array.isArray(topicRows) ? topicRows : [])
-        .map((item) => Number(item?.id ?? item?.topic_id))
-        .filter((value) => Number.isFinite(value));
-      setTopicIds([...new Set(ids)]);
-      return [...new Set(ids)];
-    } catch {
-      setTopicIds([]);
-      return [];
+      const data = await apiJson(`/v1/lms/final-exam/eligibility?classroomId=${classroomId}&userId=${userId}`);
+      setEligibility(data);
+    } catch (e) {
+      setError(e?.message || "Không thể kiểm tra điều kiện dự thi.");
     }
-  }, [classroomId, searchParams]);
+  }, [classroomId, userId]);
 
+  useEffect(() => {
+    loadEligibility();
+  }, [loadEligibility]);
   const loadFinalExam = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -103,7 +113,12 @@ export default function FinalExam() {
     setResult(null);
     autoSubmittedRef.current = false;
 
+  const startGenerating = async () => {
+    setError("");
+    setPhase(PHASES.GENERATING);
     try {
+      const data = await apiJson(`/v1/lms/final-exam/generate?classroomId=${classroomId}&userId=${userId}`, { method: "POST" });
+      setJobId(data?.jobId);
       const resolvedTopicIds = await loadTopics();
       const data = await apiJson("/v1/lms/generate-final", {
         method: "POST",
@@ -127,17 +142,46 @@ export default function FinalExam() {
         setTopicIds(data.topic_ids.map((item) => Number(item)).filter((item) => Number.isFinite(item)));
       }
     } catch (e) {
-      setError(e?.message || "Không thể tạo bài kiểm tra cuối kỳ.");
-    } finally {
-      setLoading(false);
+      setError(e?.message || "Không thể khởi tạo đề thi cuối kỳ.");
+      setPhase(PHASES.ELIGIBILITY);
     }
-  }, [classroomId, loadTopics, userId]);
+  };
 
   useEffect(() => {
-    loadFinalExam();
-  }, [loadFinalExam]);
+    if (!jobId || phase !== PHASES.GENERATING) return undefined;
+    const timer = window.setInterval(async () => {
+      try {
+        const data = await apiJson(`/v1/lms/final-exam/status?jobId=${jobId}`);
+        setGenStatus(data);
+        if (data?.status === "completed") {
+          const res = data?.result || {};
+          setMeta(res);
+          setQuestions(Array.isArray(res.questions) ? res.questions : []);
+          setPhase(PHASES.INSTRUCTIONS);
+          window.clearInterval(timer);
+        }
+      } catch (e) {
+        setError(e?.message || "Không lấy được trạng thái tạo đề.");
+        window.clearInterval(timer);
+      }
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [jobId, phase]);
 
-
+  useEffect(() => {
+    if (phase !== PHASES.ACTIVE) return;
+    if (timeLeftSec <= 600 && !warningRef.current.ten) {
+      warningRef.current.ten = true;
+      setWarning("⚠️ Còn 10 phút, hãy tăng tốc và rà soát đáp án.");
+    }
+    if (timeLeftSec <= 300 && !warningRef.current.five) {
+      warningRef.current.five = true;
+      setWarning("🚨 Còn 5 phút, chuẩn bị nộp bài.");
+    }
+    if (timeLeftSec <= 0 && !submitting && !result) {
+      submitExam(true);
+    }
+  }, [phase, result, submitting, timeLeftSec]);
   const submitExam = useCallback(
     async (autoSubmit = false) => {
       if (submitting || result) return;
@@ -195,46 +239,44 @@ export default function FinalExam() {
     const stats = {};
     const review = Array.isArray(result?.answer_review) ? result.answer_review : [];
 
-    review.forEach((item) => {
-      const key = item?.topic || "Chung";
-      if (!stats[key]) stats[key] = { total: 0, correct: 0 };
-      stats[key].total += 1;
-      if (item?.is_correct) stats[key].correct += 1;
-    });
+  const submitExam = async (autoSubmitted = false) => {
+    if (!meta?.assessment_id || submitting) return;
+    setSubmitting(true);
+    try {
+      const payload = {
+        user_id: Number(userId),
+        duration_sec: 0,
+        auto_submitted: autoSubmitted,
+        answers: questions.map((q, idx) => ({
+          question_id: q.question_id || q.id || `final_${idx + 1}`,
+          answer_index: answers[q.question_id || q.id]?.answer_index ?? null,
+          answer_text: answers[q.question_id || q.id]?.answer_text ?? null,
+        })),
+      };
+      const data = await apiJson(`/assessments/${meta.assessment_id}/submit`, { method: "POST", body: payload });
+      setResult(data);
+      localStorage.setItem("final_exam_score", String(Number(data?.total_score_percent || data?.score_percent || 0)));
+      setPhase(PHASES.RESULT);
+    } catch (e) {
+      setError(e?.message || "Nộp bài thất bại.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
-    return Object.entries(stats).map(([topic, value]) => ({
-      topic,
-      total: value.total,
-      correct: value.correct,
-      score: percent(value.correct, value.total),
-    }));
-  }, [result]);
+  const score = Number(result?.total_score_percent || result?.score_percent || 0);
+  const diff = entryScore > 0 ? Math.round(score - entryScore) : null;
 
-  const difficultyBreakdown = useMemo(() => {
-    const stats = { easy: { total: 0, correct: 0 }, medium: { total: 0, correct: 0 }, hard: { total: 0, correct: 0 } };
-    const review = Array.isArray(result?.answer_review) ? result.answer_review : [];
-
-    review.forEach((item) => {
-      const key = String(item?.difficulty || "medium").toLowerCase();
-      if (!stats[key]) return;
-      stats[key].total += 1;
-      if (item?.is_correct) stats[key].correct += 1;
-    });
-
-    return Object.entries(stats).map(([difficulty, value]) => ({
-      difficulty,
-      total: value.total,
-      correct: value.correct,
-      score: percent(value.correct, value.total),
-    }));
-  }, [result]);
-
-  const finalScore = Number(result?.total_score_percent || result?.score_percent || 0);
-  const improvement = entryScore > 0 ? Math.round(finalScore - entryScore) : null;
+  const difficulty = useMemo(() => {
+    const d = meta?.difficulty || {};
+    return `${Number(d.easy || 0)}/${Number(d.medium || 0)}/${Number(d.hard || 0)}`;
+  }, [meta]);
 
   return (
     <div className="container grid-12">
       <Card className="span-12 stack-md">
+        <h1 style={{ margin: 0 }}>🎓 BÀI KIỂM TRA CUỐI KỲ</h1>
+        <div style={{ color: "#64748b" }}>Lớp #{classroomId} • User #{userId} • Vai trò: {role || "student"}</div>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <div>
             <h1 style={{ margin: 0, fontSize: 30 }}>BÀI KIỂM TRA CUỐI KỲ</h1>
@@ -256,142 +298,82 @@ export default function FinalExam() {
 
         {warningMessage ? <Banner tone="error">{warningMessage}</Banner> : null}
         {error ? <Banner tone="error">{error}</Banner> : null}
+        {warning ? <Banner tone="warning">{warning}</Banner> : null}
       </Card>
 
-      {loading ? (
-        <Card className="span-12">
-          <div className="row">
-            <Spinner />
-            <strong>AI đang tổng hợp bài thi cuối kỳ...</strong>
-          </div>
-        </Card>
-      ) : null}
-
-      {!loading && !result ? (
+      {phase === PHASES.ELIGIBILITY && (
         <Card className="span-12 stack-md">
-          <Banner tone={unresolvedCount > 0 ? "warning" : "success"}>
-            Đã trả lời {answeredCount}/{questions.length} câu. {unresolvedCount > 0 ? `Còn ${unresolvedCount} câu chưa trả lời.` : "Bạn đã hoàn thành tất cả câu hỏi."}
-          </Banner>
-
-          {questions.map((question, index) => (
-            <Card key={question.question_id} className="stack-sm">
-              <div style={{ fontWeight: 700 }}>Câu {index + 1}. {question.stem}</div>
-              <div className="row" style={{ color: "#64748b", fontSize: 13 }}>
-                <span>Topic: {question.topic}</span>
-                <span>•</span>
-                <span>Độ khó: {question.difficulty}</span>
-              </div>
-
-              {question.type === "essay" ? (
-                <textarea
-                  rows={4}
-                  placeholder="Nhập câu trả lời..."
-                  value={answers[question.question_id]?.answer_text || ""}
-                  onChange={(event) =>
-                    setAnswers((prev) => ({
-                      ...prev,
-                      [question.question_id]: {
-                        ...(prev[question.question_id] || {}),
-                        answer_text: event.target.value,
-                      },
-                    }))
-                  }
-                  style={{ width: "100%", borderRadius: 10, border: "1px solid #cbd5e1", padding: 10 }}
-                />
-              ) : (
-                <div style={{ display: "grid", gap: 8 }}>
-                  {question.options.map((option, optionIndex) => (
-                    <label key={`${question.question_id}_${optionIndex}`} style={{ display: "flex", gap: 8, cursor: "pointer" }}>
-                      <input
-                        type="radio"
-                        name={question.question_id}
-                        checked={answers[question.question_id]?.answer_index === optionIndex}
-                        onChange={() =>
-                          setAnswers((prev) => ({
-                            ...prev,
-                            [question.question_id]: {
-                              ...(prev[question.question_id] || {}),
-                              answer_index: optionIndex,
-                            },
-                          }))
-                        }
-                      />
-                      <span>{["A", "B", "C", "D"][optionIndex]}. {option}</span>
-                    </label>
-                  ))}
-                </div>
-              )}
-            </Card>
+          <h3 style={{ margin: 0 }}>Kiểm tra điều kiện dự thi</h3>
+          {(eligibility?.conditions || []).map((cond) => (
+            <div key={cond.label} style={{ border: "1px solid #e2e8f0", borderRadius: 12, padding: 12 }}>
+              <div style={{ fontWeight: 700 }}>{cond.met ? "✅" : "❌"} {cond.label}</div>
+              <div style={{ color: "#475569" }}>{cond.detail || ""}</div>
+              {typeof cond.progress_pct === "number" ? <div style={{ marginTop: 6, color: "#0f172a" }}>Tiến độ: {asPercent(cond.progress_pct)}%</div> : null}
+            </div>
           ))}
-
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-            <Button variant="ghost" onClick={() => navigate("/assessments")}>Quay lại danh sách bài kiểm tra</Button>
-            <Button variant="primary" onClick={() => setOpenSubmitModal(true)} disabled={submitting}>
-              {submitting ? "Đang nộp..." : "Nộp bài cuối kỳ"}
-            </Button>
-          </div>
+          {eligibility?.is_eligible ? (
+            <Button variant="primary" onClick={startGenerating}>Bắt đầu tạo đề thi</Button>
+          ) : (
+            <Banner tone="warning">Bạn chưa đủ điều kiện thi. Điều kiện đang chặn: {eligibility?.blocking_condition || "—"}</Banner>
+          )}
         </Card>
-      ) : null}
+      )}
 
-      {!loading && result ? (
+      {phase === PHASES.GENERATING && (
+        <Card className="span-12 stack-md" style={{ padding: 24 }}>
+          <h2 style={{ margin: 0 }}>🤖 AI đang tổng hợp đề thi cuối kỳ...</h2>
+          <div>✅ Phân tích kết quả học tập</div>
+          <div>✅ Loại trừ câu hỏi đã dùng</div>
+          <div>⏳ Tạo câu hỏi mới theo {genStatus?.topics_count || 0} chủ đề</div>
+          <div>⏳ Cân bằng độ khó...</div>
+          <div style={{ marginTop: 10 }}>[{"█".repeat(Math.floor((genStatus.progress || 0) / 10)).padEnd(10, "░")}] {asPercent(genStatus.progress)}%</div>
+        </Card>
+      )}
+
+      {phase === PHASES.INSTRUCTIONS && (
         <Card className="span-12 stack-md">
-          <h2 style={{ margin: 0 }}>Kết quả bài kiểm tra cuối kỳ</h2>
-          <Banner tone="success">
-            Điểm tổng: <strong>{finalScore}%</strong> • Xếp loại: <strong>{classify(finalScore)}</strong>
-          </Banner>
+          <Banner tone="success">🆕 Toàn bộ câu hỏi HOÀN TOÀN MỚI (khác 100% với bài đầu vào)</Banner>
+          <div>• Tổng: {questions.length} câu ({difficulty})</div>
+          <div>• Thời gian: {Math.round((meta?.duration_seconds || 0) / 60)} phút</div>
+          <div>• Bao gồm {meta?.topic_count || 0} chủ đề đã học</div>
+          <div>• Độ khó: Tổng hợp (Easy + Medium + Hard)</div>
+          <Banner tone="warning">Sau khi bắt đầu, đồng hồ chạy liên tục. Không thể tạm dừng. Hết giờ tự động nộp.</Banner>
+          <Button variant="primary" onClick={() => setPhase(PHASES.ACTIVE)}>Bắt đầu làm bài →</Button>
+        </Card>
+      )}
 
-          {improvement != null ? (
-            <Banner tone={improvement >= 0 ? "success" : "error"}>
-              Bạn đã cải thiện {improvement >= 0 ? `+${improvement}%` : `${improvement}%`} so với bài kiểm tra đầu vào.
-            </Banner>
-          ) : null}
+      {phase === PHASES.ACTIVE && (
+        <Card className="span-12 stack-md">
+          <div style={{ fontWeight: 800 }}>⏱ {formatClock(timeLeftSec)}</div>
+          {questions.map((q, idx) => {
+            const qid = q.question_id || q.id || `q_${idx + 1}`;
+            const options = Array.isArray(q.options) ? q.options : [];
+            return (
+              <div key={qid} style={{ border: "1px solid #e2e8f0", borderRadius: 12, padding: 12 }}>
+                <div style={{ fontWeight: 700 }}>Câu {idx + 1}: {q.stem || q.question_text}</div>
+                {options.map((opt, oi) => (
+                  <label key={`${qid}-${oi}`} style={{ display: "block", marginTop: 6 }}>
+                    <input type="radio" name={qid} checked={answers[qid]?.answer_index === oi} onChange={() => setAnswers((m) => ({ ...m, [qid]: { answer_index: oi } }))} /> {String.fromCharCode(65 + oi)}. {typeof opt === "string" ? opt : opt?.label || opt?.text}
+                  </label>
+                ))}
+              </div>
+            );
+          })}
+          <Button variant="primary" onClick={() => submitExam(false)} disabled={submitting}>{submitting ? "Đang nộp..." : "Nộp bài"}</Button>
+        </Card>
+      )}
 
-          <div style={{ display: "grid", gap: 10 }}>
-            <h3 style={{ marginBottom: 0 }}>Breakdown theo từng chủ đề</h3>
-            {topicBreakdown.length === 0 ? (
-              <div style={{ color: "#64748b" }}>Chưa có dữ liệu breakdown theo chủ đề.</div>
-            ) : (
-              topicBreakdown.map((item) => (
-                <Card key={item.topic}>
-                  <strong>{item.topic}</strong> — {item.correct}/{item.total} câu đúng ({item.score}%)
-                </Card>
-              ))
-            )}
-          </div>
-
-          <div style={{ display: "grid", gap: 10 }}>
-            <h3 style={{ marginBottom: 0 }}>Breakdown theo độ khó</h3>
-            {difficultyBreakdown.map((item) => (
-              <Card key={item.difficulty}>
-                <strong>{item.difficulty}</strong> — {item.correct}/{item.total} câu đúng ({item.score}%)
-              </Card>
-            ))}
-          </div>
-
-          <div className="row" style={{ justifyContent: "space-between" }}>
-            <Link to="/progress" style={{ textDecoration: "none" }}>
-              <Button variant="primary">Xem báo cáo tổng kết của bạn</Button>
-            </Link>
-            <Button variant="ghost" onClick={loadFinalExam}>Tạo đề cuối kỳ mới</Button>
+      {phase === PHASES.RESULT && (
+        <Card className="span-12 stack-md">
+          <h3 style={{ margin: 0 }}>Kết quả bài thi cuối kỳ</h3>
+          <Banner tone="success">Điểm cuối kỳ: <strong>{Math.round(score)}%</strong></Banner>
+          {diff != null ? <Banner tone={diff >= 0 ? "success" : "error"}>So với diagnostic: {diff >= 0 ? `+${diff}` : diff}%</Banner> : null}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Button variant="primary" onClick={() => nav("/progress")}>Xem báo cáo đầy đủ gửi cho giáo viên</Button>
+            <Button variant="ghost" onClick={() => nav("/learning-path")}>Quay lại Learning Path</Button>
           </div>
         </Card>
-      ) : null}
-
-      <Modal
-        open={openSubmitModal}
-        title="Xác nhận nộp bài cuối kỳ"
-        onClose={() => setOpenSubmitModal(false)}
-        actions={(
-          <>
-            <Button variant="ghost" onClick={() => setOpenSubmitModal(false)} disabled={submitting}>Làm tiếp</Button>
-            <Button variant="primary" onClick={() => submitExam(false)} disabled={submitting}>
-              {submitting ? "Đang nộp..." : "Xác nhận nộp"}
-            </Button>
-          </>
-        )}
-      >
-        Bạn còn <strong>{unresolvedCount}</strong> câu chưa trả lời. Sau khi nộp sẽ không thể chỉnh sửa.
-      </Modal>
+      )}
     </div>
   );
 }

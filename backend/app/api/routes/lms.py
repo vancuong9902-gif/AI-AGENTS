@@ -4,6 +4,7 @@ import asyncio
 import logging
 import tempfile
 import time
+import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +34,8 @@ from app.services.analytics_service import build_classroom_final_report, export_
 from app.tasks.report_tasks import task_export_teacher_report_pdf
 from app.models.session import Session as UserSession
 from app.models.student_assignment import StudentAssignment
+from app.models.diagnostic_attempt import DiagnosticAttempt
+from app.models.learning_plan import LearningPlan, LearningPlanHomeworkSubmission, LearningPlanTaskCompletion
 from app.models.notification import Notification
 from app.models.user import User
 from app.services.assessment_service import generate_assessment, submit_assessment
@@ -66,6 +69,8 @@ _templates = Environment(
     loader=FileSystemLoader(str(Path(__file__).resolve().parents[2] / "templates")),
     autoescape=select_autoescape(["html", "xml"]),
 )
+
+_FINAL_EXAM_JOBS: dict[str, dict] = {}
 
 
 class TeacherTopicSelectionIn(BaseModel):
@@ -120,6 +125,226 @@ class AssignPathByQuizIn(BaseModel):
     user_id: int
     quiz_id: int
     classroom_id: int = 0
+
+
+def _count_plan_tasks(plan_json: dict | None) -> tuple[int, int]:
+    days = (plan_json or {}).get("days") if isinstance(plan_json, dict) else []
+    if not isinstance(days, list):
+        return 0, 0
+
+    total = 0
+    homework_total = 0
+    for day in days:
+        tasks = day.get("tasks") if isinstance(day, dict) else []
+        if not isinstance(tasks, list):
+            tasks = []
+        for task in tasks:
+            total += 1
+            task_type = str((task or {}).get("type") or "").lower()
+            if task_type == "homework":
+                homework_total += 1
+    return total, homework_total
+
+
+def _final_exam_eligibility_payload(db: Session, *, classroom_id: int, user_id: int) -> dict:
+    has_diagnostic_pre = (
+        db.query(DiagnosticAttempt.id)
+        .filter(
+            DiagnosticAttempt.user_id == int(user_id),
+            DiagnosticAttempt.stage == "pre",
+            DiagnosticAttempt.attempt_id.isnot(None),
+        )
+        .first()
+        is not None
+    )
+
+    latest_plan = (
+        db.query(LearningPlan)
+        .filter(
+            LearningPlan.user_id == int(user_id),
+            LearningPlan.classroom_id == int(classroom_id),
+        )
+        .order_by(LearningPlan.created_at.desc())
+        .first()
+    )
+
+    if not latest_plan:
+        latest_plan = (
+            db.query(LearningPlan)
+            .filter(LearningPlan.user_id == int(user_id))
+            .order_by(LearningPlan.created_at.desc())
+            .first()
+        )
+
+    learning_progress_pct = 0.0
+    homework_progress_pct = 0.0
+    completed_tasks = 0
+    total_tasks = 0
+
+    if latest_plan:
+        total_tasks, total_homework_tasks = _count_plan_tasks(latest_plan.plan_json or {})
+        done_rows = (
+            db.query(LearningPlanTaskCompletion.day_index, LearningPlanTaskCompletion.task_index)
+            .filter(
+                LearningPlanTaskCompletion.plan_id == int(latest_plan.id),
+                LearningPlanTaskCompletion.completed.is_(True),
+            )
+            .all()
+        )
+        completed_tasks = len({(int(r.day_index), int(r.task_index)) for r in done_rows})
+        learning_progress_pct = round((completed_tasks / total_tasks) * 100, 1) if total_tasks > 0 else 0.0
+
+        homework_done = (
+            db.query(func.count(LearningPlanHomeworkSubmission.id))
+            .filter(
+                LearningPlanHomeworkSubmission.plan_id == int(latest_plan.id),
+                LearningPlanHomeworkSubmission.user_id == int(user_id),
+            )
+            .scalar()
+            or 0
+        )
+        if total_homework_tasks > 0:
+            homework_progress_pct = round(min(1.0, float(homework_done) / float(total_homework_tasks)) * 100, 1)
+
+    if homework_progress_pct == 0.0:
+        assignment_total = (
+            db.query(func.count(StudentAssignment.id))
+            .filter(
+                StudentAssignment.student_id == int(user_id),
+                StudentAssignment.classroom_id == int(classroom_id),
+                StudentAssignment.assignment_type.in_(["exercise", "quiz_practice", "essay_case_study"]),
+            )
+            .scalar()
+            or 0
+        )
+        assignment_completed = (
+            db.query(func.count(StudentAssignment.id))
+            .filter(
+                StudentAssignment.student_id == int(user_id),
+                StudentAssignment.classroom_id == int(classroom_id),
+                StudentAssignment.assignment_type.in_(["exercise", "quiz_practice", "essay_case_study"]),
+                StudentAssignment.status == "completed",
+            )
+            .scalar()
+            or 0
+        )
+        if assignment_total > 0:
+            homework_progress_pct = round((assignment_completed / assignment_total) * 100, 1)
+
+    conditions = [
+        {
+            "label": "Đã làm bài kiểm tra đầu vào",
+            "met": bool(has_diagnostic_pre),
+            "detail": "Đã hoàn thành" if has_diagnostic_pre else "Bạn cần hoàn thành bài kiểm tra đầu vào trước.",
+        },
+        {
+            "label": "Hoàn thành 70% lộ trình học",
+            "met": float(learning_progress_pct) >= 70.0,
+            "progress_pct": float(learning_progress_pct),
+            "detail": f"{completed_tasks}/{total_tasks} nhiệm vụ" if total_tasks > 0 else "Chưa có lộ trình học được giao.",
+        },
+        {
+            "label": "Hoàn thành 80% bài tập",
+            "met": float(homework_progress_pct) >= 80.0,
+            "progress_pct": float(homework_progress_pct),
+            "detail": "Tiến độ bài tập trong lớp hiện tại.",
+        },
+    ]
+
+    blocking = next((cond["label"] for cond in conditions if not cond.get("met")), None)
+    return {
+        "is_eligible": blocking is None,
+        "conditions": conditions,
+        "blocking_condition": blocking,
+    }
+
+
+@router.get("/v1/lms/final-exam/eligibility")
+def final_exam_eligibility(
+    request: Request,
+    classroomId: int = Query(...),
+    userId: int = Query(...),
+    db: Session = Depends(get_db),
+):
+    payload = _final_exam_eligibility_payload(db, classroom_id=int(classroomId), user_id=int(userId))
+    return {"request_id": request.state.request_id, "data": payload, "error": None}
+
+
+@router.post("/v1/lms/final-exam/generate")
+def final_exam_generate_job(
+    request: Request,
+    classroomId: int = Query(...),
+    userId: int = Query(...),
+    db: Session = Depends(get_db),
+):
+    eligibility = _final_exam_eligibility_payload(db, classroom_id=int(classroomId), user_id=int(userId))
+    if not eligibility["is_eligible"]:
+        raise HTTPException(status_code=403, detail={"code": "PREREQUISITE_NOT_MET", **eligibility})
+
+    topic_rows = db.query(DocumentTopic.id, func.coalesce(DocumentTopic.teacher_edited_title, DocumentTopic.title)).filter(DocumentTopic.status == "approved").all()
+    topics = [str(r[1]) for r in topic_rows if r and r[1]]
+
+    req = GenerateLmsQuizIn(
+        teacher_id=1,
+        classroom_id=int(classroomId),
+        topics=topics,
+        title="Final Test",
+        easy_count=4,
+        medium_count=4,
+        hard_count=2,
+    )
+    response = _generate_assessment_lms(request=request, db=db, payload=req, kind="diagnostic_post")
+    data = response.get("data") or {}
+
+    quiz_id = int(data.get("assessment_id") or data.get("quiz_id") or 0)
+    duration_seconds = 45 * 60
+    if quiz_id > 0:
+        quiz = db.query(QuizSet).filter(QuizSet.id == quiz_id).first()
+        if quiz:
+            duration_seconds = int(getattr(quiz, "duration_seconds", duration_seconds) or duration_seconds)
+
+    job_id = str(uuid.uuid4())
+    _FINAL_EXAM_JOBS[job_id] = {
+        "started_at": time.time(),
+        "status": "processing",
+        "topics_count": len(set(topics)),
+        "result": {
+            "quiz_id": quiz_id,
+            "assessment_id": quiz_id,
+            "duration_seconds": int(duration_seconds),
+            "questions": data.get("questions") or [],
+            "topic_count": len(set(topics)),
+            "difficulty": {
+                "easy": int(req.easy_count),
+                "medium": int(req.medium_count),
+                "hard": int(req.hard_count),
+            },
+        },
+    }
+    return {"request_id": request.state.request_id, "data": {"jobId": job_id}, "error": None}
+
+
+@router.get("/v1/lms/final-exam/status")
+def final_exam_generate_status(request: Request, jobId: str = Query(...), db: Session = Depends(get_db)):
+    _ = db  # keep dependency parity and future DB-based jobs.
+    job = _FINAL_EXAM_JOBS.get(str(jobId))
+    if not job:
+        raise HTTPException(status_code=404, detail="Final exam generation job not found")
+
+    elapsed = max(0.0, time.time() - float(job.get("started_at") or time.time()))
+    progress = min(100, int((elapsed / 12.0) * 100))
+    status = "completed" if progress >= 100 else "processing"
+    job["status"] = status
+
+    response = {
+        "jobId": str(jobId),
+        "status": status,
+        "progress": progress,
+        "topics_count": int(job.get("topics_count") or 0),
+    }
+    if status == "completed":
+        response["result"] = job.get("result") or {}
+    return {"request_id": request.state.request_id, "data": response, "error": None}
 
 
 @router.post("/lms/teacher/select-topics")
