@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+import statistics
 
 from statistics import mean
 from typing import Any
@@ -26,6 +29,16 @@ from app.models.quiz_set import QuizSet
 from app.models.student_assignment import StudentAssignment
 
 
+@dataclass
+class MultiDimProfile:
+    primary_level: str
+    knowledge_depth: str
+    topic_mastery: dict[str, str]
+    time_efficiency: str
+    consistency: str
+    recommended_pace: str
+
+
 def classify_student_level(total_score: int) -> str:
     score = max(0, min(100, int(total_score)))
     if score >= 85:
@@ -35,6 +48,102 @@ def classify_student_level(total_score: int) -> str:
     if score >= 50:
         return "trung_binh"
     return "yeu"
+
+
+def _extract_percent(value: Any) -> float:
+    if isinstance(value, dict):
+        return float(value.get("percent") or value.get("overall_percent") or 0.0)
+    return float(value or 0.0)
+
+
+def _classify_consistency(prev_attempts: list[Any]) -> str:
+    values = [_extract_percent(v) for v in (prev_attempts or [])]
+    if len(values) < 2:
+        return "consistent"
+    variance = statistics.pvariance(values)
+    delta = values[-1] - values[0]
+    if delta <= -10:
+        return "declining"
+    if variance <= 50:
+        return "consistent"
+    return "variable"
+
+
+def classify_student_multidim(
+    breakdown: dict[str, Any],
+    time_spent_sec: int,
+    estimated_time_sec: int,
+    prev_attempts: list[Any] | None = None,
+) -> MultiDimProfile:
+    overall_percent = float(((breakdown or {}).get("overall") or {}).get("percent") or 0.0)
+    primary_level = classify_student_level(int(round(overall_percent)))
+
+    by_difficulty = (breakdown or {}).get("by_difficulty") or {}
+    easy_pct = float((by_difficulty.get("easy") or {}).get("percent") or 0.0)
+    medium_pct = float((by_difficulty.get("medium") or {}).get("percent") or 0.0)
+    hard_pct = float((by_difficulty.get("hard") or {}).get("percent") or 0.0)
+
+    if hard_pct > 60:
+        knowledge_depth = "deep"
+    elif medium_pct > 70:
+        knowledge_depth = "conceptual"
+    elif easy_pct > 85:
+        knowledge_depth = "surface"
+    else:
+        knowledge_depth = "conceptual"
+
+    est = max(1, int(estimated_time_sec or 0))
+    spent = max(0, int(time_spent_sec or 0))
+    ratio = spent / est
+    if ratio < 0.7:
+        time_efficiency = "fast"
+    elif ratio > 1.4:
+        time_efficiency = "slow"
+    else:
+        time_efficiency = "normal"
+
+    topic_mastery: dict[str, str] = {}
+    for topic, stats in ((breakdown or {}).get("by_topic") or {}).items():
+        topic_pct = float((stats or {}).get("percent") or 0.0)
+        topic_mastery[str(topic)] = classify_student_level(int(round(topic_pct)))
+
+    consistency = _classify_consistency(prev_attempts or [])
+    weak_topics = [t for t, lvl in topic_mastery.items() if lvl == "yeu"]
+    if consistency == "consistent" and knowledge_depth == "deep":
+        recommended_pace = "accelerated"
+    elif time_efficiency == "slow" or primary_level == "yeu" or weak_topics:
+        recommended_pace = "remedial"
+    else:
+        recommended_pace = "normal"
+
+    return MultiDimProfile(
+        primary_level=primary_level,
+        knowledge_depth=knowledge_depth,
+        topic_mastery=topic_mastery,
+        time_efficiency=time_efficiency,
+        consistency=consistency,
+        recommended_pace=recommended_pace,
+    )
+
+
+def persist_multidim_profile(db: Session, *, user_id: int, profile: MultiDimProfile) -> dict[str, Any]:
+    learner = db.query(LearnerProfile).filter(LearnerProfile.user_id == int(user_id)).first()
+    if not learner:
+        learner = LearnerProfile(user_id=int(user_id), level=profile.primary_level, mastery_json={})
+        db.add(learner)
+
+    payload = asdict(profile)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    key = f"multidim_profile_{stamp}"
+
+    mastery = dict(learner.mastery_json or {})
+    mastery[key] = payload
+    mastery["multidim_profile_latest"] = payload
+    learner.level = profile.primary_level
+    learner.mastery_json = mastery
+    db.commit()
+    db.refresh(learner)
+    return {"key": key, "profile": payload}
 
 
 def _difficulty_from_breakdown_item(item: dict[str, Any]) -> str:
@@ -154,7 +263,12 @@ def score_breakdown(breakdown: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def build_recommendations(*, breakdown: dict[str, Any], document_topics: list[str] | None = None) -> list[dict[str, Any]]:
+def build_recommendations(
+    *,
+    breakdown: dict[str, Any],
+    document_topics: list[str] | None = None,
+    multidim_profile: MultiDimProfile | None = None,
+) -> list[dict[str, Any]]:
     topic_scores = breakdown.get("by_topic") or {}
     weak_topics = [k for k, v in topic_scores.items() if float(
         (v or {}).get("percent") or 0) < 65]
@@ -181,6 +295,39 @@ def build_recommendations(*, breakdown: dict[str, Any], document_topics: list[st
                     "exercise": f"Bài tập nâng cao theo chủ đề '{topic}'",
                 }
             )
+
+    profile = multidim_profile
+    if profile and profile.time_efficiency == "fast" and profile.knowledge_depth == "surface":
+        recommendations.append(
+            {
+                "topic": "higher_order_thinking",
+                "priority": "high",
+                "material": "Bổ sung bài học yêu cầu lập luận và phản biện (evaluate/create).",
+                "exercise": "Thực hiện 3 câu evaluate/create để tránh làm nhanh nhưng hời hợt.",
+            }
+        )
+
+    weak_topic_names = [t for t, lvl in ((profile.topic_mastery if profile else {}) or {}).items() if lvl == "yeu"]
+    if profile and profile.time_efficiency == "slow" and weak_topic_names:
+        for topic in weak_topic_names[:3]:
+            recommendations.append(
+                {
+                    "topic": topic,
+                    "priority": "high",
+                    "material": f"Chia nhỏ nội dung chủ đề '{topic}' thành các bước ngắn.",
+                    "exercise": f"Giao bài tập từng phần cho '{topic}', hoàn thành tuần tự từ cơ bản đến vận dụng.",
+                }
+            )
+
+    if profile and profile.consistency == "consistent" and profile.knowledge_depth == "deep":
+        recommendations.append(
+            {
+                "topic": "project_challenge",
+                "priority": "normal",
+                "material": "Fast-track: giao mini project/challenge liên môn.",
+                "exercise": "Hoàn thành một project có phần đánh giá và sáng tạo giải pháp.",
+            }
+        )
 
     return recommendations
 

@@ -3,6 +3,7 @@ from app.services.lms_service import (
     analyze_topic_weak_points,
     build_recommendations,
     classify_student_level,
+    classify_student_multidim,
     generate_student_evaluation_report,
     generate_class_narrative,
     score_breakdown,
@@ -69,6 +70,33 @@ def test_analyze_topic_weak_points():
     assert result[0]["avg_pct"] == 37.5
 
 
+def test_classify_student_multidim_and_recommendations_rules():
+    scored = {
+        "overall": {"percent": 78.0},
+        "by_difficulty": {
+            "easy": {"percent": 92.0},
+            "medium": {"percent": 55.0},
+            "hard": {"percent": 25.0},
+        },
+        "by_topic": {
+            "ham": {"percent": 45.0},
+            "vong_lap": {"percent": 80.0},
+        },
+    }
+    profile = classify_student_multidim(
+        scored,
+        time_spent_sec=500,
+        estimated_time_sec=1000,
+        prev_attempts=[90.0, 80.0, 70.0],
+    )
+    assert profile.primary_level == "kha"
+    assert profile.knowledge_depth == "surface"
+    assert profile.time_efficiency == "fast"
+    assert profile.consistency == "variable" or profile.consistency == "declining"
+    assert profile.topic_mastery["ham"] == "yeu"
+
+    recs = build_recommendations(breakdown=scored, multidim_profile=profile)
+    assert any(r["topic"] == "higher_order_thinking" for r in recs)
 
 def test_generate_student_evaluation_report_fallback(monkeypatch):
     monkeypatch.setattr("app.services.lms_service.llm_available", lambda: False)

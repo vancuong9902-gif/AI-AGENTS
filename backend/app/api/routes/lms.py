@@ -27,6 +27,10 @@ from app.services.lms_service import (
     analyze_topic_weak_points,
     build_recommendations,
     classify_student_level,
+
+    classify_student_multidim,
+    generate_class_narrative,
+    persist_multidim_profile,
     generate_student_evaluation_report,
     get_student_homework_results,
     generate_class_narrative,
@@ -322,8 +326,14 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
         int(round(float(breakdown["overall"]["percent"]))))
     topics = [str(x) for x in (quiz.topic.split(
         ",") if quiz.topic else []) if x.strip()]
+    multidim_profile = classify_student_multidim(
+        breakdown=breakdown,
+        time_spent_sec=spent,
+        estimated_time_sec=duration_seconds,
+        prev_attempts=[],
+    )
     recommendations = build_recommendations(
-        breakdown=breakdown, document_topics=topics)
+        breakdown=breakdown, document_topics=topics, multidim_profile=multidim_profile)
 
     if timed_out:
         base["notes"] = "Nộp quá thời gian; hệ thống chấm theo câu trả lời tại thời điểm nộp."
@@ -400,7 +410,13 @@ def student_recommendations(request: Request, student_id: int, db: Session = Dep
         QuizSet.id == int(latest.quiz_set_id)).first()
     topics = [str(x) for x in (quiz.topic.split(
         ",") if quiz and quiz.topic else []) if x.strip()]
-    recs = build_recommendations(breakdown=breakdown, document_topics=topics)
+    multidim_profile = classify_student_multidim(
+        breakdown=breakdown,
+        time_spent_sec=int(getattr(latest, "duration_sec", 0) or 0),
+        estimated_time_sec=_quiz_duration_map(quiz) if quiz else 1800,
+        prev_attempts=[],
+    )
+    recs = build_recommendations(breakdown=breakdown, document_topics=topics, multidim_profile=multidim_profile)
     assignments = [
         {"topic": r["topic"], "material": r["material"],
             "exercise_set": r["exercise"], "status": "assigned"}
@@ -431,8 +447,28 @@ def lms_submit_attempt(request: Request, assessment_id: int, payload: SubmitAtte
     q = db.query(QuizSet).filter(QuizSet.id == int(assessment_id)).first()
     topics = [str(x) for x in (q.topic.split(
         ",") if q and q.topic else []) if x.strip()]
+
+    prev_rows = (
+        db.query(Attempt)
+        .filter(Attempt.user_id == int(payload.user_id))
+        .order_by(Attempt.created_at.desc())
+        .limit(5)
+        .all()
+    )
+    prev_attempts = []
+    for row in reversed(prev_rows):
+        prev_br = score_breakdown(row.breakdown_json or [])
+        prev_attempts.append(float((prev_br.get("overall") or {}).get("percent") or 0.0))
+
+    estimated_time_sec = _quiz_duration_map(q) if q else 1800
+    multidim_profile = classify_student_multidim(
+        breakdown=breakdown,
+        time_spent_sec=int(payload.duration_sec),
+        estimated_time_sec=estimated_time_sec,
+        prev_attempts=prev_attempts,
+    )
     recommendations = build_recommendations(
-        breakdown=breakdown, document_topics=topics)
+        breakdown=breakdown, document_topics=topics, multidim_profile=multidim_profile)
 
     try:
         from app.services.lms_service import assign_learning_path
@@ -450,6 +486,8 @@ def lms_submit_attempt(request: Request, assessment_id: int, payload: SubmitAtte
     except Exception:
         base["assigned_learning_path"] = None  # Không bao giờ làm hỏng flow chính
 
+    persisted = persist_multidim_profile(db, user_id=int(payload.user_id), profile=multidim_profile)
+
     assignment_ids: list[int] = []
     if q and getattr(q, "document_ids_json", None):
         doc_ids = [int(x) for x in (q.document_ids_json or [])]
@@ -465,11 +503,52 @@ def lms_submit_attempt(request: Request, assessment_id: int, payload: SubmitAtte
 
     base["score_breakdown"] = breakdown
     base["student_level"] = level
+    base["multidim_profile"] = persisted["profile"]
+    base["multidim_profile_key"] = persisted["key"]
     base["recommendations"] = recommendations
     base["assignments_created"] = len(assignment_ids)
     base["assignment_ids"] = assignment_ids
     return {"request_id": request.state.request_id, "data": base, "error": None}
 
+
+
+
+@router.get("/profile/{user_id}/multidim")
+def get_multidim_profile(request: Request, user_id: int, db: Session = Depends(get_db)):
+    profile = db.query(LearnerProfile).filter(LearnerProfile.user_id == int(user_id)).first()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    mastery = dict(profile.mastery_json or {})
+    latest = mastery.get("multidim_profile_latest") or {}
+    hist_items = []
+    for key, value in mastery.items():
+        if str(key).startswith("multidim_profile_") and key != "multidim_profile_latest" and isinstance(value, dict):
+            hist_items.append((str(key), value))
+    hist_items.sort(key=lambda x: x[0])
+
+    trend = []
+    for key, item in hist_items:
+        trend.append(
+            {
+                "timestamp": key.replace("multidim_profile_", ""),
+                "primary_level": item.get("primary_level"),
+                "knowledge_depth": item.get("knowledge_depth"),
+                "time_efficiency": item.get("time_efficiency"),
+                "consistency": item.get("consistency"),
+                "recommended_pace": item.get("recommended_pace"),
+            }
+        )
+
+    return {
+        "request_id": request.state.request_id,
+        "data": {
+            "user_id": int(user_id),
+            "latest": latest,
+            "trend": trend[-20:],
+        },
+        "error": None,
+    }
 
 @router.get("/lms/teacher/report/{classroom_id}")
 def teacher_report(request: Request, classroom_id: int, db: Session = Depends(get_db)):
