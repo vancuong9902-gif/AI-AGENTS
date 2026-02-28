@@ -285,7 +285,7 @@ export default function TopicDetail() {
 
             <button
               type="button"
-              onClick={() => navigate(`/quiz?kind=practice&topicId=${topicId}`)}
+              onClick={() => navigate(`/practice/${topicId}`)}
               className="rounded-lg bg-blue-600 px-4 py-2 font-medium text-white"
             >
               Làm bài tập
