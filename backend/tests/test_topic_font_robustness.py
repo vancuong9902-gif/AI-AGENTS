@@ -1,8 +1,10 @@
+import re
 import unicodedata
 
 from app.services.topic_service import extract_topics
 
-_BAD_CHARS = set("¸\u00ad¬×®¦§©")
+_BAD_CHARS = set("¸\u00ad¬×®¦§")
+_ALLOWED_TITLE_RX = re.compile(r"^[\u0020-\u007E\u00C0-\u024F\u1E00-\u1EFF]+$")
 
 
 def _is_unicode_vn_normalized(s: str) -> bool:
@@ -11,20 +13,21 @@ def _is_unicode_vn_normalized(s: str) -> bool:
 
 def test_extract_topics_handles_tcvn3_broken_heading_font():
     full_text = (
-        "Ch\u00ad¬ng 1: H\u00e0m s\u1ed1 v\u00e0 \u1ee9ng d\u1ee5ng\n"
-        + "H\u00e0m s\u1ed1 m\u00f4 t\u1ea3 m\u1ed1i li\u00ean h\u1ec7 gi\u1eefa \u0111\u1ea7u v\u00e0o v\u00e0 \u0111\u1ea7u ra. " * 30
-        + "\nCh\u00ad¬ng 2: \u0110\u1ea1o h\u00e0m c\u01a1 b\u1ea3n\n"
-        + "\u0110\u1ea1o h\u00e0m cho bi\u1ebft t\u1ed1c \u0111\u1ed9 thay \u0111\u1ed5i c\u1ee7a h\u00e0m s\u1ed1 theo bi\u1ebfn. " * 30
+        "Ch\u00ad¬ng 1 §¹i sè t\u00ad tuy Õn\n"
+        + "Đại số tuyến tính nghiên cứu vector, ma trận và các phép biến đổi tuyến tính. " * 35
+        + "\nKết luận\n"
+        + "Tổng kết nội dung đại số tuyến tính, nhấn mạnh ứng dụng của vector và ma trận trong mô hình hóa. " * 45
     )
 
     resp = extract_topics(full_text, heading_level="chapter", include_details=False, max_topics=8)
-    topics = resp.get("topics") or []
+    result = resp.get("topics") or []
 
     assert resp.get("status") == "OK"
-    assert topics
+    assert len(result) > 0
 
-    for topic in topics:
+    for topic in result:
         title = str(topic.get("title") or "")
         assert title
         assert _is_unicode_vn_normalized(title)
         assert not any(ch in _BAD_CHARS for ch in title)
+        assert _ALLOWED_TITLE_RX.fullmatch(title), title
