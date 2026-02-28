@@ -42,3 +42,24 @@ class StudentProgressRow(BaseModel):
 class ClassroomDashboardOut(BaseModel):
     classroom: ClassroomOut
     students: List[StudentProgressRow] = Field(default_factory=list)
+
+
+class DifficultyDistributionIn(BaseModel):
+    easy_pct: int = 30
+    medium_pct: int = 40
+    hard_pct: int = 30
+
+
+class ClassroomEntryTestCreateRequest(BaseModel):
+    teacher_id: int
+    document_ids: List[int] = Field(default_factory=list)
+    topic_ids: List[int] = Field(default_factory=list)
+    title: str = "Entry Test"
+    time_limit_minutes: int = 45
+    distribution: DifficultyDistributionIn = Field(default_factory=DifficultyDistributionIn)
+    total_questions: int = 30
+
+
+class ClassroomEntryTestCreateOut(BaseModel):
+    assessment_id: int
+    preview_url: str

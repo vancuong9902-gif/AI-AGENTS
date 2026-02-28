@@ -10,16 +10,19 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_teacher, require_user
 from app.models.classroom import Classroom, ClassroomMember
+from app.models.document_topic import DocumentTopic
 from app.models.learning_plan import LearningPlan, LearningPlanHomeworkSubmission, LearningPlanTaskCompletion
 from app.models.user import User
 from app.schemas.classrooms import (
     AssignLearningPlanRequest,
     ClassroomCreateRequest,
     ClassroomDashboardOut,
+    ClassroomEntryTestCreateRequest,
     ClassroomJoinRequest,
     ClassroomOut,
     StudentProgressRow,
 )
+from app.services.assessment_service import generate_assessment
 from app.services.learning_plan_service import build_teacher_learning_plan
 from app.services.learning_plan_storage_service import save_teacher_plan
 from app.services.user_service import ensure_user_exists
@@ -299,3 +302,67 @@ def assign_learning_plan_to_classroom(
         created.append({"user_id": int(uid), "plan_id": int(row.id)})
 
     return {"request_id": request.state.request_id, "data": {"created": created}, "error": None}
+
+
+@router.post("/classrooms/{classroom_id}/entry-test")
+def create_classroom_entry_test(
+    request: Request,
+    classroom_id: int,
+    payload: ClassroomEntryTestCreateRequest,
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    c = db.query(Classroom).filter(Classroom.id == int(classroom_id)).first()
+    if not c or int(c.teacher_id) != int(teacher.id):
+        raise HTTPException(status_code=404, detail="Classroom not found")
+
+    if int(payload.teacher_id) != int(teacher.id):
+        raise HTTPException(status_code=400, detail="teacher_id mismatch")
+
+    topic_ids = [int(tid) for tid in (payload.topic_ids or []) if int(tid) > 0]
+    if not topic_ids:
+        raise HTTPException(status_code=400, detail="topic_ids is required")
+
+    topics = [
+        str(r[0])
+        for r in db.query(DocumentTopic.title)
+        .filter(DocumentTopic.id.in_(topic_ids))
+        .all()
+        if r and r[0]
+    ]
+    if not topics:
+        raise HTTPException(status_code=400, detail="No valid topics found")
+
+    total_questions = max(1, int(payload.total_questions or 30))
+    d = payload.distribution
+    easy_count = int(total_questions * int(d.easy_pct) // 100)
+    medium_count = int(total_questions * int(d.medium_pct) // 100)
+    hard_count = int(total_questions - easy_count - medium_count)
+
+    try:
+        data = generate_assessment(
+            db,
+            teacher_id=int(teacher.id),
+            classroom_id=int(classroom_id),
+            title=str(payload.title or "Entry Test"),
+            level="intermediate",
+            kind="entry_test",
+            easy_count=easy_count,
+            medium_count=medium_count,
+            hard_count=hard_count,
+            document_ids=[int(x) for x in (payload.document_ids or [])],
+            topics=topics,
+            time_limit_minutes=int(payload.time_limit_minutes or 45),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    assessment_id = int(data.get("assessment_id") or 0)
+    return {
+        "request_id": request.state.request_id,
+        "data": {
+            "assessment_id": assessment_id,
+            "preview_url": f"/assessments/{assessment_id}",
+        },
+        "error": None,
+    }

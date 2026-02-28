@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base_class import Base
@@ -24,6 +24,9 @@ class ClassroomAssessment(Base):
         index=True,
         nullable=False,
     )
+
+    kind: Mapped[str] = mapped_column(String(50), nullable=False, default="midterm", server_default=text("'midterm'"))
+    visible_to_students: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
