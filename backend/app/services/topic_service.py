@@ -9,6 +9,7 @@ from app.services.llm_service import llm_available, chat_json, chat_text
 from app.services.external_sources import fetch_external_snippets
 from app.core.config import settings
 from app.services.text_repair import repair_ocr_spacing_line, repair_ocr_spacing_text
+from app.services.vietnamese_font_fix import detect_broken_vn_font, fix_vietnamese_font_encoding
 
 
 _WORD_RX = re.compile(r"[A-Za-zÀ-ỹà-ỹ0-9_]+", flags=re.UNICODE)
@@ -30,6 +31,53 @@ _AUX_SECTION_RX = re.compile(
     flags=re.IGNORECASE,
 )
 
+
+
+_PAGE_PREFIX_RX = re.compile(r"^\s*(?:trang|page|p\.?|pp\.?)\s*\d{1,4}\b", flags=re.IGNORECASE)
+_NON_PRINTABLE_RX = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
+
+
+def validate_and_clean_topic_title(raw_title: str) -> tuple[str, list[str]]:
+    """Clean and validate extracted topic title for UI display."""
+    warnings: list[str] = []
+    title = str(raw_title or "").strip()
+
+    if not title:
+        return "", ["empty_title", "needs_review=True"]
+
+    if detect_broken_vn_font(title):
+        fixed = fix_vietnamese_font_encoding(title).strip()
+        if fixed != title:
+            warnings.append("font_fixed")
+            title = fixed
+
+    if _NON_PRINTABLE_RX.search(title):
+        warnings.append("contains_control_chars")
+        title = _NON_PRINTABLE_RX.sub("", title).strip()
+
+    suspect_chars = "¸­¬×®¦§"
+    if any(ch in title for ch in suspect_chars):
+        warnings.append("contains_suspect_chars")
+        title = "".join(ch for ch in title if ch not in suspect_chars).strip()
+
+    if "□" in title:
+        warnings.append("contains_tofu")
+    if "�" in title:
+        warnings.append("contains_replacement_char")
+
+    if _PAGE_PREFIX_RX.match(title):
+        warnings.append("starts_with_page_prefix")
+    if _AUX_SECTION_RX.match(title):
+        warnings.append("starts_with_aux_section")
+
+    tlen = len(title)
+    if tlen < 5 or tlen > 150:
+        warnings.append("length_out_of_range")
+
+    if detect_broken_vn_font(title) or any(x in title for x in ("□", "�")):
+        warnings.append("needs_review=True")
+
+    return title, warnings
 
 # Minimal VN/EN stopword set for keyword extraction (kept small + stable).
 _STOP = {
@@ -880,6 +928,88 @@ def _merge_similar_topics(topics: List[Dict[str, Any]], *, max_topics: int) -> L
         merged = merged[: int(max_topics)]
     return merged
 
+
+
+
+def _topic_confidence_score(title: str, body: str) -> float:
+    """Hybrid confidence: heuristic baseline + optional LLM verification."""
+    title = str(title or "").strip()
+    body = str(body or "").strip()
+    base = 0.45
+    if 5 <= len(title) <= 150:
+        base += 0.15
+    if body:
+        base += min(0.2, len(body) / 6000.0)
+    if not _AUX_SECTION_RX.match(title):
+        base += 0.1
+
+    conf = min(0.95, max(0.05, base))
+    if llm_available() and body:
+        snippet = re.sub(r"\s+", " ", body).strip()[:1200]
+        prompt = (
+            "Trả JSON {is_academic_topic: boolean, confidence: number}. "
+            "Đánh giá title có phải topic học thuật của sách hay không (0..1)."
+        )
+        try:
+            obj = chat_json(
+                messages=[
+                    {"role": "system", "content": "Bạn là bộ kiểm định chất lượng topic sách giáo khoa."},
+                    {"role": "user", "content": f"{prompt}\nTitle: {title}\nContext: {snippet}"},
+                ],
+                temperature=0.0,
+                max_tokens=120,
+            )
+            if isinstance(obj, dict):
+                llm_conf = float(obj.get("confidence", conf) or conf)
+                is_topic = bool(obj.get("is_academic_topic", True))
+                llm_conf = min(1.0, max(0.0, llm_conf))
+                conf = (0.4 * conf) + (0.6 * llm_conf)
+                if not is_topic:
+                    conf = min(conf, 0.45)
+        except Exception:
+            pass
+
+    return float(min(1.0, max(0.0, conf)))
+
+
+def _merge_duplicate_topics_by_similarity(topics: List[Dict[str, Any]], *, threshold: float = 0.85) -> List[Dict[str, Any]]:
+    if not topics:
+        return []
+    out: list[dict[str, Any]] = []
+    for t in topics:
+        title = str(t.get("title") or "")
+        toks = _title_token_set(title)
+        best_i = None
+        best = 0.0
+        for i, m in enumerate(out):
+            score = _jaccard(toks, _title_token_set(str(m.get("title") or "")))
+            if score > best:
+                best = score
+                best_i = i
+        if best_i is not None and best >= float(threshold):
+            cur = out[best_i]
+            conf_cur = float(cur.get("extraction_confidence") or 0.0)
+            conf_new = float(t.get("extraction_confidence") or 0.0)
+            keep_new = conf_new >= conf_cur
+            primary = t if keep_new else cur
+            secondary = cur if keep_new else t
+            primary_body = str(primary.get("body") or "").strip()
+            sec_body = str(secondary.get("body") or "").strip()
+            if sec_body and sec_body not in primary_body:
+                primary["body"] = (primary_body + "\n\n" + sec_body).strip()
+            kws = [str(x).strip().lower() for x in (primary.get("keywords") or []) if str(x).strip()]
+            for x in (secondary.get("keywords") or []):
+                xx = str(x).strip().lower()
+                if xx and xx not in kws:
+                    kws.append(xx)
+            primary["keywords"] = kws[:16]
+            for k in ("start_chunk_index", "end_chunk_index", "page_start", "page_end"):
+                if primary.get(k) is None and secondary.get(k) is not None:
+                    primary[k] = secondary.get(k)
+            out[best_i] = primary
+            continue
+        out.append(t)
+    return out
 
 def _merge_tiny_topics(topics: List[Dict[str, Any]], *, min_body_chars: int) -> List[Dict[str, Any]]:
     """Merge tiny topics so each topic has enough evidence for study material + 3 difficulty levels.
@@ -3163,14 +3293,25 @@ def extract_topics(
         content_preview = body_norm[: int(max_body_preview)]
         has_more = len(body_norm) > int(max_body_preview)
 
+        clean_title, title_warnings = validate_and_clean_topic_title(title)
+        needs_review = bool(title_warnings)
+        conf = _topic_confidence_score(clean_title or title, body_for_summary)
+        if conf < 0.5 or len(re.sub(r"\s+", " ", body_for_summary).strip()) < 120:
+            needs_review = True
+
         item: Dict[str, Any] = {
-            "title": title,
+            "title": clean_title or title,
+            "display_title": clean_title or title,
+            "needs_review": bool(needs_review),
+            "title_warnings": title_warnings,
+            "extraction_confidence": conf,
             "summary": summary,
             "keywords": [str(x).strip().lower() for x in (kws or []) if str(x).strip()][:12],
             "body_len": len(body_norm),
             "content_len": len(body_norm),
             "content_preview": content_preview,
             "has_more_content": has_more,
+            "body": body,
         }
 
         if practice_body:
@@ -3183,6 +3324,10 @@ def extract_topics(
             item["start_chunk_index"] = int(t.get("start_chunk_index"))
         if t.get("end_chunk_index") is not None:
             item["end_chunk_index"] = int(t.get("end_chunk_index"))
+        if t.get("page_start") is not None:
+            item["page_start"] = int(t.get("page_start"))
+        if t.get("page_end") is not None:
+            item["page_end"] = int(t.get("page_end"))
 
         if include_details:
             details = build_topic_details(body_for_details, title=title)
@@ -3239,6 +3384,9 @@ def extract_topics(
 
         out.append(item)
 
+    out.sort(key=lambda x: (int(x.get('page_start')) if x.get('page_start') is not None else 10**9,
+                            int(x.get('start_chunk_index')) if x.get('start_chunk_index') is not None else 10**9))
+    out = _merge_duplicate_topics_by_similarity(out, threshold=0.85)
     out = validate_and_repair_topics(out)
 
     if not out:

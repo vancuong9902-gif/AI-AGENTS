@@ -7,6 +7,10 @@ class DocumentTopicData(BaseModel):
     topic_id: int
     topic_index: int
     title: str
+    display_title: str | None = None
+    needs_review: bool = False
+    extraction_confidence: float = 0.0
+    page_range: list[int | None] = []
     summary: str
     keywords: list[str] = []
     start_chunk_index: int | None = None

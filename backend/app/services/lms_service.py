@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+
 from statistics import mean
 from typing import Any
 
@@ -9,10 +10,20 @@ from sqlalchemy.orm import Session
 
 from app.models.learning_plan import LearningPlanHomeworkSubmission
 from app.models.user import User
+from datetime import datetime
+from typing import Any
+
+from app.services.bloom import normalize_bloom_level
+from app.services.llm_service import chat_text, llm_available
+from sqlalchemy import or_
+from sqlalchemy.orm import Session
+
+from app.models.document_chunk import DocumentChunk
 from app.models.document_topic import DocumentTopic
 from app.models.learner_profile import LearnerProfile
 from app.models.learning_plan import LearningPlan
 from app.models.quiz_set import QuizSet
+from app.models.student_assignment import StudentAssignment
 
 
 def classify_student_level(total_score: int) -> str:
@@ -47,10 +58,19 @@ def _difficulty_from_breakdown_item(item: dict[str, Any]) -> str:
 
 
 def score_breakdown(breakdown: list[dict[str, Any]]) -> dict[str, Any]:
-    by_topic: dict[str, dict[str, int]] = defaultdict(
-        lambda: {"earned": 0, "total": 0})
+    by_topic: dict[str, dict[str, float | int]] = defaultdict(
+        lambda: {"earned": 0, "total": 0, "bloom_sum": 0.0, "bloom_n": 0})
     by_difficulty: dict[str, dict[str, int]] = defaultdict(
         lambda: {"earned": 0, "total": 0})
+
+    bloom_order = {
+        "remember": 1.0,
+        "understand": 2.0,
+        "apply": 3.0,
+        "analyze": 4.0,
+        "evaluate": 5.0,
+        "create": 6.0,
+    }
 
     total_earned = 0
     total_points = 0
@@ -60,9 +80,13 @@ def score_breakdown(breakdown: list[dict[str, Any]]) -> dict[str, Any]:
         earned = int(item.get("score_points") or 0)
         earned = max(0, min(max_points, earned))
         difficulty = _difficulty_from_breakdown_item(item)
+        bloom = normalize_bloom_level(str(item.get("bloom_level") or "understand"))
 
         by_topic[topic]["earned"] += earned
         by_topic[topic]["total"] += max_points
+        by_topic[topic]["bloom_sum"] += bloom_order.get(bloom, 2.0)
+        by_topic[topic]["bloom_n"] += 1
+
         by_difficulty[difficulty]["earned"] += earned
         by_difficulty[difficulty]["total"] += max_points
         total_earned += earned
@@ -80,14 +104,53 @@ def score_breakdown(breakdown: list[dict[str, Any]]) -> dict[str, Any]:
             }
         return out
 
+    by_topic_out: dict[str, dict[str, float | int | str]] = {}
+    bloom_weak_topics: list[dict[str, Any]] = []
+    for topic, vals in by_topic.items():
+        total = int(vals["total"])
+        earned = int(vals["earned"])
+        bloom_n = int(vals["bloom_n"])
+        bloom_avg = round(float(vals["bloom_sum"]) / max(1, bloom_n), 2)
+        percent = round((earned / total) * 100, 2) if total > 0 else 0.0
+
+        if bloom_avg < 2:
+            assignment_type = "reading"
+            bloom_focus = ["remember", "understand"]
+        elif bloom_avg < 3.5:
+            assignment_type = "exercise"
+            bloom_focus = ["apply", "analyze"]
+        else:
+            assignment_type = "essay_case_study"
+            bloom_focus = ["evaluate", "create"]
+
+        by_topic_out[topic] = {
+            "earned": earned,
+            "total": total,
+            "percent": percent,
+            "bloom_avg": bloom_avg,
+            "assignment_type": assignment_type,
+            "bloom_focus": bloom_focus,
+        }
+        if percent < 65:
+            bloom_weak_topics.append(
+                {
+                    "topic": topic,
+                    "bloom_avg": bloom_avg,
+                    "assignment_type": assignment_type,
+                    "bloom_focus": bloom_focus,
+                    "percent": percent,
+                }
+            )
+
     return {
         "overall": {
             "earned": total_earned,
             "total": total_points,
             "percent": round((total_earned / total_points) * 100, 2) if total_points > 0 else 0.0,
         },
-        "by_topic": _attach_percent(by_topic),
+        "by_topic": by_topic_out,
         "by_difficulty": _attach_percent(by_difficulty),
+        "weak_topics": sorted(bloom_weak_topics, key=lambda x: (x["percent"], x["bloom_avg"])),
     }
 
 
@@ -458,3 +521,134 @@ def assign_learning_path(
         ],
         "total_assigned": len(assigned_tasks),
     }
+
+
+def _question_prompt_by_assignment_type(assignment_type: str) -> str:
+    if assignment_type == "reading":
+        return "Tạo câu hỏi mức nhớ/hiểu, ngắn gọn và kiểm tra khái niệm nền tảng."
+    if assignment_type == "exercise":
+        return "Tạo câu hỏi vận dụng/phân tích, có dữ kiện và yêu cầu lập luận từng bước."
+    return "Tạo đề bài essay/case study yêu cầu đánh giá và đề xuất giải pháp."
+
+
+def _generate_practice_questions(*, topic: str, student_level: str, chunks: list[dict[str, Any]], assignment_type: str) -> list[dict[str, Any]]:
+    context = "\n\n".join(str(c.get("text") or "")[:700] for c in chunks[:3])
+    if not context.strip():
+        context = f"Chủ đề: {topic}"
+
+    if not llm_available():
+        return [
+            {"question": f"Nêu ý chính của chủ đề '{topic}' từ tài liệu đã đọc.", "bloom": "remember"},
+            {"question": f"Giải thích khái niệm quan trọng trong '{topic}' bằng ví dụ ngắn.", "bloom": "understand"},
+            {"question": f"Áp dụng kiến thức '{topic}' để xử lý một tình huống đơn giản.", "bloom": "apply"},
+        ]
+
+    system = "Bạn là giáo viên tạo bài luyện tập tiếng Việt, trả JSON array 3-5 phần tử."
+    user = (
+        f"Học sinh level: {student_level}\n"
+        f"Topic: {topic}\n"
+        f"Loại bài giao: {assignment_type}\n"
+        f"Yêu cầu: {_question_prompt_by_assignment_type(assignment_type)}\n"
+        "Mỗi phần tử JSON gồm: question, bloom, answer_hint. Không markdown, không text thừa.\n\n"
+        f"Ngữ cảnh tài liệu:\n{context}"
+    )
+    try:
+        raw = str(chat_text([{"role": "system", "content": system}, {"role": "user", "content": user}], temperature=0.2, max_tokens=700) or "")
+        import json
+        data = json.loads(raw)
+        if isinstance(data, list):
+            clean = [x for x in data if isinstance(x, dict) and x.get("question")]
+            if clean:
+                return clean[:5]
+    except Exception:
+        pass
+    return [
+        {"question": f"Tóm tắt nội dung chính của chủ đề '{topic}'.", "bloom": "understand"},
+        {"question": f"Làm bài luyện tập theo chủ đề '{topic}' theo đúng level {student_level}.", "bloom": "apply"},
+        {"question": f"Phân tích lỗi thường gặp khi làm bài về '{topic}'.", "bloom": "analyze"},
+    ]
+
+
+def assign_topic_materials(
+    db: Session,
+    *,
+    student_id: int,
+    classroom_id: int,
+    student_level: str,
+    weak_topics: list[dict[str, Any]] | list[str],
+    document_id: int,
+) -> list[int]:
+    assignment_ids: list[int] = []
+
+    for weak in weak_topics or []:
+        if isinstance(weak, dict):
+            topic_name = str(weak.get("topic") or "").strip()
+            assignment_type = str(weak.get("assignment_type") or "exercise")
+            bloom_focus = weak.get("bloom_focus") or []
+        else:
+            topic_name = str(weak).strip()
+            assignment_type = "exercise"
+            bloom_focus = []
+
+        if not topic_name:
+            continue
+
+        topic_obj = (
+            db.query(DocumentTopic)
+            .filter(DocumentTopic.document_id == int(document_id))
+            .filter(DocumentTopic.title.ilike(f"%{topic_name}%"))
+            .first()
+        )
+
+        chunk_query = db.query(DocumentChunk).filter(DocumentChunk.document_id == int(document_id))
+        if topic_obj and topic_obj.start_chunk_index is not None and topic_obj.end_chunk_index is not None:
+            chunk_query = chunk_query.filter(
+                DocumentChunk.chunk_index >= int(topic_obj.start_chunk_index),
+                DocumentChunk.chunk_index <= int(topic_obj.end_chunk_index),
+            )
+        else:
+            chunk_query = chunk_query.filter(or_(DocumentChunk.text.ilike(f"%{topic_name}%"), DocumentChunk.chunk_index < 8))
+
+        chunks = chunk_query.order_by(DocumentChunk.chunk_index.asc()).limit(5).all()
+        chunk_payload = [
+            {
+                "chunk_id": int(c.id),
+                "chunk_index": int(c.chunk_index),
+                "text": str(c.text),
+                "meta": c.meta if isinstance(c.meta, dict) else {},
+            }
+            for c in chunks
+        ]
+
+        questions = _generate_practice_questions(
+            topic=topic_name,
+            student_level=student_level,
+            chunks=chunk_payload,
+            assignment_type=assignment_type,
+        )
+
+        row = StudentAssignment(
+            student_id=int(student_id),
+            classroom_id=int(classroom_id),
+            topic_id=int(topic_obj.id) if topic_obj else None,
+            document_id=int(document_id),
+            assignment_type=assignment_type,
+            student_level=str(student_level),
+            status="pending",
+            content_json={
+                "topic": topic_name,
+                "bloom_focus": bloom_focus,
+                "chunks": chunk_payload,
+                "questions": questions,
+            },
+            due_date=None,
+            created_at=datetime.utcnow(),
+            completed_at=None,
+        )
+        db.add(row)
+        db.flush()
+        assignment_ids.append(int(row.id))
+
+    if assignment_ids:
+        db.commit()
+    return assignment_ids

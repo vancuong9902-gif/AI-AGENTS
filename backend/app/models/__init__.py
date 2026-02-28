@@ -14,6 +14,7 @@ from app.models.classroom import Classroom, ClassroomMember
 from app.models.retention_schedule import RetentionSchedule
 from app.models.policy_decision_log import PolicyDecisionLog
 from app.models.drift_report import DriftReport
+from app.models.student_assignment import StudentAssignment
 
 __all__ = [
     "User",
@@ -35,6 +36,6 @@ __all__ = [
     "RetentionSchedule",
     "PolicyDecisionLog",
     "DriftReport",
+    "StudentAssignment",
 ]
-
 
