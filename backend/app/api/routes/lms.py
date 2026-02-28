@@ -135,13 +135,7 @@ def _generate_assessment_lms(*, request: Request, db: Session, payload: Generate
 
 
 def _quiz_duration_map(quiz: QuizSet) -> int:
-    level_text = str(getattr(quiz, "level", "") or "")
-    if "duration=" in level_text:
-        try:
-            return int(level_text.split("duration=", 1)[1].split(";", 1)[0].strip())
-        except Exception:
-            return 1800
-    return 1800
+    return int(getattr(quiz, "duration_seconds", 1800) or 1800)
 
 
 @router.post("/lms/placement/generate")
@@ -239,7 +233,7 @@ def create_placement_quiz(request: Request, payload: PlacementQuizIn, db: Sessio
     if quiz_id > 0:
         quiz = db.query(QuizSet).filter(QuizSet.id == quiz_id).first()
         if quiz:
-            quiz.level = f"{quiz.level};duration={int(payload.duration_seconds)}"
+            quiz.duration_seconds = int(payload.duration_seconds)
             db.commit()
     response["data"]["duration_seconds"] = int(payload.duration_seconds)
     response["data"]["quiz_type"] = "placement"
@@ -269,7 +263,7 @@ def create_final_quiz(request: Request, payload: PlacementQuizIn, db: Session = 
     if quiz_id > 0:
         quiz = db.query(QuizSet).filter(QuizSet.id == quiz_id).first()
         if quiz:
-            quiz.level = f"{quiz.level};duration={int(payload.duration_seconds)}"
+            quiz.duration_seconds = int(payload.duration_seconds)
             db.commit()
     response["data"]["duration_seconds"] = int(payload.duration_seconds)
     response["data"]["quiz_type"] = "final"
