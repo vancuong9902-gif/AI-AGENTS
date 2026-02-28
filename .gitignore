@@ -11,3 +11,6 @@ dist/
 # OS/IDE
 .vscode/
 .DS_Store
+
+backend/vector_db/
+
