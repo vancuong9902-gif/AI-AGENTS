@@ -367,6 +367,7 @@ def list_document_topics(
             "teacher_edited_title": getattr(t, 'teacher_edited_title', None),
             "teacher_note": getattr(t, 'teacher_note', None),
             "reviewed_at": (t.reviewed_at.isoformat() if getattr(t, 'reviewed_at', None) else None),
+            "is_confirmed": bool(getattr(t, 'is_confirmed', False)),
             "needs_review": bool(t.needs_review),
             "extraction_confidence": float(t.extraction_confidence or 0.0),
             "page_range": [t.page_start, t.page_end],
@@ -563,6 +564,7 @@ def regenerate_document_topics(
                 quick_check_quiz_id = None
             tm = DocumentTopic(
                 document_id=int(document_id),
+                is_confirmed=False,
                 topic_index=i,
                 title=(cleaned_title or str(t.get('title') or '').strip())[:255],
                 display_title=(cleaned_title or str(t.get('title') or '').strip())[:255],
@@ -621,6 +623,7 @@ def regenerate_document_topics(
                         'teacher_edited_title': tm.teacher_edited_title,
                         'teacher_note': tm.teacher_note,
                         'reviewed_at': tm.reviewed_at.isoformat() if tm.reviewed_at else None,
+                        'is_confirmed': bool(getattr(tm, 'is_confirmed', False)),
                         'needs_review': bool(tm.needs_review),
                         'extraction_confidence': float(tm.extraction_confidence or 0.0),
                         'page_range': [tm.page_start, tm.page_end],
@@ -806,6 +809,98 @@ def review_document_topic(
             'teacher_edited_title': topic.teacher_edited_title,
             'teacher_note': topic.teacher_note,
             'reviewed_at': topic.reviewed_at.isoformat() if topic.reviewed_at else None,
+            'is_confirmed': bool(getattr(topic, 'is_confirmed', False)),
+        },
+        'error': None,
+    }
+
+
+@router.post('/documents/{doc_id}/confirm-topics')
+def confirm_document_topics(
+    request: Request,
+    doc_id: int,
+    payload: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    doc = db.query(Document).filter(Document.id == int(doc_id)).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail='Document not found')
+    if int(doc.user_id) != int(getattr(teacher, 'id')):
+        raise HTTPException(status_code=403, detail='Not allowed')
+
+    raw_topics = payload.get('topics') if isinstance(payload, dict) else None
+    if not isinstance(raw_topics, list) or not raw_topics:
+        raise HTTPException(status_code=422, detail='topics is required')
+
+    db_topics = {
+        int(t.id): t
+        for t in db.query(DocumentTopic).filter(DocumentTopic.document_id == int(doc_id)).all()
+    }
+    if not db_topics:
+        raise HTTPException(status_code=400, detail='No topics found for document')
+
+    now = datetime.now(timezone.utc)
+    ordered_confirmed_ids: list[int] = []
+    touched_ids: set[int] = set()
+
+    for item in raw_topics:
+        if not isinstance(item, dict):
+            continue
+        try:
+            topic_id = int(item.get('id'))
+        except Exception:
+            continue
+        topic = db_topics.get(topic_id)
+        if not topic:
+            continue
+
+        touched_ids.add(topic_id)
+        confirmed = bool(item.get('confirmed', True))
+        topic.is_confirmed = confirmed
+
+        if 'name' in item:
+            new_title = str(item.get('name') or '').strip()
+            if new_title:
+                cleaned, _warnings = validate_and_clean_topic_title(new_title)
+                topic.teacher_edited_title = (cleaned or new_title)[:255]
+
+        if confirmed:
+            topic.status = 'approved'
+            ordered_confirmed_ids.append(topic_id)
+        topic.reviewed_at = now
+        db.add(topic)
+
+    for topic_id, topic in db_topics.items():
+        if topic_id not in touched_ids:
+            topic.is_confirmed = False
+            db.add(topic)
+
+    for order, topic_id in enumerate(ordered_confirmed_ids):
+        topic = db_topics.get(topic_id)
+        if topic:
+            topic.topic_index = int(order)
+            db.add(topic)
+
+    db.commit()
+
+    return {
+        'request_id': request.state.request_id,
+        'data': {
+            'document_id': int(doc_id),
+            'confirmed_count': len(ordered_confirmed_ids),
+            'topics': [
+                {
+                    'id': int(t.id),
+                    'name': _topic_title_for_generation(t),
+                    'confirmed': bool(getattr(t, 'is_confirmed', False)),
+                }
+                for t in sorted(db_topics.values(), key=lambda x: (int(getattr(x, 'topic_index', 0)), int(x.id)))
+            ],
+            'entry_test_generation': {
+                'triggered': len(ordered_confirmed_ids) > 0,
+                'status': 'ready_after_teacher_confirmation' if ordered_confirmed_ids else 'skipped_no_confirmed_topics',
+            },
         },
         'error': None,
     }
@@ -1215,6 +1310,7 @@ async def upload_document(
                     quick_check_quiz_id = None
                 tm = DocumentTopic(
                     document_id=doc.id,
+                    is_confirmed=False,
                     topic_index=i,
                     title=(cleaned_title or str(t.get("title") or "").strip())[:255],
                     display_title=(cleaned_title or str(t.get("title") or "").strip())[:255],
