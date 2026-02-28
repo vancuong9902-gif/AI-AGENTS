@@ -19,7 +19,6 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.attempt import Attempt
 from app.models.classroom_assessment import ClassroomAssessment
-from app.models.classroom import ClassroomMember
 from app.mas.base import AgentContext
 from app.mas.contracts import Event
 from app.mas.orchestrator import Orchestrator
@@ -375,7 +374,29 @@ def teacher_select_topics(request: Request, payload: TeacherTopicSelectionIn, db
     }
 
 
-def _generate_assessment_lms(*, request: Request, db: Session, payload: GenerateLmsQuizIn, kind: str):
+def _placement_quiz_ids_by_classroom(db: Session, *, classroom_id: int) -> list[int]:
+    rows = (
+        db.query(ClassroomAssessment.assessment_id)
+        .join(QuizSet, QuizSet.id == ClassroomAssessment.assessment_id)
+        .filter(
+            ClassroomAssessment.classroom_id == int(classroom_id),
+            QuizSet.kind == "diagnostic_pre",
+        )
+        .distinct()
+        .all()
+    )
+    return [int(r[0]) for r in rows if r and r[0] is not None]
+
+
+def _generate_assessment_lms(
+    *,
+    request: Request,
+    db: Session,
+    payload: GenerateLmsQuizIn,
+    kind: str,
+    exclude_quiz_ids: list[int] | None = None,
+    similarity_threshold: float = 0.75,
+):
     data = generate_assessment(
         db,
         teacher_id=int(payload.teacher_id),
@@ -388,6 +409,8 @@ def _generate_assessment_lms(*, request: Request, db: Session, payload: Generate
         hard_count=int(payload.hard_count),
         document_ids=[int(x) for x in payload.document_ids],
         topics=payload.topics,
+        exclude_quiz_ids=exclude_quiz_ids,
+        similarity_threshold=float(similarity_threshold),
     )
     quiz_id = int(data.get("quiz_id") or data.get("assessment_id") or 0)
     if quiz_id > 0:
@@ -442,36 +465,7 @@ def lms_generate_placement(request: Request, payload: GenerateLmsQuizIn, db: Ses
 @router.post("/lms/final/generate")
 def lms_generate_final(request: Request, payload: GenerateLmsQuizIn, db: Session = Depends(get_db)):
     payload.title = payload.title or "Final Test"
-
-    student_ids = [
-        int(uid)
-        for uid, in db.query(ClassroomMember.user_id)
-        .filter(ClassroomMember.classroom_id == int(payload.classroom_id))
-        .all()
-    ]
-
-    placement_ids: list[int] = []
-    try:
-        student_ids = [
-            int(r[0])
-            for r in db.query(ClassroomMember.user_id)
-            .filter(ClassroomMember.classroom_id == int(payload.classroom_id))
-            .all()
-        ] or [int(payload.teacher_id)]
-
-        placement_rows = (
-            db.query(Attempt.quiz_set_id)
-            .join(QuizSet, QuizSet.id == Attempt.quiz_set_id)
-            .filter(
-                Attempt.user_id.in_(student_ids),
-                QuizSet.kind == "diagnostic_pre",
-            )
-            .distinct()
-            .all()
-        )
-        placement_ids = [int(r[0]) for r in placement_rows]
-    except Exception:
-        placement_ids = []
+    placement_ids = _placement_quiz_ids_by_classroom(db, classroom_id=int(payload.classroom_id))
 
     data = generate_assessment(
         db,
@@ -486,7 +480,7 @@ def lms_generate_final(request: Request, payload: GenerateLmsQuizIn, db: Session
         document_ids=[int(x) for x in payload.document_ids],
         topics=payload.topics,
         exclude_quiz_ids=placement_ids,
-        similarity_threshold=0.75,
+        similarity_threshold=0.70,
     )
     data["excluded_from_count"] = len(placement_ids)
     return {"request_id": request.state.request_id, "data": data, "error": None}
@@ -568,8 +562,14 @@ def create_final_quiz(request: Request, payload: PlacementQuizIn, db: Session = 
         medium_count=int(payload.difficulty_settings.get("medium", 4)),
         hard_count=int(payload.difficulty_settings.get("hard", 2)),
     )
+    placement_ids = _placement_quiz_ids_by_classroom(db, classroom_id=int(payload.classroom_id))
     response = _generate_assessment_lms(
-        request=request, db=db, payload=req, kind="diagnostic_post")
+        request=request,
+        db=db,
+        payload=req,
+        kind="diagnostic_post",
+        exclude_quiz_ids=placement_ids,
+    )
     quiz_id = int((response.get("data") or {}).get("assessment_id") or 0)
     if quiz_id > 0:
         quiz = db.query(QuizSet).filter(QuizSet.id == quiz_id).first()
@@ -578,6 +578,7 @@ def create_final_quiz(request: Request, payload: PlacementQuizIn, db: Session = 
             db.commit()
     response["data"]["duration_seconds"] = int(payload.duration_seconds)
     response["data"]["quiz_type"] = "final"
+    response["data"]["excluded_from_count"] = len(placement_ids)
     return response
 
 
