@@ -16,6 +16,7 @@ from app.models.policy_decision_log import PolicyDecisionLog
 from app.models.drift_report import DriftReport
 from app.models.student_assignment import StudentAssignment
 from app.models.class_report import ClassReport
+from app.models.agent_log import AgentLog
 
 __all__ = [
     "User",
@@ -39,5 +40,6 @@ __all__ = [
     "DriftReport",
     "StudentAssignment",
     "ClassReport",
-]
+    "AgentLog",
 
+]

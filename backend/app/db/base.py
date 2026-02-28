@@ -20,3 +20,4 @@ from app.models.classroom_assessment import ClassroomAssessment
 
 from app.models.student_assignment import StudentAssignment
 from app.models.class_report import ClassReport
+from app.models.agent_log import AgentLog

@@ -1,9 +1,17 @@
 import { useEffect, useState } from "react";
 import { apiJson } from "../lib/api";
 
+const stepStyle = {
+  display: "flex",
+  gap: 8,
+  alignItems: "flex-start",
+  padding: "6px 0",
+};
+
 export default function LibraryPage() {
   const [file, setFile] = useState(null);
   const [docs, setDocs] = useState([]);
+  const [status, setStatus] = useState(null);
 
   const loadFiles = async () => {
     const data = await apiJson("/documents");
@@ -11,27 +19,43 @@ export default function LibraryPage() {
   };
 
   useEffect(() => {
-    loadFiles(); // load khi mở trang
+    loadFiles();
   }, []);
 
   const uploadFile = async () => {
     if (!file) return;
-
     const formData = new FormData();
     formData.append("file", file);
 
-    await apiJson("/documents/upload", { method: "POST", body: formData });
+    const data = await apiJson("/documents/upload", { method: "POST", body: formData });
+    if (data?.document_id) {
+      const st = await apiJson(`/documents/${data.document_id}/status`);
+      setStatus(st || null);
+    }
 
     setFile(null);
-    loadFiles(); // ⭐ CỰC KỲ QUAN TRỌNG
+    loadFiles();
   };
 
   return (
     <div style={{ padding: 20 }}>
       <h2>📤 Upload file</h2>
 
-      <input type="file" onChange={e => setFile(e.target.files[0])} />
-      <button onClick={uploadFile}>Upload</button>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <input type="file" onChange={(e) => setFile(e.target.files[0])} />
+        <button onClick={uploadFile}>Upload</button>
+      </div>
+
+      {status ? (
+        <div style={{ marginTop: 12, fontSize: 13, border: "1px solid #ddd", borderRadius: 10, padding: 12 }}>
+          <div style={stepStyle}><span>{status?.steps?.upload ? "✅" : "⬛"}</span><span>Đang tải lên...</span></div>
+          <div style={stepStyle}><span>{status?.steps?.parse_structure ? "✅" : "⬛"}</span><span>Phân tích cấu trúc...</span></div>
+          <div style={stepStyle}><span>{status?.steps?.extract_text ? "✅" : "⬛"}</span><span>Trích xuất văn bản...{status?.ocr_used ? " Đang chạy OCR (có thể mất 1-2 phút)..." : ""}</span></div>
+          <div style={stepStyle}><span>{status?.steps?.split_topics ? "✅" : "⬛"}</span><span>Chia topic...</span></div>
+          <div style={stepStyle}><span>{status?.steps?.completed ? "✅" : "⬛"}</span><span>{status?.steps?.completed ? `Hoàn tất! ${status?.topics_count || 0} topics đã được tạo` : "Hoàn tất"}</span></div>
+          {status?.ocr_used ? <div style={{ color: "#9a6700", marginTop: 6 }}>⚠️ PDF ảnh đã được OCR — chất lượng phụ thuộc độ rõ bản scan</div> : null}
+        </div>
+      ) : null}
 
       <hr />
 
@@ -43,18 +67,6 @@ export default function LibraryPage() {
         {docs.map((d) => (
           <li key={d.document_id} style={{ marginBottom: 10 }}>
             📄 <b>{d.title}</b> <span style={{ opacity: 0.7 }}>({d.filename})</span>
-            {d.auto_topics && d.auto_topics.length > 0 && (
-              <div style={{ opacity: 0.9, fontSize: 13, marginTop: 6 }}>
-                <div style={{ fontWeight: 800, marginBottom: 4 }}>Topics (tóm tắt)</div>
-                <ol style={{ margin: 0, paddingLeft: 18 }}>
-                  {d.auto_topics.slice(0, 8).map((t, i) => (
-                    <li key={i} style={{ marginBottom: 2 }}>
-                      {t}
-                    </li>
-                  ))}
-                </ol>
-              </div>
-            )}
           </li>
         ))}
       </ul>

@@ -14,7 +14,8 @@ RUN set -eux; \
         ca-certificates \
         curl \
         tesseract-ocr \
-        tesseract-ocr-eng; \
+        tesseract-ocr-eng \
+        poppler-utils; \
     # Vietnamese pack can be missing in some repos/images; install if available.
     (apt-get install -y --no-install-recommends tesseract-ocr-vie || true); \
     # Ensure ENG/VIE traineddata exist (fallback: download from official tessdata_fast).

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import hashlib
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
@@ -15,7 +16,9 @@ from app.models.document_topic import DocumentTopic
 from app.models.quiz_set import QuizSet
 from app.models.question import Question
 from app.models.attempt import Attempt
+from app.models.diagnostic_attempt import DiagnosticAttempt
 from app.models.learner_profile import LearnerProfile
+from app.models.classroom import Classroom
 from app.services.user_service import ensure_user_exists
 from app.services.corrective_rag import corrective_retrieve_and_log
 from app.services.rag_service import auto_document_ids_for_query
@@ -297,7 +300,13 @@ def _llm_generate_exam_questions(
                 "Short answer / application / analytical / complex phải có: ideal_answer (ngắn gọn) + keywords (3-8 từ khóa) + explanation (vì sao đúng).",
                 "Mỗi câu phải gắn sources: 1-2 chunk_id từ evidence_chunks.",
                 "Câu hỏi phải rõ ràng, không mơ hồ, không trùng ý.",
-            ],
+            ] + ([
+                "QUAN TRỌNG: Đây là bài kiểm tra CUỐI KỲ.",
+                "1. KHÔNG trùng với bài kiểm tra đầu vào (câu hỏi gốc đã biết).",
+                "2. Ưu tiên Bloom level cao hơn (apply/analyze/evaluate/create thay vì remember/understand).",
+                "3. Tập trung vào ứng dụng thực tế, so sánh, phân tích — không hỏi thuần định nghĩa.",
+                "4. Ít nhất 40% câu hỏi dạng scenario-based ('Trong tình huống A, nếu B thì C?').",
+            ] if kind == "final_exam" else []),
         },
         "evidence_chunks": packed_chunks,
         "output_format": {
@@ -504,6 +513,80 @@ def generate_exam(
 
     packed_chunks = ctx["packed_chunks"]
 
+    if kind == "final_exam":
+        from app.services import assessment_service
+
+        entry_rows = (
+            db.query(DiagnosticAttempt.assessment_id)
+            .join(QuizSet, QuizSet.id == DiagnosticAttempt.assessment_id)
+            .filter(DiagnosticAttempt.user_id == int(user_id))
+            .filter(QuizSet.kind == "entry_test")
+            .all()
+        )
+        excluded_quiz_ids = [int(r[0]) for r in entry_rows if r and r[0] is not None]
+        excluded_question_ids: List[int] = []
+        if excluded_quiz_ids:
+            qrows = db.query(Question.id).filter(Question.quiz_set_id.in_(excluded_quiz_ids)).all()
+            excluded_question_ids = [int(r[0]) for r in qrows if r and r[0] is not None]
+
+        seed_payload = {
+            "user_id": int(user_id),
+            "kind": kind,
+            "topics": [str(t).strip().lower() for t in (topics or []) if str(t).strip()],
+            "doc_ids": [int(x) for x in (document_ids or [])],
+            "excluded_quiz_ids": excluded_quiz_ids,
+        }
+        generation_seed = hashlib.sha256(json.dumps(seed_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+        classroom = db.query(Classroom).order_by(Classroom.id.asc()).first()
+        classroom_id = int(classroom.id) if classroom else 1
+
+        final_assessment = assessment_service.generate_assessment(
+            db,
+            teacher_id=int(settings.DEFAULT_TEACHER_ID),
+            classroom_id=classroom_id,
+            title="Final Exam",
+            level="intermediate",
+            kind="diagnostic_post",
+            easy_count=8,
+            medium_count=14,
+            hard_count=8,
+            document_ids=document_ids,
+            topics=topics,
+            excluded_question_ids=excluded_question_ids,
+        )
+        quiz_id = int(final_assessment.get("assessment_id"))
+        qs = db.query(QuizSet).filter(QuizSet.id == quiz_id).first()
+        if qs:
+            qs.user_id = int(user_id)
+            qs.kind = "final_exam"
+            qs.topic = "Final Exam"
+            qs.excluded_from_quiz_ids = [int(x) for x in excluded_quiz_ids]
+            qs.generation_seed = generation_seed
+            db.add(qs)
+            db.commit()
+
+        q_out = []
+        for idx, q in enumerate((final_assessment.get("questions") or []), start=1):
+            qtype = "mcq" if str(q.get("type") or "").lower() == "mcq" else "complex"
+            section = "HARD" if str(q.get("type") or "").lower() == "essay" else "MEDIUM"
+            q_out.append({
+                "question_id": int(q.get("question_id")),
+                "order_no": int(idx),
+                "section": section,
+                "qtype": qtype,
+                "stem": str(q.get("stem") or "").strip(),
+                "options": list(q.get("options") or []),
+            })
+
+        return {
+            "quiz_id": quiz_id,
+            "kind": kind,
+            "title": "Final Exam",
+            "questions": q_out,
+            "retrieval": ctx.get("rag") or {},
+        }
+
     # LLM generation with one retry if counts mismatch.
     questions: List[Dict[str, Any]] = []
     last_err = None
@@ -536,7 +619,7 @@ def generate_exam(
         title = "Retention Check"
     else:
         title = "Final Exam"
-    qs = QuizSet(user_id=int(user_id), kind=kind, topic=title, level="mixed", source_query_id=None)
+    qs = QuizSet(user_id=int(user_id), kind=kind, topic=title, level="mixed", source_query_id=None, excluded_from_quiz_ids=[], generation_seed=None)
     db.add(qs)
     db.flush()
 
