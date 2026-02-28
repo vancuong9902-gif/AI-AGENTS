@@ -57,23 +57,16 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[\.\?!\n])\s+")
 
 _TOPIC_IN_STEM_RE = re.compile(r"'([^']+)'|\"([^\"]+)\"|“([^”]+)”")
 _STEM_PUNCT_RE = re.compile(r"[^\w\sÀ-ỹ]", re.UNICODE)
-
-
-def _normalize_stem_for_dedup(stem: str, *, max_len: int = 120) -> str:
-    s = str(stem or "").strip().lower()
-    if not s:
-        return ""
-    s = _STEM_PUNCT_RE.sub(" ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s[: int(max_len)].strip()
 _TRAILING_PUNCT_RE = re.compile(r"[\s\?\!\.,;:]+$")
 
 
 def _normalize_stem_for_dedup(stem: str, *, max_chars: int = 120) -> str:
     """Normalize question stem so duplicate checks are stable across paraphrases."""
-    s = str(stem or "").strip().lower()
+    s = str(stem or "").lower().strip()
+    if not s:
+        return ""
     s = _STEM_PUNCT_RE.sub(" ", s)
-    s = " ".join(s.split())
+    s = re.sub(r"\s+", " ", s).strip()
     s = _TRAILING_PUNCT_RE.sub("", s)
     if max_chars > 0:
         s = s[:max_chars]
@@ -81,17 +74,23 @@ def _normalize_stem_for_dedup(stem: str, *, max_chars: int = 120) -> str:
 
 
 def _is_dup(stem: str, excluded_stems: set[str] | None = None, similarity_threshold: float = 0.72) -> bool:
-    """Return True when stem is too similar to any excluded stem."""
+    """Return True when stem is exact/similar to excluded stems."""
     if not excluded_stems or not stem:
         return False
     s = _normalize_stem_for_dedup(stem)
     if not s:
         return False
-    return any(
-        SequenceMatcher(None, s, _normalize_stem_for_dedup(ex)).ratio() >= float(similarity_threshold)
-        for ex in excluded_stems
-        if ex
-    )
+    for ex in excluded_stems:
+        if not ex:
+            continue
+        ex_norm = _normalize_stem_for_dedup(ex)
+        if not ex_norm:
+            continue
+        if s == ex_norm:
+            return True
+        if SequenceMatcher(None, s, ex_norm).ratio() >= float(similarity_threshold):
+            return True
+    return False
 
 
 def get_used_question_stems(db: Session, *, user_id: int, kinds: list[str]) -> set[str]:
@@ -2282,7 +2281,7 @@ def generate_assessment(
 
     target_total = int(easy_count) + int(medium_count) + int(hard_count)
     deficit = target_total - len(generated)
-    if deficit > 0 and llm_available():
+    if deficit > 0:
         topic_list = topics_cycle or [((title or "tài liệu").strip() or "tài liệu")]
         for _retry_no in range(1, 4):
             deficit = target_total - len(generated)
@@ -2295,6 +2294,7 @@ def generate_assessment(
             )
             if final_exam_excluded_instruction and _is_final_diagnostic_kind(kind):
                 extra_system_hint = f"{extra_system_hint}\n{final_exam_excluded_instruction}"
+
             extra_qs: List[Dict[str, Any]] = []
             for idx, topic_name in enumerate(topic_list):
                 if len(extra_qs) >= deficit:
@@ -2302,43 +2302,61 @@ def generate_assessment(
                 remain = deficit - len(extra_qs)
                 slots_left = max(1, len(topic_list) - idx)
                 per_topic = max(1, (remain + slots_left - 1) // slots_left)
-                try:
+
+                more: List[Dict[str, Any]] = []
+                if llm_available():
                     try:
-                        more = _generate_mcq_with_llm(
+                        try:
+                            more = _generate_mcq_with_llm(
+                                topic_name,
+                                level,
+                                per_topic,
+                                chunks,
+                                extra_system_hint=extra_system_hint,
+                                excluded_stems=sorted(_excluded_stems),
+                            )
+                        except TypeError:
+                            more = _generate_mcq_with_llm(
+                                topic_name,
+                                level,
+                                per_topic,
+                                chunks,
+                                extra_system_hint=extra_system_hint,
+                            )
+                    except HTTPException:
+                        raise
+                    except Exception:
+                        more = []
+
+                if not more:
+                    try:
+                        more = _generate_mcq_from_chunks(
                             topic_name,
                             level,
                             per_topic,
                             chunks,
-                            extra_system_hint=extra_system_hint,
-                            excluded_stems=sorted(_excluded_stems),
-                        )
-                    except TypeError:
-                        more = _generate_mcq_with_llm(
-                            topic_name,
-                            level,
-                            per_topic,
-                            chunks,
-                            extra_system_hint=extra_system_hint,
-                        )
-                except HTTPException:
-                    raise
-                except Exception:
-                    more = []
+                            excluded_question_ids=excluded_question_ids,
+                        ) or []
+                    except Exception:
+                        more = []
+
                 extra_qs.extend(more or [])
 
-            extra_qs = [q for q in (extra_qs or []) if not _is_dup_local(str((q or {}).get("stem") or (q or {}).get("question", "")))]
+            extra_qs = [
+                q for q in (extra_qs or [])
+                if not _is_dup_local(str((q or {}).get("stem") or (q or {}).get("question", "")))
+            ]
             if extra_qs:
                 generated.extend(extra_qs[:deficit])
 
         final_deficit = target_total - len(generated)
         if final_deficit > 0 and _is_final_diagnostic_kind(kind):
             logging.getLogger(__name__).warning(
-                "Final exam generation still lacks %s fully new questions after 3 retries (user_id=%s, classroom_id=%s)",
+                "Final exam generation still lacks %s fully new questions after retries (user_id=%s, classroom_id=%s)",
                 int(final_deficit),
                 int(attempt_user_id if attempt_user_id is not None else teacher_id),
                 int(classroom_id),
             )
-
     if len(generated) > target_total:
         generated = generated[:target_total]
 
