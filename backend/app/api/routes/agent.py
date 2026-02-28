@@ -30,7 +30,11 @@ from app.services.agent_service import (
     generate_topic_exercises,
     postprocess_topic_attempt,
 )
-from app.services.lms_service import _send_final_report_to_teacher
+from app.services.lms_service import (
+    _send_final_report_to_teacher,
+    build_student_final_report,
+    emit_student_final_report_ready,
+)
 
 
 router = APIRouter(tags=["agent"])
@@ -117,6 +121,25 @@ def final_exam_submit(request: Request, quiz_id: int, payload: FinalExamSubmitRe
     )
     analytics = final_exam_analytics(data.get("breakdown") or [])
     data["analytics"] = analytics
+
+    student_final_report = build_student_final_report(
+        db,
+        student_id=int(payload.user_id),
+        quiz_id=int(quiz_id),
+        final_score=float(data.get("score_percent") or 0.0),
+        final_breakdown=data.get("breakdown") or [],
+    )
+    data["student_final_report"] = student_final_report
+
+    event_id = emit_student_final_report_ready(
+        student_id=int(payload.user_id),
+        report=student_final_report,
+    )
+    data["emitted_event"] = {
+        "type": "STUDENT_FINAL_REPORT_READY",
+        "event_id": event_id,
+    }
+
     try:
         _send_final_report_to_teacher(
             db,
@@ -124,6 +147,8 @@ def final_exam_submit(request: Request, quiz_id: int, payload: FinalExamSubmitRe
             quiz_id=quiz_id,
             analytics=analytics,
             breakdown=data.get("breakdown") or [],
+            report=student_final_report,
+            event_id=event_id,
         )
     except Exception as e:
         import logging

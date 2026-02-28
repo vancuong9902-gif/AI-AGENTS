@@ -32,6 +32,8 @@ from app.models.classroom import Classroom, ClassroomMember
 from app.models.notification import Notification
 from app.models.attempt import Attempt
 from app.models.classroom_assessment import ClassroomAssessment
+from app.core.config import settings
+from app.infra.event_bus import RedisEventBus
 from app.services.external_sources import fetch_external_snippets
 
 
@@ -1336,6 +1338,152 @@ def _compact_score_map(score_map: dict[str, Any] | None) -> dict[str, float]:
     return out
 
 
+def _mastery_level_from_percent(percent: float) -> str:
+    pct = float(percent or 0.0)
+    if pct >= 80:
+        return "mastered"
+    if pct >= 60:
+        return "developing"
+    return "needs_improvement"
+
+
+def _topic_name_from_breakdown_item(item: dict[str, Any]) -> str:
+    direct = str(item.get("topic") or "").strip()
+    if direct:
+        return direct
+    for src in (item.get("sources") or []):
+        meta = src.get("meta") if isinstance(src, dict) else {}
+        if not isinstance(meta, dict):
+            continue
+        for key in ("topic", "topic_title", "title"):
+            val = str(meta.get(key) or "").strip()
+            if val:
+                return val
+    return str(item.get("section") or "General").strip() or "General"
+
+
+def _topic_accuracy_from_breakdown(breakdown: list[dict[str, Any]]) -> dict[str, float]:
+    acc: dict[str, dict[str, float]] = {}
+    for item in breakdown or []:
+        topic = _topic_name_from_breakdown_item(item)
+        acc.setdefault(topic, {"score": 0.0, "max": 0.0})
+        acc[topic]["score"] += float(item.get("score_points") or 0.0)
+        acc[topic]["max"] += float(item.get("max_points") or 0.0)
+    return {
+        topic: round((vals["score"] / vals["max"]) * 100.0, 1) if vals["max"] > 0 else 0.0
+        for topic, vals in acc.items()
+    }
+
+
+def _build_overall_assessment(*, entry_score: float, final_score: float, breakdown: list[dict[str, Any]]) -> str:
+    prompt = (
+        f"Given entry score {round(entry_score, 1)}%, final score {round(final_score, 1)}%, "
+        f"topic breakdown {breakdown}, write a 3-sentence professional assessment in Vietnamese: "
+        "sentence 1 = overall progress, sentence 2 = strongest/weakest topics, sentence 3 = recommendation for next steps."
+    )
+    if llm_available():
+        try:
+            return str(
+                chat_text(
+                    [
+                        {"role": "system", "content": "Bạn là giáo viên chủ nhiệm đánh giá kết quả cuối kỳ."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.2,
+                    max_tokens=220,
+                )
+                or ""
+            ).strip()
+        except Exception:
+            pass
+
+    delta = float(final_score or 0.0) - float(entry_score or 0.0)
+    progress = "tiến bộ tốt" if delta >= 10 else ("tiến bộ nhẹ" if delta >= 0 else "cần cải thiện thêm")
+    strong = [x["topic"] for x in breakdown if float(x.get("final_acc") or 0.0) >= 80][:2]
+    weak = [x["topic"] for x in breakdown if float(x.get("final_acc") or 0.0) < 60][:2]
+    return (
+        f"Học sinh thể hiện {progress} với mức thay đổi {delta:+.1f}% so với điểm đầu vào. "
+        f"Các chủ đề mạnh: {', '.join(strong) if strong else 'chưa rõ'}; chủ đề cần củng cố: {', '.join(weak) if weak else 'chưa rõ'}. "
+        "Khuyến nghị tiếp tục luyện tập theo các chủ đề yếu và duy trì nhịp ôn tập định kỳ hàng tuần."
+    )
+
+
+def build_student_final_report(
+    db: Session,
+    *,
+    student_id: int,
+    quiz_id: int,
+    final_score: float,
+    final_breakdown: list[dict[str, Any]],
+) -> dict[str, Any]:
+    student = db.query(User).filter(User.id == int(student_id)).first()
+    student_name = str(getattr(student, "full_name", "") or f"User #{student_id}")
+
+    entry_attempt = (
+        db.query(Attempt)
+        .join(QuizSet, QuizSet.id == Attempt.quiz_set_id)
+        .filter(
+            Attempt.user_id == int(student_id),
+            QuizSet.kind.in_(["entry_test", "diagnostic_pre"]),
+        )
+        .order_by(Attempt.created_at.desc())
+        .first()
+    )
+    entry_score = float(getattr(entry_attempt, "score_percent", 0.0) or 0.0)
+    entry_breakdown = list(getattr(entry_attempt, "breakdown_json", []) or [])
+
+    entry_topic_acc = _topic_accuracy_from_breakdown(entry_breakdown)
+    final_topic_acc = _topic_accuracy_from_breakdown(final_breakdown)
+    all_topics = sorted(set(entry_topic_acc.keys()) | set(final_topic_acc.keys()))
+    topic_breakdown = [
+        {
+            "topic": topic,
+            "entry_acc": round(float(entry_topic_acc.get(topic, 0.0)), 1),
+            "final_acc": round(float(final_topic_acc.get(topic, 0.0)), 1),
+            "mastery_level": _mastery_level_from_percent(float(final_topic_acc.get(topic, 0.0))),
+        }
+        for topic in all_topics
+    ]
+    topic_breakdown.sort(key=lambda x: float(x.get("final_acc") or 0.0), reverse=True)
+
+    weak_topics = [str(row["topic"]) for row in topic_breakdown if float(row["final_acc"]) < 60][:5]
+    strong_topics = [str(row["topic"]) for row in topic_breakdown if float(row["final_acc"]) >= 80][:5]
+    recommendation = (
+        f"Ưu tiên bồi dưỡng các chủ đề yếu: {', '.join(weak_topics)}."
+        if weak_topics
+        else "Tiếp tục duy trì phong độ và tăng độ khó bài luyện để mở rộng năng lực vận dụng."
+    )
+
+    report = {
+        "student_name": student_name,
+        "entry_score": round(entry_score, 1),
+        "final_score": round(float(final_score or 0.0), 1),
+        "improvement_delta": round(float(final_score or 0.0) - entry_score, 1),
+        "topic_breakdown": topic_breakdown,
+        "weak_topics": weak_topics,
+        "strong_topics": strong_topics,
+        "overall_assessment": _build_overall_assessment(
+            entry_score=entry_score,
+            final_score=float(final_score or 0.0),
+            breakdown=topic_breakdown,
+        ),
+        "recommendation": recommendation,
+    }
+    return report
+
+
+def emit_student_final_report_ready(*, student_id: int, report: dict[str, Any]) -> str | None:
+    try:
+        event_bus = RedisEventBus(settings.REDIS_URL)
+        return event_bus.publish(
+            event_type="STUDENT_FINAL_REPORT_READY",
+            payload=report,
+            user_id=str(student_id),
+        )
+    except Exception:
+        return None
+
+
 def _build_final_exam_report_text(*, student_name: str, subject: str, analytics: dict[str, Any]) -> str:
     total = float((analytics.get("overall") or {}).get("percent") or 0.0)
     by_topic = _compact_score_map(analytics.get("by_topic") or {})
@@ -1385,6 +1533,8 @@ def _send_final_report_to_teacher(
     quiz_id: int,
     analytics: dict[str, Any],
     breakdown: list[dict[str, Any]],
+    report: dict[str, Any] | None = None,
+    event_id: str | None = None,
 ) -> Notification | None:
     student = db.query(User).filter(User.id == int(student_id)).first()
     if not student:
@@ -1421,6 +1571,11 @@ def _send_final_report_to_teacher(
             "subject": subject,
             "analytics": analytics or {},
             "breakdown": breakdown or [],
+            "report": report or {},
+            "event": {
+                "type": "STUDENT_FINAL_REPORT_READY",
+                "id": event_id,
+            },
             "created_at": datetime.utcnow().isoformat(),
         },
         is_read=False,

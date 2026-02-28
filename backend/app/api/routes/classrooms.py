@@ -19,6 +19,7 @@ from app.models.classroom_assessment import ClassroomAssessment
 from app.models.document_topic import DocumentTopic
 from app.models.learning_plan import LearningPlan, LearningPlanHomeworkSubmission, LearningPlanTaskCompletion
 from app.models.quiz_set import QuizSet
+from app.models.notification import Notification
 from app.models.user import User
 from app.schemas.classrooms import (
     AssignLearningPlanRequest,
@@ -276,6 +277,59 @@ def _build_latest_report_data(db: Session, classroom_id: int) -> dict:
         "improvement": {"avg_delta": avg_delta, "improved_count": improved_count},
     }
 
+
+
+
+@router.get("/teacher/classroom/{classroom_id}/student-reports")
+def teacher_classroom_student_reports(
+    request: Request,
+    classroom_id: int,
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    classroom = db.query(Classroom).filter(Classroom.id == int(classroom_id)).first()
+    if not classroom or int(classroom.teacher_id) != int(teacher.id):
+        raise HTTPException(status_code=404, detail="Classroom not found")
+
+    member_ids = [
+        int(row[0])
+        for row in db.query(ClassroomMember.user_id)
+        .filter(ClassroomMember.classroom_id == int(classroom_id))
+        .all()
+    ]
+    if not member_ids:
+        return {"request_id": request.state.request_id, "data": {"classroom_id": int(classroom_id), "reports": []}, "error": None}
+
+    rows = (
+        db.query(Notification)
+        .filter(Notification.student_id.in_(member_ids), Notification.type == "student_final_report")
+        .order_by(Notification.created_at.desc())
+        .all()
+    )
+
+    reports = []
+    for row in rows:
+        payload = row.payload_json if isinstance(row.payload_json, dict) else {}
+        if int(payload.get("classroom_id") or classroom_id) != int(classroom_id):
+            continue
+        reports.append(
+            {
+                "id": int(row.id),
+                "title": row.title,
+                "message": row.message,
+                "student_id": int(row.student_id),
+                "quiz_id": int(row.quiz_id),
+                "is_read": bool(row.is_read),
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "payload": payload,
+            }
+        )
+
+    return {
+        "request_id": request.state.request_id,
+        "data": {"classroom_id": int(classroom_id), "reports": reports},
+        "error": None,
+    }
 
 @router.get("/teacher/classrooms/{classroom_id}/dashboard")
 def classroom_dashboard(
