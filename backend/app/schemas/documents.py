@@ -15,6 +15,7 @@ class DocumentTopicData(BaseModel):
     keywords: list[str] = []
     start_chunk_index: int | None = None
     end_chunk_index: int | None = None
+    quick_check_quiz_id: int | None = None
 
     # Optional richer topic profile (preview)
     outline: list[str] = []

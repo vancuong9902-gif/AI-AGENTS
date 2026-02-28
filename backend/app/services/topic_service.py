@@ -2771,23 +2771,75 @@ def build_topic_details(body: str, *, title: str = '') -> Dict[str, Any]:
     if title:
         outline = [o for o in outline if _clean_line(o).lower() != _clean_line(title).lower()]
 
-    # Minimal Study Guide (fallback when LLM is unavailable): render the extracted signals.
+    # Minimal Study Guide fallback (no LLM): always include
+    # theory + 3 difficulty exercises + quick check.
     sg_lines: list[str] = []
-    if title:
-        sg_lines.append(f"## {title}")
+    guide_title = title.strip() or "Chủ đề"
+    sg_lines.append(f"# {guide_title}")
     if key_points:
-        sg_lines.append("### Ý chính")
-        sg_lines.extend([f"- {x}" for x in key_points[:12]])
+        sg_lines.append(f"_{'; '.join(key_points[:2])[:260]}._")
+
+    sg_lines.append("\n## 📚 Nội dung cốt lõi")
+    sg_lines.append("### Khái niệm chính")
     if definitions:
-        sg_lines.append("### Khái niệm")
-        for d in definitions[:10]:
-            try:
-                sg_lines.append(f"- **{d.get('term','').strip()}**: {d.get('definition','').strip()}")
-            except Exception:
-                pass
-    if examples:
-        sg_lines.append("### Ví dụ")
-        sg_lines.extend([f"- {x}" for x in examples[:6]])
+        for d in definitions[:8]:
+            term = str(d.get('term') or '').strip()
+            defi = str(d.get('definition') or '').strip()
+            if term and defi:
+                sg_lines.append(f"- **{term}**: {defi}")
+    else:
+        for kp in key_points[:4]:
+            sg_lines.append(f"- {kp}")
+
+    sg_lines.append("### Điểm cần nhớ")
+    for kp in (key_points[:10] or bullets[:10]):
+        sg_lines.append(f"- {kp}")
+
+    sg_lines.append("### Ví dụ minh họa")
+    for ex in (examples[:4] or ["Ôn lại một ví dụ điển hình trong tài liệu và giải thích vì sao kết quả đúng."]):
+        sg_lines.append(f"- {ex}")
+
+    sg_lines.append("\n## ✏️ Bài tập luyện tập")
+    sg_lines.append("### 🟢 Dễ (3-5 câu — nhớ/hiểu)")
+    for i, d in enumerate(definitions[:4], 1):
+        term = str(d.get('term') or '').strip()
+        defi = str(d.get('definition') or '').strip()
+        if not term or not defi:
+            continue
+        gap = term[:1] + "_" * max(3, min(8, len(term) - 1))
+        sg_lines.append(f"{i}. Điền vào chỗ trống: \"{gap} là {defi}\".")
+        sg_lines.append(f"   *(Đáp án: {term})*")
+    if len(definitions) == 0:
+        for i, kp in enumerate(key_points[:3], 1):
+            sg_lines.append(f"{i}. Câu nào mô tả đúng ý sau: \"{kp}\"?")
+            sg_lines.append("   A. Đúng hoàn toàn  B. Đúng một phần  C. Không liên quan  D. Sai")
+            sg_lines.append("   *(Đáp án: A)*")
+
+    sg_lines.append("### 🟡 Trung bình (3-5 câu — áp dụng)")
+    for i, ex in enumerate((examples[:4] or key_points[:4]), 1):
+        sg_lines.append(f"{i}. Dựa vào ví dụ sau, hãy nêu cách áp dụng tương tự trong tình huống khác: {ex}")
+        sg_lines.append("   *(Đáp án gợi ý: Nêu đúng bước làm và lý do lựa chọn.)*")
+
+    sg_lines.append("### 🔴 Khó (2-3 câu — phân tích/đánh giá)")
+    hard_seeds = key_points[:3] or bullets[:3]
+    for i, kp in enumerate(hard_seeds, 1):
+        sg_lines.append(f"{i}. Phân tích điểm mạnh/yếu của nhận định sau và đề xuất cải tiến: \"{kp}\".")
+        sg_lines.append("   *(Hướng dẫn: so sánh, nêu tiêu chí đánh giá và kết luận có lập luận.)*")
+
+    sg_lines.append("\n## 🎯 Kiểm tra nhanh (10 câu trắc nghiệm)")
+    sg_lines.append("*(Thời gian: 10 phút — KHÔNG có đáp án trong study guide, xem kết quả sau khi nộp)*")
+    qc_seeds = key_points[:10] or bullets[:10]
+    for i in range(10):
+        seed = qc_seeds[i % len(qc_seeds)] if qc_seeds else f"Nội dung cốt lõi {i+1}"
+        sg_lines.append(f"{i+1}. Phát biểu nào đúng nhất về: {seed}?")
+        sg_lines.append("   A. Phát biểu đúng theo tài liệu")
+        sg_lines.append("   B. Phát biểu gần đúng nhưng thiếu điều kiện")
+        sg_lines.append("   C. Phát biểu sai")
+        sg_lines.append("   D. Không thể kết luận")
+
+    sg_lines.append("\n## ⚠️ Lỗi thường gặp")
+    for m in (key_points[:5] or ["Nhớ nhầm khái niệm giữa các thuật ngữ gần giống nhau."]):
+        sg_lines.append(f"- Dễ nhầm khi học phần: {m}")
 
     return {
         'outline': outline[:28],
@@ -3017,25 +3069,40 @@ def generate_study_guide_md(body: str, *, title: str) -> str:
     excerpt = "\n".join(text.split('\n')[:520]).strip()[:11000]
 
     system = (
-        "Bạn là giáo viên. Hãy viết một 'Study Guide' giống phong cách Thea bằng tiếng Việt, "
-        "dựa CHỈ trên nội dung được cung cấp. Không bịa thêm kiến thức ngoài. "
-        "QUAN TRỌNG: Văn bản đầu vào có lỗi OCR về khoảng trắng/tách-dính từ. "
-        "Bạn PHẢI tự sửa để văn bản mượt mà (ví dụ: 'thự chiện'→'thực hiện', 'máytính'→'máy tính'). "
-        "Xuất duy nhất Markdown (KHÔNG JSON, KHÔNG giải thích). "
-        "Cấu trúc bắt buộc:\n"
-        "# <Tiêu đề>\n"
-        "1 đoạn tóm tắt 2-4 câu.\n"
-        "## Học nhanh\n"
-        "- 8-12 ý chính (bullet)\n"
-        "## Nội dung\n"
-        "Chia thành các mục con (### ...) theo 'MỤC CON GỢI Ý' nếu có. Mỗi mục con: giải thích ngắn + 1 ví dụ (nếu phù hợp).\n"
-        "## Lỗi thường gặp\n"
-        "- 4-8 lỗi/nhầm lẫn hay gặp.\n"
-        "## Bài tập luyện tập\n"
-        "### Dễ (5 câu)\n### Trung bình (5 câu)\n### Khó (5 câu)\n"
-        "Mỗi câu ghi rõ dạng (trắc nghiệm/điền/short).\n"
-        "## Kiểm tra nhanh\n"
-        "- 10 câu trắc nghiệm + 2 câu tự luận ngắn (không cần đáp án)."
+        "Bạn là giáo viên THPT. Nhiệm vụ: Tạo TÀI LIỆU HỌC TẬP HOÀN CHỈNH cho 1 topic. "
+        "Dựa CHỈ trên nội dung được cung cấp. Không bịa thêm kiến thức. "
+        "Sửa lỗi OCR: 'thự chiện'→'thực hiện', 'lậptrình'→'lập trình'. "
+        "Xuất DUY NHẤT Markdown. KHÔNG JSON, KHÔNG giải thích ngoài lề. "
+        "CẤU TRÚC BẮT BUỘC (ĐỦ 5 PHẦN, KHÔNG THIẾU):\n\n"
+        "# {title}\n"
+        "_{tóm tắt 2-3 câu, nêu trọng tâm topic}_\n\n"
+        "## 📚 Nội dung cốt lõi\n"
+        "### Khái niệm chính\n"
+        "- [Khái niệm 1]: [định nghĩa ngắn gọn]\n"
+        "- [Khái niệm 2]: ...\n"
+        "### Điểm cần nhớ\n"
+        "- [Ý quan trọng 1]\n"
+        "- [8-12 ý chính]\n"
+        "### Ví dụ minh họa\n"
+        "[2-4 ví dụ cụ thể từ tài liệu]\n\n"
+        "## ✏️ Bài tập luyện tập\n"
+        "### 🟢 Dễ (3-5 câu — nhớ/hiểu)\n"
+        "1. [Câu hỏi trắc nghiệm/điền]\n"
+        "   A. ... B. ... C. ... D. ...\n"
+        "   *(Đáp án: X)*\n"
+        "### 🟡 Trung bình (3-5 câu — áp dụng)\n"
+        "1. [Câu hỏi tình huống]\n"
+        "   *(Đáp án gợi ý: ...)*\n"
+        "### 🔴 Khó (2-3 câu — phân tích/đánh giá)\n"
+        "1. [Câu hỏi phân tích/so sánh]\n"
+        "   *(Hướng dẫn: ...)*\n\n"
+        "## 🎯 Kiểm tra nhanh (10 câu trắc nghiệm)\n"
+        "*(Thời gian: 10 phút — KHÔNG có đáp án trong study guide, xem kết quả sau khi nộp)*\n"
+        "1. [Câu 1 — dễ]\n   A. ... B. ... C. ... D. ...\n"
+        "[... đến câu 10]\n\n"
+        "## ⚠️ Lỗi thường gặp\n"
+        "- [Nhầm lẫn phổ biến 1]\n"
+        "- [4-6 lỗi/nhầm lẫn hay gặp]\n"
     )
     user = (
         f"TIÊU ĐỀ TOPIC: {title}\n\n"
@@ -3055,6 +3122,62 @@ def generate_study_guide_md(body: str, *, title: str) -> str:
     t = re.sub(r"^```[a-zA-Z]*\n", "", t)
     t = re.sub(r"\n```\s*$", "", t)
     return t.strip()[:14000]
+
+
+def parse_quick_check_quiz(study_guide_md: str) -> list[dict[str, Any]]:
+    """Extract 10 MCQ questions from the 'Kiểm tra nhanh' section in markdown."""
+    text = str(study_guide_md or "").replace("\r", "")
+    if not text.strip():
+        return []
+
+    sec_match = re.search(
+        r"##\s*🎯\s*Kiểm\s*tra\s*nhanh.*?(?=\n##\s|\Z)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    section = sec_match.group(0) if sec_match else text
+    lines = [ln.rstrip() for ln in section.split("\n")]
+
+    q_rx = re.compile(r"^\s*(\d{1,2})[\.)]\s+(.+?)\s*$")
+    opt_rx = re.compile(r"^\s*([ABCD])[\.)]\s+(.+?)\s*$", flags=re.IGNORECASE)
+    out: list[dict[str, Any]] = []
+    cur: dict[str, Any] | None = None
+
+    for ln in lines:
+        q_m = q_rx.match(ln)
+        if q_m:
+            if cur and len(cur.get("options") or []) >= 2:
+                out.append(cur)
+            cur = {"stem": q_m.group(2).strip(), "options": []}
+            continue
+        if not cur:
+            continue
+        # handle one-line options "A. ... B. ..."
+        inline = re.findall(r"([ABCD])[\.)]\s*([^ABCD]{1,220}?)(?=(?:\s+[ABCD][\.)])|$)", ln)
+        if inline and len(inline) >= 2:
+            for _, opt in inline[:4]:
+                opt_clean = _clean_line(opt)
+                if opt_clean:
+                    cur["options"].append(opt_clean[:220])
+            continue
+        o_m = opt_rx.match(ln)
+        if o_m:
+            cur["options"].append(_clean_line(o_m.group(2))[:220])
+
+    if cur and len(cur.get("options") or []) >= 2:
+        out.append(cur)
+
+    norm: list[dict[str, Any]] = []
+    for it in out:
+        stem = str(it.get("stem") or "").strip()
+        options = [str(x).strip() for x in (it.get("options") or []) if str(x).strip()][:4]
+        if stem and len(options) >= 2:
+            while len(options) < 4:
+                options.append("Không có đáp án phù hợp")
+            norm.append({"stem": stem[:420], "options": options[:4]})
+        if len(norm) >= 10:
+            break
+    return norm
 
 
 
