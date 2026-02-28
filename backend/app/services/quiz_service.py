@@ -1400,7 +1400,7 @@ def _generate_cloze_mcqs(topic: str, level: str, question_count: int, chunks: Li
         )
 
     return questions
-def _generate_mcq_from_chunks(topic: str, level: str, question_count: int, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _generate_mcq_from_chunks(topic: str, level: str, question_count: int, chunks: List[Dict[str, Any]], excluded_question_ids: List[int] | None = None) -> List[Dict[str, Any]]:
     """Quiz generator WITHOUT any hard-coded subject templates.
 
     Chỉ dùng nội dung trong các chunks truy xuất từ RAG:
@@ -1413,6 +1413,7 @@ def _generate_mcq_from_chunks(topic: str, level: str, question_count: int, chunk
     if not chunks:
         raise ValueError("No chunks to generate questions")
 
+    _ = excluded_question_ids or []
     qc = max(0, int(question_count))
     questions: List[Dict[str, Any]] = []
 

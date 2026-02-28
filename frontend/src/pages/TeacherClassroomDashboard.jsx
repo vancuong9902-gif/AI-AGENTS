@@ -414,24 +414,44 @@ export default function TeacherClassroomDashboard() {
           </div>
         </div>
 
-        <button
-          onClick={refresh}
-          disabled={loading}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "10px 12px",
-            borderRadius: 12,
-            border: "1px solid #e6e6e6",
-            background: "#fff",
-            fontWeight: 900,
-            cursor: loading ? "not-allowed" : "pointer",
-          }}
-        >
-          <FaSyncAlt />
-          {loading ? "Đang tải..." : "Refresh"}
-        </button>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <Link
+            to={`/teacher/classrooms/${classroomId}/entry-test`}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "10px 12px",
+              borderRadius: 12,
+              border: "1px solid #111",
+              background: "#111",
+              color: "#fff",
+              fontWeight: 900,
+              textDecoration: "none",
+            }}
+          >
+            <FaPaperPlane /> Tạo entry test
+          </Link>
+
+          <button
+            onClick={refresh}
+            disabled={loading}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "10px 12px",
+              borderRadius: 12,
+              border: "1px solid #e6e6e6",
+              background: "#fff",
+              fontWeight: 900,
+              cursor: loading ? "not-allowed" : "pointer",
+            }}
+          >
+            <FaSyncAlt />
+            {loading ? "Đang tải..." : "Refresh"}
+          </button>
+        </div>
       </div>
 
       {err ? (

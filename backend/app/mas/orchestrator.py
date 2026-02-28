@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List
 
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
+from app.infra.event_bus import RedisEventBus
 from app.mas.base import AgentContext
 from app.mas.contracts import AgentResult, Event, OrchestratorDecision
 from app.mas.agents import AssessmentAgent, ContentAgent, AdaptivePolicyAgent, LearnerModelingAgent, EvaluationAnalyticsAgent
+from app.models.agent_log import AgentLog
 
 
 class Orchestrator:
@@ -22,15 +26,55 @@ class Orchestrator:
         self.policy = AdaptivePolicyAgent(db)
         self.modeling = LearnerModelingAgent(db)
         self.analytics = EvaluationAnalyticsAgent(db)
+        self.event_bus = RedisEventBus(settings.REDIS_URL)
+
+    def _publish_event(self, event: Event) -> str:
+        try:
+            return self.event_bus.publish(event_type=event.type, payload=event.payload, user_id=str(event.user_id))
+        except Exception:
+            return str(getattr(event, "trace_id", "") or f"local-{int(time.time() * 1000)}")
+
+    def _execute_and_log(self, *, event: Event, event_id: str, trace: List[AgentResult], agent_name: str, agent_fn) -> AgentResult:
+        started = time.perf_counter()
+        status = "success"
+        result: AgentResult | None = None
+        try:
+            result = agent_fn(event)
+            status = "success" if result.ok else "failed"
+        except TimeoutError:
+            status = "timeout"
+            result = AgentResult(agent=agent_name, ok=False, output={}, error="timeout")
+        except Exception:
+            status = "failed"
+            result = AgentResult(agent=agent_name, ok=False, output={}, error="execution_error")
+        finally:
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            if result is not None:
+                log_row = AgentLog(
+                    event_id=event_id,
+                    event_type=event.type,
+                    agent_name=result.agent,
+                    user_id=int(event.user_id) if getattr(event, "user_id", None) is not None else None,
+                    input_payload=event.payload or {},
+                    output_summary=result.output or {},
+                    status=status,
+                    duration_ms=duration_ms,
+                )
+                self.db.add(log_row)
+                self.db.commit()
+                trace.append(result)
+
+        assert result is not None
+        return result
 
     def run(self, event: Event, ctx: AgentContext) -> Dict[str, Any]:
         """Run a short agent chain based on the incoming event."""
 
         trace: List[AgentResult] = []
+        event_id = self._publish_event(event)
 
         if event.type == "DOC_UPLOADED":
-            r1 = self.content.handle(event, ctx)
-            trace.append(r1)
+            r1 = self._execute_and_log(event=event, event_id=event_id, trace=trace, agent_name="content_agent", agent_fn=lambda e: self.content.handle(e, ctx))
             if not r1.ok:
                 return {"ok": False, "trace": [t.__dict__ for t in trace]}
             # Next step suggestion: generate entry test.
@@ -43,13 +87,11 @@ class Orchestrator:
             return {"ok": True, "trace": [t.__dict__ for t in trace], "decision": dec.__dict__}
 
         if event.type in {"PHASE1_COMPLETED", "ENTRY_TEST_SUBMITTED", "TOPIC_EXERCISE_SUBMITTED"}:
-            r1 = self.assessment.handle(event, ctx)
-            trace.append(r1)
+            r1 = self._execute_and_log(event=event, event_id=event_id, trace=trace, agent_name="assessment_agent", agent_fn=lambda e: self.assessment.handle(e, ctx))
             if not r1.ok:
                 return {"ok": False, "trace": [t.__dict__ for t in trace]}
             # After grading: refresh learner model snapshot (K_t) then ask policy.
-            r_model = self.modeling.handle(event, ctx)
-            trace.append(r_model)
+            r_model = self._execute_and_log(event=event, event_id=event_id, trace=trace, agent_name="learner_modeling_agent", agent_fn=lambda e: self.modeling.handle(e, ctx))
 
             pol_event = Event(
                 type=event.type,
@@ -61,8 +103,7 @@ class Orchestrator:
                     "current_difficulty": ((r_model.output or {}).get("difficulty_prior") if isinstance(r_model.output, dict) else None),
                 },
             )
-            r2 = self.policy.handle(pol_event, ctx)
-            trace.append(r2)
+            r2 = self._execute_and_log(event=pol_event, event_id=event_id, trace=trace, agent_name="adaptive_policy_agent", agent_fn=lambda e: self.policy.handle(e, ctx))
 
 
             dec = OrchestratorDecision(
