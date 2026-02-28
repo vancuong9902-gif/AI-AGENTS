@@ -66,3 +66,16 @@ def test_analyze_topic_weak_points():
     result = analyze_topic_weak_points(breakdowns)
     assert result[0]["topic"] == "Đạo hàm"
     assert result[0]["avg_pct"] == 37.5
+
+
+def test_score_breakdown_includes_bloom_based_weak_topics():
+    breakdown = [
+        {"topic": "đại số", "score_points": 0, "max_points": 1, "bloom_level": "remember", "type": "mcq"},
+        {"topic": "đại số", "score_points": 0, "max_points": 1, "bloom_level": "understand", "type": "mcq"},
+        {"topic": "hình học", "score_points": 1, "max_points": 4, "bloom_level": "evaluate", "type": "essay"},
+    ]
+    scored = score_breakdown(breakdown)
+    assert "weak_topics" in scored
+    weak = {r["topic"]: r for r in scored["weak_topics"]}
+    assert weak["đại số"]["assignment_type"] == "reading"
+    assert weak["hình học"]["assignment_type"] == "essay_case_study"
