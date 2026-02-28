@@ -57,6 +57,9 @@ export default function TeacherAnalyticsDashboard() {
 
   const [weights, setWeights] = useState({ w1: 0.45, w2: 0.25, w3: 0.15, w4: 0.15 });
   const [savingW, setSavingW] = useState(false);
+  const [classroomInput, setClassroomInput] = useState(localStorage.getItem("teacher_report_classroom_id") || "1");
+  const [reportToast, setReportToast] = useState("");
+  const [latestReport, setLatestReport] = useState(null);
 
   const loadDocs = async () => {
     try {
@@ -122,11 +125,43 @@ export default function TeacherAnalyticsDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [studentId, documentId, windowDays]);
 
+
+
+  useEffect(() => {
+    if (role !== "teacher") return undefined;
+    pollLatestClassReport();
+    const timer = setInterval(() => {
+      pollLatestClassReport();
+    }, 30000);
+    return () => clearInterval(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [role, classroomInput]);
+
   const applyStudent = () => {
     const n = Number(studentInput);
     if (!Number.isFinite(n) || n <= 0) return;
     setStudentId(n);
     navigate(`/teacher/analytics/${n}${documentId ? `?document_id=${Number(documentId)}` : ""}`);
+  };
+
+
+
+  const pollLatestClassReport = async () => {
+    const cid = Number(classroomInput);
+    if (!Number.isFinite(cid) || cid <= 0) return;
+    try {
+      localStorage.setItem("teacher_report_classroom_id", String(cid));
+      const rep = await apiJson(`/classrooms/${cid}/reports/latest`);
+      if (!rep?.id) return;
+      setLatestReport(rep);
+      const seen = Number(localStorage.getItem("teacher_latest_report_seen") || 0);
+      if (Number(rep.id) > seen) {
+        setReportToast("📊 Báo cáo cuối kỳ đã sẵn sàng!");
+        localStorage.setItem("teacher_latest_report_seen", String(rep.id));
+      }
+    } catch {
+      // ignore polling errors
+    }
   };
 
   const saveWeights = async () => {
@@ -211,6 +246,9 @@ export default function TeacherAnalyticsDashboard() {
           ))}
         </select>
 
+        <span style={{ color: "#666", marginLeft: 8 }}>Classroom ID (report):</span>
+        <input value={classroomInput} onChange={(e) => setClassroomInput(e.target.value)} style={{ width: 120, padding: 8, borderRadius: 10, border: "1px solid #ddd" }} />
+
         <span style={{ color: "#666", marginLeft: 8 }}>Window:</span>
         <select value={windowDays} onChange={(e) => setWindowDays(Number(e.target.value))} style={{ padding: 8, borderRadius: 10, border: "1px solid #ddd" }}>
           <option value={7}>7 ngày</option>
@@ -220,6 +258,17 @@ export default function TeacherAnalyticsDashboard() {
 
         <span style={{ color: "#888", fontSize: 13 }}>Đang xem: {docLabel} • Teacher ID: {userId ?? 1}</span>
       </div>
+
+      {reportToast ? (
+        <div style={{ marginTop: 12, background: "#ecfeff", border: "1px solid #a5f3fc", padding: 12, borderRadius: 12, display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+          <span>{reportToast}</span>
+          {latestReport?.id ? (
+            <button onClick={() => navigate(`/teacher/classrooms/${Number(classroomInput)}/reports/${latestReport.id}`)} style={{ padding: "6px 10px" }}>
+              Xem chi tiết
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
       {error ? <div style={{ marginTop: 12, background: "#fff3f3", border: "1px solid #ffd0d0", padding: 12, borderRadius: 12 }}>{error}</div> : null}
       {loading ? <div style={{ marginTop: 12, color: "#666" }}>Đang tải…</div> : null}
