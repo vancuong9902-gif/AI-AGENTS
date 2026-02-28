@@ -209,6 +209,82 @@ _NUM_HEADING = re.compile(r"^\s*([\-•\*]+\s*)?(\d{1,2}(?:\.\d{1,3}){0,3})\s*([
 _ROMAN_HEADING = re.compile(r"^\s*([\-•\*]+\s*)?([IVXLCDM]{1,6})\.?\s+\S+", flags=re.UNICODE)
 
 
+def _split_evidence_units(full_text: str, chunks_texts: Optional[List[str]]) -> List[str]:
+    """Build evidence units used for topic validation/scoring.
+
+    Prefer chunk texts (already aligned with PDF chunks). Fallback to paragraphs.
+    """
+    if chunks_texts:
+        units = [re.sub(r"\s+", " ", str(c or "")).strip() for c in chunks_texts]
+        return [u for u in units if len(u) >= 40]
+
+    blocks = re.split(r"\n\s*\n+", str(full_text or ""))
+    units = [re.sub(r"\s+", " ", b).strip() for b in blocks]
+    return [u for u in units if len(u) >= 40]
+
+
+def _topic_tokens(text: str) -> List[str]:
+    toks = [w.lower() for w in (_WORD_RX.findall(text or "") or [])]
+    return [t for t in toks if len(t) >= 3 and t not in _STOP]
+
+
+def _unit_mentions_topic(topic: Dict[str, Any], unit: str) -> bool:
+    unit_norm = re.sub(r"\s+", " ", str(unit or "")).strip().lower()
+    if not unit_norm:
+        return False
+
+    title = str(topic.get("title") or "").strip().lower()
+    if title and title in unit_norm:
+        return True
+
+    # Match on meaningful token overlap.
+    u_tokens = set(_topic_tokens(unit_norm))
+    t_tokens = _topic_tokens(title)
+    if t_tokens and len(u_tokens.intersection(t_tokens)) >= min(2, len(set(t_tokens))):
+        return True
+
+    for kw in (topic.get("keywords") or [])[:12]:
+        kw_norm = re.sub(r"\s+", " ", str(kw or "")).strip().lower()
+        if not kw_norm:
+            continue
+        if kw_norm in unit_norm:
+            return True
+        kw_tokens = [x for x in _topic_tokens(kw_norm) if x not in _STOP]
+        if kw_tokens and len(u_tokens.intersection(kw_tokens)) >= min(2, len(set(kw_tokens))):
+            return True
+    return False
+
+
+def _derive_subtopics(topic: Dict[str, Any]) -> List[str]:
+    raw = topic.get("outline") if isinstance(topic.get("outline"), list) else []
+    out: List[str] = []
+    for x in raw:
+        s = re.sub(r"\s+", " ", str(x or "")).strip(" -•\t\n\r")
+        if not s:
+            continue
+        if len(s) < 4 or len(s) > 120:
+            continue
+        if s.lower() == str(topic.get("title") or "").strip().lower():
+            continue
+        if s not in out:
+            out.append(s)
+        if len(out) >= 6:
+            break
+    if out:
+        return out
+
+    for kw in (topic.get("keywords") or [])[:6]:
+        s = re.sub(r"\s+", " ", str(kw or "")).strip()
+        if not s:
+            continue
+        s2 = s[:1].upper() + s[1:]
+        if s2 not in out and len(s2) >= 4:
+            out.append(s2)
+        if len(out) >= 3:
+            break
+    return out
+
+
 # ===== Chapter-only heading detection (for textbook PDFs) =====
 _CHAPTER_ONLY_RX = re.compile(
     # Accept both: "Chương 2: ..." and "Chương 2 ..." (many PDFs omit ':' after OCR).
@@ -3640,6 +3716,40 @@ def extract_topics(
                 pass
 
         out.append(item)
+
+    evidence_units = _split_evidence_units(full_text, chunks_texts)
+    strict_pdf_validation = bool(chunks_texts)
+    validated_out: list[dict[str, Any]] = []
+    for item in out:
+        mentioned_units = [u for u in evidence_units if _unit_mentions_topic(item, u)]
+        mention_count = len(mentioned_units)
+        if strict_pdf_validation and mention_count < 3:
+            # Hard validation for PDF chunks: topic must appear in >=3 chunks.
+            continue
+
+        total_units = max(1, len(evidence_units))
+        coverage_score = min(1.0, mention_count / total_units)
+        if coverage_score >= 0.6:
+            confidence = "high"
+        elif coverage_score >= 0.3:
+            confidence = "medium"
+        else:
+            confidence = "low"
+
+        sample_content = mentioned_units[0] if mentioned_units else (str(item.get("content_preview") or "").strip())
+        sample_content = sample_content[:600]
+
+        item["coverage_score"] = float(round(coverage_score, 4))
+        item["confidence"] = confidence
+        item["sample_content"] = sample_content
+        item["subtopics"] = _derive_subtopics(item)
+
+        ps = item.get("page_start")
+        pe = item.get("page_end")
+        item["page_ranges"] = [[int(ps), int(pe)]] if ps is not None and pe is not None else []
+        validated_out.append(item)
+
+    out = validated_out
 
     out.sort(key=lambda x: (int(x.get('page_start')) if x.get('page_start') is not None else 10**9,
                             int(x.get('start_chunk_index')) if x.get('start_chunk_index') is not None else 10**9))

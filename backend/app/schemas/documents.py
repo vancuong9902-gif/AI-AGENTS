@@ -27,6 +27,11 @@ class DocumentTopicData(BaseModel):
     content_len: int | None = None
     has_more_content: bool | None = None
     included_chunk_ids: list[int] = []
+    coverage_score: float = 0.0
+    confidence: str = "low"
+    sample_content: str | None = None
+    subtopics: list[str] = []
+    page_ranges: list[list[int]] = []
 
 
 class DocumentUploadData(BaseModel):

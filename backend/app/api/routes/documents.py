@@ -377,6 +377,11 @@ def list_document_topics(
             "end_chunk_index": t.end_chunk_index,
             "has_original_exercises": bool((t.metadata_json or {}).get("has_original_exercises")),
             "original_exercise_count": len((t.metadata_json or {}).get("original_exercises") or []),
+            "coverage_score": float((t.metadata_json or {}).get("coverage_score") or 0.0),
+            "confidence": str((t.metadata_json or {}).get("confidence") or "low"),
+            "sample_content": str((t.metadata_json or {}).get("sample_content") or ""),
+            "subtopics": (t.metadata_json or {}).get("subtopics") or [],
+            "page_ranges": (t.metadata_json or {}).get("page_ranges") or [],
             "quick_check_quiz_id": t.quick_check_quiz_id,
         }
 
@@ -580,6 +585,11 @@ def regenerate_document_topics(
                 metadata_json={
                     "original_exercises": (t.get("original_exercises") or []),
                     "has_original_exercises": bool(t.get("has_original_exercises")),
+                    "coverage_score": float(t.get("coverage_score") or 0.0),
+                    "confidence": str(t.get("confidence") or "low"),
+                    "sample_content": str(t.get("sample_content") or ""),
+                    "subtopics": (t.get("subtopics") or []),
+                    "page_ranges": (t.get("page_ranges") or []),
                 },
             )
             topic_models.append(tm)
@@ -631,6 +641,11 @@ def regenerate_document_topics(
                         'keywords': tm.keywords or [],
                         'has_original_exercises': bool((tm.metadata_json or {}).get('has_original_exercises')),
                         'original_exercise_count': len((tm.metadata_json or {}).get('original_exercises') or []),
+                        'coverage_score': float((tm.metadata_json or {}).get('coverage_score') or 0.0),
+                        'confidence': str((tm.metadata_json or {}).get('confidence') or 'low'),
+                        'sample_content': str((tm.metadata_json or {}).get('sample_content') or ''),
+                        'subtopics': (tm.metadata_json or {}).get('subtopics') or [],
+                        'page_ranges': (tm.metadata_json or {}).get('page_ranges') or [],
                         'quick_check_quiz_id': tm.quick_check_quiz_id,
                         'start_chunk_index': tm.start_chunk_index,
                         'end_chunk_index': tm.end_chunk_index,
@@ -660,6 +675,51 @@ def regenerate_document_topics(
             'topics_reason': topic_obj.get('reason'),
             'quality': topic_obj.get('quality'),
             'topics': topics_payload,
+        },
+        'error': None,
+    }
+
+
+@router.get('/documents/{document_id}/topics/preview')
+def preview_document_topics(
+    request: Request,
+    document_id: int,
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    doc = db.query(Document).filter(Document.id == int(document_id)).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail='Document not found')
+    if int(doc.user_id) != int(getattr(teacher, 'id')):
+        raise HTTPException(status_code=403, detail='Not allowed')
+
+    topics = (
+        db.query(DocumentTopic)
+        .filter(DocumentTopic.document_id == int(document_id))
+        .order_by(func.coalesce(DocumentTopic.page_start, 10**9).asc(), DocumentTopic.topic_index.asc())
+        .all()
+    )
+
+    return {
+        'request_id': request.state.request_id,
+        'data': {
+            'document_id': int(document_id),
+            'topics': [
+                {
+                    'topic_id': int(t.id),
+                    'topic_index': int(t.topic_index),
+                    'title': _topic_title_for_generation(t),
+                    'summary': str(t.summary or ''),
+                    'coverage_score': float((t.metadata_json or {}).get('coverage_score') or 0.0),
+                    'confidence': str((t.metadata_json or {}).get('confidence') or 'low'),
+                    'sample_content': str((t.metadata_json or {}).get('sample_content') or ''),
+                    'subtopics': (t.metadata_json or {}).get('subtopics') or [],
+                    'page_ranges': (t.metadata_json or {}).get('page_ranges') or [],
+                    'status': getattr(t, 'status', 'pending_review'),
+                    'is_confirmed': bool(getattr(t, 'is_confirmed', False)),
+                }
+                for t in topics
+            ],
         },
         'error': None,
     }
@@ -904,6 +964,23 @@ def confirm_document_topics(
         },
         'error': None,
     }
+
+
+@router.post('/documents/{doc_id}/topics/confirm')
+def confirm_document_topics_v2(
+    request: Request,
+    doc_id: int,
+    payload: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    return confirm_document_topics(
+        request=request,
+        doc_id=doc_id,
+        payload=payload,
+        db=db,
+        teacher=teacher,
+    )
 
 
 @router.post('/documents/{document_id}/topics/approve-all')
@@ -1326,6 +1403,11 @@ async def upload_document(
                     metadata_json={
                         "original_exercises": (t.get("original_exercises") or []),
                         "has_original_exercises": bool(t.get("has_original_exercises")),
+                        "coverage_score": float(t.get("coverage_score") or 0.0),
+                        "confidence": str(t.get("confidence") or "low"),
+                        "sample_content": str(t.get("sample_content") or ""),
+                        "subtopics": (t.get("subtopics") or []),
+                        "page_ranges": (t.get("page_ranges") or []),
                     },
                 )
                 topic_models.append(tm)
@@ -1380,6 +1462,11 @@ async def upload_document(
                             "keywords": tm.keywords or [],
                             "has_original_exercises": bool((tm.metadata_json or {}).get("has_original_exercises")),
                             "original_exercise_count": len((tm.metadata_json or {}).get("original_exercises") or []),
+                            "coverage_score": float((tm.metadata_json or {}).get("coverage_score") or 0.0),
+                            "confidence": str((tm.metadata_json or {}).get("confidence") or "low"),
+                            "sample_content": str((tm.metadata_json or {}).get("sample_content") or ""),
+                            "subtopics": (tm.metadata_json or {}).get("subtopics") or [],
+                            "page_ranges": (tm.metadata_json or {}).get("page_ranges") or [],
                             "quick_check_quiz_id": tm.quick_check_quiz_id,
                             "start_chunk_index": tm.start_chunk_index,
                             "end_chunk_index": tm.end_chunk_index,
