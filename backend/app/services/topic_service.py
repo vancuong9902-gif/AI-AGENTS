@@ -2888,16 +2888,9 @@ def extract_topics(
     NOTE: content_preview is bounded; full content can be reconstructed later from chunks by (start_chunk_index,end_chunk_index).
     """
 
-    # Fix font encoding trước khi phân tích heading
-    try:
-        from app.services.vietnamese_font_fix import fix_vietnamese_font_encoding, detect_broken_vn_font
+    from app.services.vietnamese_font_fix import fix_vietnamese_font_encoding
 
-        if detect_broken_vn_font(full_text or ""):
-            full_text = fix_vietnamese_font_encoding(full_text or "")
-            if chunks_texts:
-                chunks_texts = [fix_vietnamese_font_encoding(c or "") for c in chunks_texts]
-    except ImportError:
-        pass  # fallback gracefully nếu module chưa có
+    full_text = fix_vietnamese_font_encoding(full_text or "")
 
     # Repair common PDF/OCR spacing artifacts before any splitting/quality checks.
     try:
