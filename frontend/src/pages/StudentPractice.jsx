@@ -1,255 +1,211 @@
-import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useCallback, useMemo, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { apiJson } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 
-function getHomeworkId(item, index) {
-  return Number(item?.id ?? item?.homework_id ?? index + 1);
+const LEVEL_TO_BACKEND = {
+  easy: "beginner",
+  medium: "intermediate",
+  hard: "advanced",
+};
+
+const LEVEL_LABEL = {
+  easy: "Dễ",
+  medium: "Trung bình",
+  hard: "Khó",
+};
+
+function asArray(v) {
+  return Array.isArray(v) ? v : [];
+}
+
+function getQuestionId(question, index) {
+  return question?.question_id ?? question?.id ?? index + 1;
 }
 
 export default function StudentPractice() {
-  const { topicId } = useParams();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { userId } = useAuth();
 
-  const [topicName, setTopicName] = useState(`Topic ${topicId}`);
-  const [homeworkList, setHomeworkList] = useState([]);
-  const [currentIndex, setCurrentIndex] = useState(0);
+  const documentId = searchParams.get("documentId") || "";
+  const topicParam = searchParams.get("topic") || "";
+  const [level, setLevel] = useState((searchParams.get("level") || "medium").toLowerCase());
+  const [questionCount, setQuestionCount] = useState(10);
+
+  const [quiz, setQuiz] = useState(null);
   const [answers, setAnswers] = useState({});
-  const [completedIds, setCompletedIds] = useState(new Set());
-  const [hintUsedById, setHintUsedById] = useState({});
-  const [showHint, setShowHint] = useState(false);
-  const [hintContent, setHintContent] = useState("");
-  const [showExplanation, setShowExplanation] = useState(false);
-  const [resultById, setResultById] = useState({});
+  const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [chatOpen, setChatOpen] = useState(false);
-  const [chatInput, setChatInput] = useState("");
-  const [chatMessages, setChatMessages] = useState([]);
-  const [chatLoading, setChatLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
-  const currentQuestion = homeworkList[currentIndex] || null;
-  const total = homeworkList.length;
-  const doneCount = completedIds.size;
-  const doneAll = total > 0 && doneCount === total;
+  const normalizedLevel = LEVEL_TO_BACKEND[level] ? level : "medium";
 
-  useEffect(() => {
-    async function loadHomework() {
-      if (!topicId) return;
-      setLoading(true);
-      setError("");
-      try {
-        let data = await apiJson(`/v1/homework?topicId=${topicId}&userId=${userId}`);
-        let items = Array.isArray(data?.items) ? data.items : [];
-
-        if (items.length === 0) {
-          await apiJson(`/v1/homework/generate?topicId=${topicId}&userId=${userId}`, { method: "POST" });
-          data = await apiJson(`/v1/homework?topicId=${topicId}&userId=${userId}`);
-          items = Array.isArray(data?.items) ? data.items : [];
-        }
-
-        setTopicName(data?.topic || `Topic ${topicId}`);
-        setHomeworkList(items);
-        setCurrentIndex(0);
-      } catch (e) {
-        setError(e?.message || "Không tải được bài tập.");
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    loadHomework();
-  }, [topicId, userId]);
-
-  useEffect(() => {
-    if (!currentQuestion) return;
-    setShowHint(false);
-    setHintContent("");
-    setShowExplanation(false);
-  }, [currentIndex, currentQuestion]);
-
-  const progressLabel = useMemo(() => `${doneCount}/${total}`, [doneCount, total]);
-
-  async function onAskHint() {
-    if (!currentQuestion) return;
-    setShowHint(true);
+  const onGenerate = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    setResult(null);
+    setAnswers({});
     try {
-      const data = await apiJson("/v1/tutor/chat", {
-        method: "POST",
-        body: {
-          user_id: Number(userId),
-          question: `Cho tôi gợi ý (KHÔNG đáp án) cho câu: ${currentQuestion.stem}`,
-          topic: topicName,
+      const payload = {
+        user_id: Number(userId || 1),
+        topic: topicParam || `Topic ${documentId}`,
+        level: LEVEL_TO_BACKEND[normalizedLevel],
+        question_count: Number(questionCount),
+        rag: {
+          query: `${topicParam || "topic"} ${LEVEL_LABEL[normalizedLevel]} practice`,
+          top_k: 8,
+          filters: { document_id: Number(documentId) || undefined, topic_id: Number(topicParam) || undefined },
         },
+      };
+
+      const generated = await apiJson("/quiz/generate", {
+        method: "POST",
+        body: payload,
       });
-      setHintContent(data?.answer || "Tutor đang bận, hãy thử hỏi lại.");
-      setHintUsedById((prev) => ({ ...prev, [getHomeworkId(currentQuestion, currentIndex)]: true }));
+      setQuiz(generated);
     } catch (e) {
-      setHintContent(e?.message || "Không lấy được gợi ý AI.");
+      setError(e?.message || "Không tạo được bộ luyện tập");
+    } finally {
+      setLoading(false);
     }
-  }
+  }, [documentId, normalizedLevel, questionCount, topicParam, userId]);
 
-  async function onSubmitQuestion() {
-    if (!currentQuestion) return;
-    const homeworkId = getHomeworkId(currentQuestion, currentIndex);
-    const answer = answers[homeworkId];
-    if (answer === undefined || String(answer).trim() === "") {
-      setError("Vui lòng nhập/chọn đáp án trước khi nộp.");
-      return;
-    }
-
+  const onSubmit = useCallback(async () => {
+    if (!quiz?.quiz_id) return;
+    setSubmitting(true);
     setError("");
     try {
-      const data = await apiJson(`/v1/homework/${topicId}/answer`, {
+      const payloadAnswers = asArray(quiz?.questions).map((q, index) => {
+        const qid = getQuestionId(q, index);
+        return {
+          question_id: Number(qid),
+          answer: Number.isInteger(answers[qid]) ? answers[qid] : -1,
+        };
+      });
+
+      const submitted = await apiJson(`/quiz/${quiz.quiz_id}/submit`, {
         method: "POST",
         body: {
-          question_id: Number(currentQuestion.questionId || homeworkId),
-          answer,
-          used_hint: Boolean(hintUsedById[homeworkId]),
+          user_id: Number(userId || 1),
+          duration_sec: 0,
+          answers: payloadAnswers,
         },
       });
-      setResultById((prev) => ({ ...prev, [homeworkId]: data }));
-      setCompletedIds((prev) => new Set([...prev, homeworkId]));
-      setShowExplanation(true);
+      setResult(submitted);
     } catch (e) {
-      setError(e?.message || "Nộp câu trả lời thất bại.");
-    }
-  }
-
-  async function sendTutorChat() {
-    const q = chatInput.trim();
-    if (!q) return;
-    setChatMessages((prev) => [...prev, { role: "user", text: q }]);
-    setChatInput("");
-    setChatLoading(true);
-    try {
-      const data = await apiJson("/v1/tutor/chat", {
-        method: "POST",
-        body: { user_id: Number(userId), question: q, topic: topicName },
-      });
-      setChatMessages((prev) => [...prev, { role: "assistant", text: data?.answer || "Tutor chưa phản hồi." }]);
-    } catch (e) {
-      setChatMessages((prev) => [...prev, { role: "assistant", text: e?.message || "Tutor lỗi." }]);
+      setError(e?.message || "Nộp bài thất bại");
     } finally {
-      setChatLoading(false);
+      setSubmitting(false);
     }
-  }
+  }, [answers, quiz, userId]);
+
+  const breakdownMap = useMemo(() => {
+    const out = {};
+    asArray(result?.breakdown).forEach((item) => {
+      out[item?.question_id] = item;
+    });
+    return out;
+  }, [result?.breakdown]);
 
   return (
-    <div style={{ maxWidth: 1280, margin: "0 auto", padding: 16 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <h2 style={{ margin: 0 }}>Bài Tập: {topicName}</h2>
-        <div style={{ fontWeight: 700 }}>Progress: {progressLabel} ✅</div>
-      </div>
+    <div className="mx-auto max-w-5xl space-y-5 px-4 py-6">
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-3">
+        <h1 className="text-2xl font-bold text-slate-900">Luyện tập theo topic</h1>
+        <p className="text-sm text-slate-500">documentId={documentId || "?"} • topic={topicParam || "?"}</p>
 
-      {loading && <p>Đang tải bài tập...</p>}
-      {!loading && total === 0 && <p>Chưa có bài tập cho topic này. AI đang tạo...</p>}
-      {!!error && <p style={{ color: "#b91c1c" }}>{error}</p>}
+        <div className="flex flex-wrap items-center gap-3">
+          {Object.keys(LEVEL_TO_BACKEND).map((key) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setLevel(key)}
+              className={`rounded-full px-4 py-2 text-sm ${normalizedLevel === key ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700"}`}
+            >
+              {LEVEL_LABEL[key]}
+            </button>
+          ))}
 
-      {!!total && (
-        <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 16 }}>
-          <aside style={{ border: "1px solid #e2e8f0", borderRadius: 12, padding: 12 }}>
-            {homeworkList.map((item, idx) => {
-              const id = getHomeworkId(item, idx);
-              const isDone = completedIds.has(id);
-              const isCurrent = idx === currentIndex;
-              return (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => setCurrentIndex(idx)}
-                  style={{ width: "100%", marginBottom: 8, textAlign: "left", borderRadius: 8, padding: "8px 10px", border: isCurrent ? "1px solid #2563eb" : "1px solid #e2e8f0", background: isCurrent ? "#eff6ff" : "#fff" }}
-                >
-                  {isDone ? "●" : isCurrent ? "🔵" : "○"} Câu {idx + 1} {isDone ? "✅" : ""}
-                </button>
-              );
-            })}
-          </aside>
+          <select value={questionCount} onChange={(e) => setQuestionCount(Number(e.target.value))} className="rounded-lg border border-slate-300 px-3 py-2 text-sm">
+            <option value={10}>10 câu</option>
+            <option value={15}>15 câu</option>
+            <option value={20}>20 câu</option>
+          </select>
 
-          <main style={{ border: "1px solid #e2e8f0", borderRadius: 12, padding: 16, position: "relative" }}>
-            <h3 style={{ marginTop: 0 }}>Câu {currentIndex + 1}: {currentQuestion?.stem}</h3>
-            {Array.isArray(currentQuestion?.options) && currentQuestion.options.length > 0 ? (
-              <div style={{ display: "grid", gap: 8 }}>
-                {currentQuestion.options.map((opt, idx) => {
-                  const id = getHomeworkId(currentQuestion, currentIndex);
-                  return (
-                    <label key={idx} style={{ display: "flex", gap: 8 }}>
-                      <input type="radio" name={`q-${id}`} checked={String(answers[id] ?? "") === String(idx)} onChange={() => setAnswers((prev) => ({ ...prev, [id]: String(idx) }))} />
+          <button type="button" onClick={onGenerate} disabled={loading} className="rounded-lg bg-blue-600 px-4 py-2 text-white disabled:opacity-60">
+            {loading ? "Đang tạo..." : "Tạo bộ luyện tập"}
+          </button>
+        </div>
+      </section>
+
+      {!!error && <p className="text-red-600">{error}</p>}
+
+      {quiz && !result && (
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+          {asArray(quiz?.questions).map((question, index) => {
+            const qid = getQuestionId(question, index);
+            return (
+              <div key={qid} className="rounded-xl border border-slate-200 p-4">
+                <p className="font-semibold">Câu {index + 1}. {question?.stem}</p>
+                <div className="mt-2 space-y-2">
+                  {asArray(question?.options).map((opt, optIdx) => (
+                    <label key={`${qid}-${optIdx}`} className="flex items-center gap-2">
+                      <input
+                        type="radio"
+                        name={String(qid)}
+                        checked={answers[qid] === optIdx}
+                        onChange={() => setAnswers((prev) => ({ ...prev, [qid]: optIdx }))}
+                      />
                       <span>{opt}</span>
                     </label>
-                  );
-                })}
-              </div>
-            ) : (
-              <textarea
-                rows={6}
-                value={answers[getHomeworkId(currentQuestion, currentIndex)] || ""}
-                onChange={(e) => setAnswers((prev) => ({ ...prev, [getHomeworkId(currentQuestion, currentIndex)]: e.target.value }))}
-                style={{ width: "100%", border: "1px solid #cbd5e1", borderRadius: 10, padding: 10 }}
-              />
-            )}
-
-            <div style={{ marginTop: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button type="button" onClick={onAskHint}>💡 Xem gợi ý AI</button>
-              <button type="button" onClick={onSubmitQuestion}>📤 Nộp câu này</button>
-              <button
-                type="button"
-                onClick={() => {
-                  setChatOpen(true);
-                  setChatInput(`Giải thích thêm cho câu ${currentIndex + 1}: ${currentQuestion?.stem || ""}`);
-                }}
-              >
-                Hỏi Tutor AI
-              </button>
-            </div>
-
-            {showHint && !!hintContent && (
-              <div style={{ marginTop: 12, background: "#fef9c3", border: "1px solid #fde68a", borderRadius: 10, padding: 10 }}>
-                <b>Gợi ý AI:</b> {hintContent}
-              </div>
-            )}
-
-            {showExplanation && resultById[getHomeworkId(currentQuestion, currentIndex)] && (
-              <div style={{ marginTop: 12, borderRadius: 10, padding: 10, border: resultById[getHomeworkId(currentQuestion, currentIndex)]?.is_correct ? "1px solid #86efac" : "1px solid #fca5a5", background: resultById[getHomeworkId(currentQuestion, currentIndex)]?.is_correct ? "#f0fdf4" : "#fef2f2" }}>
-                <b>{resultById[getHomeworkId(currentQuestion, currentIndex)]?.is_correct ? "✅ Chính xác!" : `❌ Chưa đúng. Đáp án: ${resultById[getHomeworkId(currentQuestion, currentIndex)]?.correct_answer}`}</b>
-                <p style={{ marginBottom: 0 }}>{resultById[getHomeworkId(currentQuestion, currentIndex)]?.explanation}</p>
-              </div>
-            )}
-
-            <div style={{ marginTop: 16, display: "flex", justifyContent: "space-between" }}>
-              <button type="button" disabled={currentIndex === 0} onClick={() => setCurrentIndex((v) => Math.max(0, v - 1))}>← Trước</button>
-              <button type="button" disabled={currentIndex >= total - 1} onClick={() => setCurrentIndex((v) => Math.min(total - 1, v + 1))}>Tiếp theo →</button>
-            </div>
-
-            {doneAll && (
-              <div style={{ marginTop: 16, border: "1px solid #86efac", background: "#f0fdf4", borderRadius: 10, padding: 12 }}>
-                🎉 🎊 Xuất sắc! Bạn đã hoàn thành bài tập topic này.
-                <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
-                  <button type="button" onClick={() => navigate("/learning-path")}>Quay lại lộ trình học</button>
-                  <button type="button" onClick={() => navigate("/learning-path")}>Làm bài tập topic tiếp theo →</button>
-                </div>
-              </div>
-            )}
-
-            {chatOpen && (
-              <aside style={{ position: "absolute", top: 0, right: 0, width: 400, height: "100%", borderLeft: "1px solid #e2e8f0", background: "#fff", padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <strong>Tutor AI</strong>
-                  <button type="button" onClick={() => setChatOpen(false)}>✕</button>
-                </div>
-                <small>Context: Câu {currentIndex + 1} - {currentQuestion?.stem}</small>
-                <div style={{ flex: 1, overflow: "auto", border: "1px solid #e2e8f0", borderRadius: 8, padding: 8 }}>
-                  {chatMessages.map((m, i) => (
-                    <div key={i}><b>{m.role}:</b> {m.text}</div>
                   ))}
                 </div>
-                <textarea rows={3} value={chatInput} onChange={(e) => setChatInput(e.target.value)} />
-                <button type="button" onClick={sendTutorChat} disabled={chatLoading}>{chatLoading ? "Đang gửi..." : "Gửi"}</button>
-              </aside>
-            )}
-          </main>
-        </div>
+              </div>
+            );
+          })}
+
+          <button type="button" onClick={onSubmit} disabled={submitting} className="rounded-lg bg-emerald-600 px-4 py-2 text-white disabled:opacity-60">
+            {submitting ? "Đang chấm..." : "Nộp bài"}
+          </button>
+        </section>
+      )}
+
+      {result && (
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-3">
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+            <p className="text-lg font-bold text-emerald-700">Điểm: {result?.score_percent ?? 0}%</p>
+            <p className="text-sm text-emerald-700">Đúng {result?.correct_count ?? 0}/{result?.total ?? 0} câu</p>
+          </div>
+
+          {asArray(quiz?.questions).map((q, index) => {
+            const qid = getQuestionId(q, index);
+            const row = breakdownMap[qid];
+            if (!row || row?.is_correct) return null;
+            const options = asArray(q?.options);
+            return (
+              <div key={`${qid}-wrong`} className="rounded-xl border border-red-200 bg-red-50 p-4">
+                <p className="font-semibold">Câu {index + 1} sai</p>
+                <p className="text-sm">Bạn chọn: {Number.isInteger(row?.chosen) ? options[row.chosen] : "(chưa chọn)"}</p>
+                <p className="text-sm">Đáp án đúng: {Number.isInteger(row?.correct) ? options[row.correct] : "N/A"}</p>
+                {!!row?.explanation && <p className="text-sm mt-1">Giải thích: {row.explanation}</p>}
+              </div>
+            );
+          })}
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => navigate(`/tutor?topic=${encodeURIComponent(topicParam)}&level=${encodeURIComponent(normalizedLevel)}`)}
+              className="rounded-lg bg-indigo-600 px-4 py-2 text-white"
+            >
+              Hỏi Tutor về câu sai
+            </button>
+            <button type="button" onClick={onGenerate} className="rounded-lg bg-slate-700 px-4 py-2 text-white">
+              Làm bộ mới
+            </button>
+          </div>
+        </section>
       )}
     </div>
   );

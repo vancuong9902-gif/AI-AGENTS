@@ -79,7 +79,7 @@ export default function AppRoutes() {
       />
 
       <Route
-        path="/topics/:topicId"
+        path="/topic/:documentId/:topicId"
         element={
           <ProtectedRoute allow={["student"]}>
             <TopicDetail />
@@ -88,7 +88,7 @@ export default function AppRoutes() {
       />
 
       <Route
-        path="/practice/:topicId"
+        path="/practice"
         element={
           <ProtectedRoute allow={["student"]}>
             <StudentPractice />
