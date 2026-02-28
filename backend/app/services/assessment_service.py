@@ -2975,6 +2975,21 @@ def sync_diagnostic_from_attempt(db: Session, *, quiz_set: QuizSet, attempt: Att
                 mj2 = dict(diag_row.mastery_json or {})
                 mj2["plan_id"] = int(plan_id)
                 diag_row.mastery_json = mj2
+
+                from app.services.notification_service import create_notification
+
+                create_notification(
+                    db,
+                    user_id=int(attempt.user_id),
+                    type="learning_plan_ready",
+                    title="Lộ trình học mới đã sẵn sàng!",
+                    message=f"AI đã tạo lộ trình học phù hợp với trình độ {level} của bạn. Click để xem!",
+                    data={
+                        "learning_plan_id": int(plan_id),
+                        "level": str(level or "beginner"),
+                        "topic": str(teacher_topic),
+                    },
+                )
                 db.commit()
         except Exception:
             # Do not fail the submission if auto-plan generation fails.
