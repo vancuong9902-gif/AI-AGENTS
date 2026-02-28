@@ -6,7 +6,7 @@ import json
 import logging
 import math
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from difflib import SequenceMatcher
 
@@ -22,6 +22,7 @@ from app.models.document import Document
 from app.models.document_topic import DocumentTopic
 from app.models.question import Question
 from app.models.quiz_set import QuizSet
+from app.models.quiz_session import QuizSession
 from app.models.classroom_assessment import ClassroomAssessment
 from app.models.classroom import ClassroomMember, Classroom
 from app.models.diagnostic_attempt import DiagnosticAttempt
@@ -2593,8 +2594,48 @@ def _final_improvement_payload(db: Session, *, user_id: int, final_attempt: Atte
         "topics_declined": topics_declined,
     }
 
-def submit_assessment(db: Session, *, assessment_id: int, user_id: int, duration_sec: int,
-                      answers: List[Dict[str, Any]]) -> Dict[str, Any]:
+_GRACE_PERIOD_SECONDS = 30
+_PENALTY_THRESHOLD_SECONDS = 300
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def start_assessment_session(db: Session, *, assessment_id: int, user_id: int) -> Dict[str, Any]:
+    quiz_set = db.query(QuizSet).filter(QuizSet.id == assessment_id).first()
+    if not quiz_set or (not _is_assessment_kind(quiz_set.kind)):
+        raise ValueError("Assessment not found")
+
+    ensure_user_exists(db, int(user_id), role="student")
+
+    started_at = _utcnow()
+    time_limit_seconds = int(getattr(quiz_set, "duration_seconds", 0) or 0)
+    deadline = started_at + timedelta(seconds=max(0, time_limit_seconds))
+
+    session = (
+        db.query(QuizSession)
+        .filter(QuizSession.quiz_set_id == int(assessment_id), QuizSession.user_id == int(user_id))
+        .first()
+    )
+    if not session:
+        session = QuizSession(quiz_set_id=int(assessment_id), user_id=int(user_id))
+        db.add(session)
+
+    session.started_at = started_at
+    session.submitted_at = None
+    session.time_limit_seconds = time_limit_seconds
+    db.commit()
+
+    return {
+        "quiz_id": int(assessment_id),
+        "started_at": started_at.isoformat(),
+        "time_limit_seconds": time_limit_seconds,
+        "deadline": deadline.isoformat(),
+    }
+
+
+def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers: List[Dict[str, Any]], duration_sec: int | None = None) -> Dict[str, Any]:
     quiz_set = db.query(QuizSet).filter(QuizSet.id == assessment_id).first()
     if not quiz_set or (not _is_assessment_kind(quiz_set.kind)):
         raise ValueError("Assessment not found")
@@ -2665,20 +2706,61 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, duration
                 "sources": q.sources or [],
             })
 
+    session = (
+        db.query(QuizSession)
+        .filter(QuizSession.quiz_set_id == int(assessment_id), QuizSession.user_id == int(user_id))
+        .first()
+    )
+    submitted_at = _utcnow()
+
+    if (not session or not session.started_at) and duration_sec is not None:
+        inferred_duration = max(0, int(duration_sec or 0))
+        if not session:
+            session = QuizSession(
+                quiz_set_id=int(assessment_id),
+                user_id=int(user_id),
+                time_limit_seconds=int(getattr(quiz_set, "duration_seconds", 0) or 0),
+            )
+            db.add(session)
+        session.started_at = submitted_at - timedelta(seconds=inferred_duration)
+
+    if not session or not session.started_at:
+        raise ValueError("Assessment session not started. Please call /start before submit")
+
+    started_at = session.started_at
+    if getattr(started_at, "tzinfo", None) is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+
+    actual_duration = max(0, int((submitted_at - started_at).total_seconds()))
+    time_limit_seconds = int(session.time_limit_seconds or 0)
+    if time_limit_seconds <= 0:
+        time_limit_seconds = int(getattr(quiz_set, "duration_seconds", 0) or 0)
+        session.time_limit_seconds = time_limit_seconds
+
+    if time_limit_seconds > 0 and actual_duration > (2 * time_limit_seconds):
+        raise ValueError("Submission rejected: exceeded 2x time limit")
+
+    time_exceeded = time_limit_seconds > 0 and actual_duration > (time_limit_seconds + _GRACE_PERIOD_SECONDS)
+
     mcq_percent = int(round((mcq_earned / mcq_total) * 100)) if mcq_total else 0
 
     # Khi essay chưa chấm, tạm thời dùng điểm MCQ để hiển thị ngay.
     score_percent = int(mcq_percent)
+    penalty_applied = False
+    if time_exceeded and actual_duration > (time_limit_seconds + _PENALTY_THRESHOLD_SECONDS):
+        score_percent = max(0, int(round(score_percent * 0.9)))
+        penalty_applied = True
 
     attempt = Attempt(
         user_id=user_id,
         quiz_set_id=assessment_id,
         score_percent=score_percent,
-        duration_sec=duration_sec or 0,
+        duration_sec=actual_duration,
         answers_json=answers or [],
         breakdown_json=breakdown,
     )
     db.add(attempt)
+    session.submitted_at = submitted_at
     db.commit()
     db.refresh(attempt)
 
@@ -2689,6 +2771,12 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, duration
             synced_diagnostic = _auto_grade_essays_for_attempt(db, quiz_set=quiz_set, attempt=attempt)
         except Exception:
             synced_diagnostic = None
+
+    if penalty_applied:
+        attempt.score_percent = max(0, int(round(int(attempt.score_percent or 0) * 0.9)))
+        db.add(attempt)
+        db.commit()
+        db.refresh(attempt)
 
     bd = list(attempt.breakdown_json or [])
     split = _split_scores_from_breakdown(bd)
@@ -2712,6 +2800,8 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, duration
         "classroom_id": int(getattr(classroom_link, "classroom_id", 0) or 0),
         "attempt_id": attempt.id,
         "duration_sec": int(getattr(attempt, "duration_sec", 0) or 0),
+        "time_exceeded": bool(time_exceeded),
+        "penalty_applied": bool(penalty_applied),
         "score_percent": score_percent,
         "mcq_score_percent": int(split["mcq_percent"]),
         "essay_score_percent": int(split["essay_percent"]),

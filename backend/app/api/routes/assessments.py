@@ -23,6 +23,7 @@ from app.services.assessment_service import (
     generate_assessment,
     get_assessment,
     submit_assessment,
+    start_assessment_session,
     list_assessments_for_teacher,
     list_assessments_for_user,
     list_assessments_by_type,
@@ -184,6 +185,24 @@ def assessments_get(
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@router.post("/assessments/{assessment_id}/start")
+def assessments_start(
+    request: Request,
+    assessment_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    if (getattr(user, "role", "student") or "student") == "student":
+        if not _student_can_access_assessment(db, student_id=int(user.id), assessment_id=int(assessment_id)):
+            raise HTTPException(status_code=404, detail="Assessment not found")
+
+    try:
+        data = start_assessment_session(db, assessment_id=assessment_id, user_id=int(user.id))
+        return {"request_id": request.state.request_id, "data": data, "error": None}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/assessments/{assessment_id}/submit")
 def assessments_submit(
     request: Request,
@@ -203,7 +222,6 @@ def assessments_submit(
             db,
             assessment_id=assessment_id,
             user_id=int(user.id),
-            duration_sec=payload.duration_sec,
             answers=[a.model_dump() for a in (payload.answers or [])],
         )
         _check_and_trigger_class_report(db, assessment_id=assessment_id, user_id=int(user.id))

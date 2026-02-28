@@ -6,6 +6,7 @@ from app.models.document_topic import DocumentTopic
 from app.models.rag_query import RAGQuery
 from app.models.learner_profile import LearnerProfile
 from app.models.quiz_set import QuizSet
+from app.models.quiz_session import QuizSession
 from app.models.question import Question
 from app.models.attempt import Attempt
 from app.models.diagnostic_attempt import DiagnosticAttempt
@@ -29,6 +30,7 @@ __all__ = [
     "RAGQuery",
     "LearnerProfile",
     "QuizSet",
+    "QuizSession",
     "Question",
     "Attempt",
     "DiagnosticAttempt",

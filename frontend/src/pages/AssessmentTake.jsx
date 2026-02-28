@@ -11,7 +11,7 @@ export default function AssessmentTake() {
 
   const [data, setData] = useState(null);
   const [answers, setAnswers] = useState({});
-  const [startedAt, setStartedAt] = useState(null);
+  const [deadlineAt, setDeadlineAt] = useState(null);
   const [timeLeftSec, setTimeLeftSec] = useState(null);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -20,6 +20,7 @@ export default function AssessmentTake() {
   const [pathAssigned, setPathAssigned] = useState(false);
 
   const autoSubmittedRef = useRef(false);
+  const warningShownRef = useRef({ five: false, one: false });
 
   const answeredCount = useMemo(() => Object.keys(answers).length, [answers]);
 
@@ -137,12 +138,19 @@ export default function AssessmentTake() {
     autoSubmittedRef.current = false;
     try {
       const d = await apiJson(`/assessments/${assessmentId}`, { method: "GET" });
+      const session = await apiJson(`/assessments/${assessmentId}/start`, { method: "POST" });
       setData(d);
       setAnswers({});
-      setStartedAt(Date.now());
-      const mins = Number(d?.time_limit_minutes || 0);
-      if (Number.isFinite(mins) && mins > 0) setTimeLeftSec(Math.round(mins * 60));
-      else setTimeLeftSec(null);
+      warningShownRef.current = { five: false, one: false };
+      const deadlineMs = Date.parse(session?.deadline || "");
+      if (Number.isFinite(deadlineMs) && deadlineMs > 0) {
+        setDeadlineAt(deadlineMs);
+        setTimeLeftSec(Math.max(0, Math.floor((deadlineMs - Date.now()) / 1000)));
+      } else {
+        setDeadlineAt(null);
+        const secs = Number(session?.time_limit_seconds || 0);
+        setTimeLeftSec(Number.isFinite(secs) && secs > 0 ? secs : null);
+      }
     } catch (e) {
       setError(e?.message || "Không load được bài tổng hợp");
     } finally {
@@ -162,6 +170,10 @@ export default function AssessmentTake() {
     if (submitting) return;
 
     const t = setInterval(() => {
+      if (deadlineAt) {
+        setTimeLeftSec(Math.max(0, Math.floor((deadlineAt - Date.now()) / 1000)));
+        return;
+      }
       setTimeLeftSec((prev) => {
         if (prev == null) return prev;
         return Math.max(0, prev - 1);
@@ -169,7 +181,20 @@ export default function AssessmentTake() {
     }, 1000);
 
     return () => clearInterval(t);
-  }, [timeLeftSec == null, result, submitting]);
+  }, [timeLeftSec == null, result, submitting, deadlineAt]);
+
+  useEffect(() => {
+    if (timeLeftSec == null || result || submitting) return;
+    if (timeLeftSec <= 300 && !warningShownRef.current.five) {
+      warningShownRef.current.five = true;
+      setError("Cảnh báo: còn 5 phút để hoàn thành bài.");
+      return;
+    }
+    if (timeLeftSec <= 60 && !warningShownRef.current.one) {
+      warningShownRef.current.one = true;
+      setError("Cảnh báo: chỉ còn 1 phút! Hãy kiểm tra và nộp bài.");
+    }
+  }, [timeLeftSec, result, submitting]);
 
   // Auto-submit when time is up
   useEffect(() => {
@@ -196,13 +221,6 @@ export default function AssessmentTake() {
     setError("");
 
     try {
-      let durationSec = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : 0;
-      if (timeLimitSec > 0 && timeLeftSec != null) {
-        const used = Math.max(0, timeLimitSec - timeLeftSec);
-        // Prefer timer-based duration (more stable), but keep max.
-        durationSec = Math.max(durationSec, used);
-      }
-
       const answerList = (data.questions || []).map((q) => ({
         question_id: q.question_id,
         answer_index: answers[q.question_id]?.answer_index ?? null,
@@ -214,7 +232,6 @@ export default function AssessmentTake() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           user_id: Number(userId ?? 1),
-          duration_sec: durationSec,
           answers: answerList,
         }),
       });
