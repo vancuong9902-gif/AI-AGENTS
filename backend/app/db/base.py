@@ -22,3 +22,6 @@ from app.models.student_assignment import StudentAssignment
 from app.models.class_report import ClassReport
 from app.models.agent_log import AgentLog
 from app.models.notification import Notification
+
+from app.models.notification import Notification, NotificationType
+

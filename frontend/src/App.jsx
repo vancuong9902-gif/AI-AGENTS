@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import Navbar from './components/Navbar';
 import AppRoutes from './routes/AppRoutes';
+import NotificationBell from './components/NotificationBell';
 import { useAuth } from './context/AuthContext';
 import './App.css';
 
@@ -23,7 +24,7 @@ function App() {
                 <div style={{ color: 'var(--muted)', fontSize: 13 }}>Dashboard · Upload · Library · Quiz · Reports</div>
               </div>
             </div>
-            <div className='user-pill'>{(role || 'guest').toUpperCase()} · #{userId ?? 1}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><NotificationBell /><div className='user-pill'>{(role || 'guest').toUpperCase()} · #{userId ?? 1}</div></div>
           </div>
         </header>
         <main className='page-content'>
