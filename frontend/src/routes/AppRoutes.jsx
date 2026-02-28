@@ -30,6 +30,7 @@ import StudentClassrooms from "../pages/StudentClassrooms";
 import StudentDashboard from "../pages/StudentDashboard";
 import AgentFlow from "../pages/AgentFlow";
 import TopicDetail from "../pages/TopicDetail";
+import StudentPractice from "../pages/StudentPractice";
 
 export default function AppRoutes() {
   return (
@@ -70,6 +71,24 @@ export default function AppRoutes() {
         element={
           <ProtectedRoute allow={["student"]}>
             <TopicDetail />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/practice/:topicId"
+        element={
+          <ProtectedRoute allow={["student"]}>
+            <StudentPractice />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/quiz/:topicId"
+        element={
+          <ProtectedRoute allow={["student"]}>
+            <Quiz />
           </ProtectedRoute>
         }
       />
