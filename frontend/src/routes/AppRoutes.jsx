@@ -24,6 +24,7 @@ import StudentAnalyticsDashboard from "../pages/StudentAnalyticsDashboard";
 import TeacherClassrooms from "../pages/TeacherClassrooms";
 import TeacherClassroomDashboard from "../pages/TeacherClassroomDashboard";
 import StudentClassrooms from "../pages/StudentClassrooms";
+import StudentDashboard from "../pages/StudentDashboard";
 
 export default function AppRoutes() {
   return (
@@ -119,6 +120,15 @@ export default function AppRoutes() {
         element={
           <ProtectedRoute allow={["student"]}>
             <StudentClassrooms />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/student-dashboard"
+        element={
+          <ProtectedRoute allow={["student"]}>
+            <StudentDashboard />
           </ProtectedRoute>
         }
       />
