@@ -167,10 +167,10 @@ function TaskRow({ task, checked, onToggle, assigned }) {
           {assigned && (
             <span
               style={{
-                background: "#2E75B6",
-                color: "white",
+                background: "#1D4ED8",
+                color: "#fff",
                 fontSize: 11,
-                padding: "2px 8px",
+                padding: "2px 9px",
                 borderRadius: 12,
                 marginLeft: 8,
               }}
@@ -212,7 +212,7 @@ export default function LearningPath() {
 
   const [showGenerated, setShowGenerated] = useState(false);
   const [myPath, setMyPath] = useState(null);
-  const [showOnlyAssigned, setShowOnlyAssigned] = useState(false);
+  const [showOnlyMine, setShowOnlyMine] = useState(false);
 
   const currentDay = useMemo(() => {
     return (planDays || []).find((d) => Number(d.day_index) === Number(selectedDay)) || null;
@@ -402,16 +402,12 @@ export default function LearningPath() {
   }
 
 
-  const assignedTasks = myPath?.plan?.tasks || [];
-  const isAssigned = (taskTitle) => {
-    const title = String(taskTitle || "").toLowerCase();
-    if (!title) return false;
-    return assignedTasks.some((t) => String(t?.topic_title || "").toLowerCase().includes(title.slice(0, 20)));
-  };
+  const assignedTopicIds = new Set((myPath?.assigned_tasks || []).map((t) => Number(t?.topic_id)).filter((v) => Number.isFinite(v)));
+  const isAssigned = (task) => assignedTopicIds.has(Number(task?.topic_id));
 
   const filteredTaskEntries = (currentDay?.tasks || [])
     .map((task, idx) => ({ task, idx }))
-    .filter(({ task }) => !showOnlyAssigned || isAssigned(task?.title || task?.topic_title || ""));
+    .filter(({ task }) => !showOnlyMine || isAssigned(task));
 
   const pageWrap = { maxWidth: 980, margin: "0 auto", padding: 16 };
   const card = { border: "1px solid #eee", borderRadius: 14, padding: 16, background: "#fff" };
@@ -430,8 +426,12 @@ export default function LearningPath() {
           <button onClick={generateAndSavePlan} disabled={loading}>
             Tạo mới & lưu plan
           </button>
-          <button onClick={() => setShowOnlyAssigned(!showOnlyAssigned)} disabled={loading}>
-            {showOnlyAssigned ? "Xem tất cả" : "⭐ Chỉ xem bài của tôi"}
+          <button
+            onClick={() => setShowOnlyMine((v) => !v)}
+            disabled={loading}
+            style={{ background: "#1D4ED8", color: "#fff", border: "none", padding: "6px 14px", borderRadius: 8, cursor: "pointer" }}
+          >
+            {showOnlyMine ? "Xem tất cả" : "⭐ Chỉ xem bài của tôi"}
           </button>
           <button onClick={() => loadPersisted()} disabled={loading}>
             Tải lại
@@ -540,7 +540,7 @@ export default function LearningPath() {
                         task={t}
                         checked={!!taskCompletion?.[key]}
                         onToggle={(val) => toggleTask(currentDay.day_index, idx, val)}
-                        assigned={isAssigned(t?.title || t?.topic_title || "")}
+                        assigned={isAssigned(t)}
                       />
                     );
                   })

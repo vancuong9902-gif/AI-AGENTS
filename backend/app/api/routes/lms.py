@@ -24,7 +24,6 @@ from app.services.lms_service import (
     generate_class_narrative,
     score_breakdown,
 )
-from app.services.lms_service import assign_learning_path, build_recommendations, classify_student_level, score_breakdown
 
 
 router = APIRouter(tags=["lms"])
@@ -72,10 +71,10 @@ class SubmitAttemptByIdIn(BaseModel):
     answers: list[dict] = Field(default_factory=list)
 
 
-class AssignLearningPathIn(BaseModel):
+class AssignPathIn(BaseModel):
     student_level: str
-    classroom_id: int
     document_ids: list[int] = Field(default_factory=list)
+    classroom_id: int = 0
 
 
 @router.post("/lms/teacher/select-topics")
@@ -361,7 +360,7 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
 def assign_student_path(
     request: Request,
     user_id: int,
-    payload: AssignLearningPathIn,
+    payload: AssignPathIn,
     db: Session = Depends(get_db),
 ):
     result = assign_learning_path(
@@ -375,23 +374,26 @@ def assign_student_path(
 
 
 @router.get("/lms/student/{user_id}/my-path")
-def get_student_path(request: Request, user_id: int, db: Session = Depends(get_db)):
+def get_my_path(request: Request, user_id: int, db: Session = Depends(get_db)):
     profile = db.query(LearnerProfile).filter(
-        LearnerProfile.user_id == int(user_id)).first()
-    plan = db.query(LearningPlan).filter(LearningPlan.user_id == int(
-        user_id)).order_by(LearningPlan.id.desc()).first()
-    tasks = []
+        LearnerProfile.user_id == int(user_id)
+    ).first()
+    plan = (
+        db.query(LearningPlan)
+        .filter(LearningPlan.user_id == int(user_id))
+        .order_by(LearningPlan.id.desc())
+        .first()
+    )
+    assigned_tasks = []
     if plan and isinstance(plan.plan_json, dict):
-        tasks = plan.plan_json.get("tasks") or []
+        assigned_tasks = (plan.plan_json or {}).get("assigned_tasks", [])
 
     return {
         "request_id": request.state.request_id,
         "data": {
             "student_level": profile.level if profile else None,
-            "plan": {
-                "plan_id": int(plan.id) if plan else None,
-                "tasks": tasks,
-            },
+            "plan_id": int(plan.id) if plan else None,
+            "assigned_tasks": assigned_tasks,
         },
         "error": None,
     }
@@ -447,24 +449,20 @@ def lms_submit_attempt(request: Request, assessment_id: int, payload: SubmitAtte
         breakdown=breakdown, document_topics=topics)
 
     try:
-        q_obj = db.query(QuizSet).filter(
-            QuizSet.id == int(assessment_id)).first()
-        doc_ids: list[int] = []
-        if q_obj:
-            raw_doc_ids = getattr(q_obj, "document_ids_json", None)
-            if isinstance(raw_doc_ids, list):
-                doc_ids = [int(x) for x in raw_doc_ids if x]
-        if doc_ids and level:
+        from app.services.lms_service import assign_learning_path
+
+        q_obj = db.query(QuizSet).filter(QuizSet.id == int(assessment_id)).first()
+        doc_ids = getattr(q_obj, "document_ids_json", None) or []
+        if doc_ids:
             path_result = assign_learning_path(
                 db,
                 user_id=int(payload.user_id),
                 student_level=level,
-                document_ids=doc_ids,
-                classroom_id=0,
+                document_ids=[int(x) for x in doc_ids],
             )
             base["assigned_learning_path"] = path_result
     except Exception:
-        base["assigned_learning_path"] = None
+        base["assigned_learning_path"] = None  # Không bao giờ làm hỏng flow chính
 
     base["score_breakdown"] = breakdown
     base["student_level"] = level
