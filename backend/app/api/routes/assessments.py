@@ -25,6 +25,7 @@ from app.services.assessment_service import (
     submit_assessment,
     list_assessments_for_teacher,
     list_assessments_for_user,
+    list_assessments_by_type,
     leaderboard_for_assessment,
     grade_essays,
     get_latest_submission,
@@ -143,6 +144,24 @@ def assessments_list(
 
     # Teacher: list across their classes, optionally filtered
     data = list_assessments_for_teacher(db, teacher_id=int(user.id), classroom_id=classroom_id)
+    return {"request_id": request.state.request_id, "data": data, "error": None}
+
+
+@router.get("/assessments/by-type/{kind}")
+def get_assessments_by_type(
+    kind: str,
+    request: Request,
+    user_id: int,
+    db: Session = Depends(get_db),
+):
+    """Lấy danh sách bài kiểm tra theo loại: diagnostic_pre, final, homework"""
+    allowed = {"diagnostic_pre", "final", "homework", "midterm", "final_exam", "entry_test", "diagnostic_post"}
+    if kind not in allowed:
+        raise HTTPException(status_code=400, detail=f"kind must be one of {allowed}")
+    if kind == "homework":
+        return {"request_id": request.state.request_id, "data": [], "error": None}
+
+    data = list_assessments_by_type(db, user_id=int(user_id), kind=kind)
     return {"request_id": request.state.request_id, "data": data, "error": None}
 
 

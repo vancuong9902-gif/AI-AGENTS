@@ -91,9 +91,6 @@ def _is_dup(stem: str, excluded_stems: set[str] | None = None, similarity_thresh
 
 
 def get_used_question_stems(db: Session, *, user_id: int, kinds: list[str]) -> set[str]:
-    """Load tất cả question stems từ các bài đã làm trước đó."""
-    kind_vals = [str(k or "").strip().lower() for k in (kinds or []) if str(k or "").strip()]
-    if not kind_vals:
     """Load normalized stems from prior attempts of selected quiz kinds."""
     kind_list = [str(k or "").strip().lower() for k in (kinds or []) if str(k or "").strip()]
     if not kind_list:
@@ -103,26 +100,16 @@ def get_used_question_stems(db: Session, *, user_id: int, kinds: list[str]) -> s
         db.query(Question.stem)
         .join(QuizSet, QuizSet.id == Question.quiz_set_id)
         .join(Attempt, Attempt.quiz_set_id == QuizSet.id)
-        .filter(Attempt.user_id == int(user_id), QuizSet.kind.in_(kind_vals))
+        .filter(Attempt.user_id == int(user_id), QuizSet.kind.in_(kind_list))
         .all()
     )
     out: set[str] = set()
     for r in rows:
         raw = r[0] if isinstance(r, (tuple, list)) else r
-        norm = _normalize_stem_for_dedup(str(raw or ""), max_len=120)
+        norm = _normalize_stem_for_dedup(str(raw or ""))
         if norm:
             out.add(norm)
     return out
-        .filter(Attempt.user_id == int(user_id), QuizSet.kind.in_(kind_list))
-        .all()
-    )
-    return {
-        _normalize_stem_for_dedup(str(r[0] or ""))
-        for r in rows
-        if r and _normalize_stem_for_dedup(str(r[0] or ""))
-    }
-
-
 _TOK_RE = re.compile(r"[\wÀ-ỹ]+", re.UNICODE)
 
 
@@ -371,7 +358,7 @@ def _infer_topic_from_stem(stem: str, fallback: str = "tài liệu") -> str:
 
 def _is_assessment_kind(kind: str) -> bool:
     # Legacy note: previously had kind="assessment" (treated as "midterm")
-    return (kind or "").strip().lower() in ("midterm", "diagnostic_pre", "diagnostic_post", "assessment", "entry_test", "final_exam")
+    return (kind or "").strip().lower() in ("midterm", "diagnostic_pre", "diagnostic_post", "assessment", "entry_test", "final_exam", "final")
 
 
 def _normalize_assessment_kind(kind: str | None) -> str:
@@ -380,7 +367,7 @@ def _normalize_assessment_kind(kind: str | None) -> str:
         return "midterm"
     if k in ("midterm", "diagnostic_pre", "diagnostic_post", "entry_test", "final_exam"):
         return k
-    if k == "final_exam":
+    if k in ("final_exam", "final"):
         return "final_exam"
     # Default: treat unknown as "midterm" (in-course)
     return "midterm"
@@ -1801,10 +1788,6 @@ def generate_assessment(
             )
 
     _excluded_stems = {x for x in _excluded_stems if x}
-        _excluded_stems.update({_normalize_stem_for_dedup(str(r[0] or "")) for r in rows if r[0]})
-    if _excluded_question_ids:
-        qrows = db.query(Question.stem).filter(Question.id.in_(list(_excluded_question_ids))).all()
-        _excluded_stems.update({_normalize_stem_for_dedup(str(r[0] or "")) for r in qrows if r[0]})
 
     dedup_topics_from_entry: list[str] = []
     if kind == "final_exam":
@@ -1820,7 +1803,7 @@ def generate_assessment(
         topic_rows = (
             db.query(QuizSet.metadata_json)
             .join(Attempt, Attempt.quiz_set_id == QuizSet.id)
-            .filter(Attempt.user_id == history_user_id, QuizSet.kind.in_(["diagnostic_pre", "entry_test"]))
+            .filter(Attempt.user_id == history_user_id, QuizSet.kind.in_(["diagnostic_pre", "entry_test", "final_exam"]))
             .all()
         )
         topic_seen: set[str] = set()
@@ -2211,6 +2194,30 @@ def generate_assessment(
     if len(generated) > target_total:
         generated = generated[:target_total]
 
+    if kind == "final_exam":
+        essay_count = sum(1 for q in (generated or []) if str((q or {}).get("type") or "").strip().lower() == "essay")
+        if essay_count < 2:
+            topic_fallback = (topics_cycle[0] if topics_cycle else (title or "Final Exam"))
+            for i in range(2 - essay_count):
+                generated.append(
+                    {
+                        "type": "essay",
+                        "bloom_level": "evaluate",
+                        "stem": f"Phân tích và đề xuất giải pháp nâng cao cho chủ đề '{topic_fallback}' (câu tự luận bắt buộc {i+1}).",
+                        "options": [],
+                        "correct_index": 0,
+                        "explanation": "Đánh giá theo rubric.",
+                        "sources": [],
+                        "max_points": 10,
+                        "rubric": [
+                            {"criterion": "Độ chính xác kiến thức", "points": 4},
+                            {"criterion": "Lập luận & ví dụ", "points": 4},
+                            {"criterion": "Trình bày", "points": 2},
+                        ],
+                    }
+                )
+            generated = generated[:target_total]
+
     # -------------------------
     # Estimate time per question (minutes)
     # -------------------------
@@ -2239,7 +2246,7 @@ def generate_assessment(
     quiz_set.generation_seed = __import__("hashlib").sha256(json.dumps(seed_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
     topics_covered = [t.strip() for t in (topics or []) if (t or "").strip()]
     quiz_metadata: Dict[str, Any] = {}
-    if kind in {"entry_test", "diagnostic_pre"}:
+    if kind in {"entry_test", "diagnostic_pre", "final_exam"}:
         quiz_metadata["topics_covered"] = topics_covered
     if kind == "final_exam":
         quiz_metadata["deduplication_info"] = {
@@ -2418,6 +2425,113 @@ def get_assessment(db: Session, *, assessment_id: int) -> Dict[str, Any]:
     }
 
 
+def generate_final_exam(
+    db: Session,
+    *,
+    user_id: int,
+    document_id: int,
+    topic_ids: list[int],
+    classroom_id: int = 0,
+    title: str = "Final Exam",
+) -> Dict[str, Any]:
+    """Generate final exam with strict deduplication against diagnostic_pre."""
+
+    pre_exam_ids = [
+        int(r[0])
+        for r in (
+            db.query(QuizSet.id)
+            .filter(QuizSet.user_id == int(user_id), QuizSet.kind == "diagnostic_pre")
+            .all()
+        )
+    ]
+
+    topics = [
+        str(r[0]).strip()
+        for r in (
+            db.query(DocumentTopic.title)
+            .filter(DocumentTopic.id.in_([int(t) for t in (topic_ids or [])]))
+            .all()
+        )
+        if r and str(r[0] or "").strip()
+    ]
+
+    if not topics:
+        raise ValueError("No valid topics found for final exam")
+
+    return generate_assessment(
+        db,
+        teacher_id=int(user_id),
+        classroom_id=int(classroom_id),
+        title=str(title or "Final Exam"),
+        level="intermediate",
+        easy_count=4,
+        medium_count=8,
+        hard_count=8,
+        document_ids=[int(document_id)],
+        topics=topics,
+        kind="final_exam",
+        exclude_quiz_ids=pre_exam_ids,
+        time_limit_minutes=60,
+    )
+
+
+def _topic_percent_map_from_attempt(attempt: Attempt | None) -> Dict[str, int]:
+    if not attempt:
+        return {}
+    topic_scores: Dict[str, list[int]] = {}
+    for item in (attempt.breakdown_json or []):
+        topic = str(item.get("topic") or "").strip().lower()
+        if not topic:
+            continue
+        max_points = int(item.get("max_points") or 0)
+        if max_points <= 0:
+            continue
+        score_points = int(item.get("score_points") or 0)
+        bucket = topic_scores.setdefault(topic, [0, 0])
+        bucket[0] += score_points
+        bucket[1] += max_points
+
+    out: Dict[str, int] = {}
+    for topic, (earned, total) in topic_scores.items():
+        out[topic] = int(round((earned / max(1, total)) * 100))
+    return out
+
+
+def _final_improvement_payload(db: Session, *, user_id: int, final_attempt: Attempt) -> Dict[str, Any]:
+    pre_attempt = (
+        db.query(Attempt)
+        .join(QuizSet, QuizSet.id == Attempt.quiz_set_id)
+        .filter(Attempt.user_id == int(user_id), QuizSet.kind == "diagnostic_pre")
+        .order_by(Attempt.created_at.desc())
+        .first()
+    )
+    if not pre_attempt:
+        return {
+            "improvement_vs_entry": None,
+            "topics_improved": [],
+            "topics_declined": [],
+        }
+
+    pre_score = int(getattr(pre_attempt, "score_percent", 0) or 0)
+    final_score = int(getattr(final_attempt, "score_percent", 0) or 0)
+    pre_topics = _topic_percent_map_from_attempt(pre_attempt)
+    final_topics = _topic_percent_map_from_attempt(final_attempt)
+
+    topics_improved: list[str] = []
+    topics_declined: list[str] = []
+    for topic in sorted(set(pre_topics.keys()) | set(final_topics.keys())):
+        delta = int(final_topics.get(topic, 0)) - int(pre_topics.get(topic, 0))
+        if delta > 0:
+            topics_improved.append(topic)
+        elif delta < 0:
+            topics_declined.append(topic)
+
+    return {
+        "improvement_vs_entry": int(final_score - pre_score),
+        "topics_improved": topics_improved,
+        "topics_declined": topics_declined,
+    }
+
 def submit_assessment(db: Session, *, assessment_id: int, user_id: int, duration_sec: int,
                       answers: List[Dict[str, Any]]) -> Dict[str, Any]:
     quiz_set = db.query(QuizSet).filter(QuizSet.id == assessment_id).first()
@@ -2531,7 +2645,7 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, duration
         .first()
     )
 
-    return {
+    result = {
         "assessment_id": assessment_id,
         "assessment_kind": _normalize_assessment_kind(getattr(quiz_set, "kind", None)),
         "classroom_id": int(getattr(classroom_link, "classroom_id", 0) or 0),
@@ -2548,6 +2662,9 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, duration
         "answer_review": _build_answer_review(breakdown=bd, questions=questions, default_topic=str(quiz_set.topic or "tài liệu")),
         "synced_diagnostic": synced_diagnostic,
     }
+    if _normalize_assessment_kind(getattr(quiz_set, "kind", None)) == "final_exam":
+        result.update(_final_improvement_payload(db, user_id=int(user_id), final_attempt=attempt))
+    return result
 def list_assessments_for_teacher(db: Session, *, teacher_id: int, classroom_id: int | None = None) -> List[Dict[str, Any]]:
     """List assessments created by a teacher, scoped to classroom when provided."""
 
@@ -2555,7 +2672,7 @@ def list_assessments_for_teacher(db: Session, *, teacher_id: int, classroom_id: 
         db.query(QuizSet, ClassroomAssessment.classroom_id)
         .join(ClassroomAssessment, ClassroomAssessment.assessment_id == QuizSet.id)
         .filter(QuizSet.user_id == int(teacher_id))
-        .filter(QuizSet.kind.in_(["midterm", "diagnostic_pre", "diagnostic_post", "assessment", "entry_test"]))
+        .filter(QuizSet.kind.in_(["midterm", "diagnostic_pre", "diagnostic_post", "assessment", "entry_test", "final_exam"]))
     )
     if classroom_id is not None:
         q = q.filter(ClassroomAssessment.classroom_id == int(classroom_id))
@@ -2584,7 +2701,7 @@ def list_assessments_for_user(db: Session, *, user_id: int, classroom_id: int | 
         .join(ClassroomMember, ClassroomMember.classroom_id == ClassroomAssessment.classroom_id)
         .filter(ClassroomMember.user_id == int(user_id))
         .filter(ClassroomAssessment.visible_to_students.is_(True))
-        .filter(QuizSet.kind.in_(["midterm", "diagnostic_pre", "diagnostic_post", "assessment", "entry_test"]))
+        .filter(QuizSet.kind.in_(["midterm", "diagnostic_pre", "diagnostic_post", "assessment", "entry_test", "final_exam"]))
     )
     if classroom_id is not None:
         q = q.filter(ClassroomAssessment.classroom_id == int(classroom_id))
@@ -2602,6 +2719,22 @@ def list_assessments_for_user(db: Session, *, user_id: int, classroom_id: int | 
         for r in rows
     ]
 
+
+
+
+
+def list_assessments_by_type(
+    db: Session,
+    *,
+    user_id: int,
+    kind: str,
+) -> List[Dict[str, Any]]:
+    normalized_kind = _normalize_assessment_kind(kind)
+    return [
+        item
+        for item in list_assessments_for_user(db, user_id=int(user_id))
+        if _normalize_assessment_kind(item.get("kind")) == normalized_kind
+    ]
 
 
 def leaderboard_for_assessment(db: Session, *, assessment_id: int) -> Dict[str, Any]:
