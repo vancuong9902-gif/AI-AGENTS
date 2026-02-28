@@ -339,11 +339,17 @@ def list_document_topics(
     request: Request,
     document_id: int,
     db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
     detail: int = 0,
     filter: str | None = None,
     status: str | None = None,
 ):
+    user_role = str(getattr(current_user, 'role', '') or '').strip().lower()
+    is_teacher = user_role == 'teacher'
+
     topics_q = db.query(DocumentTopic).filter(DocumentTopic.document_id == document_id)
+    if not is_teacher:
+        topics_q = topics_q.filter(DocumentTopic.is_confirmed.is_(True), DocumentTopic.is_active.is_(True))
     if (filter or '').strip().lower() == 'needs_review':
         topics_q = topics_q.filter(DocumentTopic.needs_review.is_(True))
     status_norm = (status or '').strip().lower()
@@ -379,7 +385,6 @@ def list_document_topics(
             "teacher_edited_title": getattr(t, 'teacher_edited_title', None),
             "teacher_note": getattr(t, 'teacher_note', None),
             "reviewed_at": (t.reviewed_at.isoformat() if getattr(t, 'reviewed_at', None) else None),
-            "is_confirmed": bool(getattr(t, 'is_confirmed', False)),
             "needs_review": bool(t.needs_review),
             "extraction_confidence": float(t.extraction_confidence or 0.0),
             "page_range": [t.page_start, t.page_end],
@@ -424,6 +429,10 @@ def list_document_topics(
             st.get('chunk_span', 0) >= int(getattr(settings, 'TOPIC_MIN_CHUNKS_FOR_QUIZ', 4) or 4)
             and st.get('char_len', 0) >= int(getattr(settings, 'TOPIC_MIN_CHARS_FOR_QUIZ', 1400) or 1400)
         )
+
+        if is_teacher:
+            item["is_confirmed"] = bool(getattr(t, 'is_confirmed', False))
+            item["is_active"] = bool(getattr(t, 'is_active', True))
 
         item["chunk_span"] = st_tight.get('chunk_span', 0)
         item["range_char_len"] = st_tight.get('char_len', 0)
@@ -989,6 +998,80 @@ def confirm_document_topics(
                 'triggered': len(ordered_confirmed_ids) > 0,
                 'status': 'ready_after_teacher_confirmation' if ordered_confirmed_ids else 'skipped_no_confirmed_topics',
             },
+        },
+        'error': None,
+    }
+
+
+
+@router.patch('/documents/{document_id}/topics/confirm')
+def publish_document_topics(
+    request: Request,
+    document_id: int,
+    payload: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    doc = db.query(Document).filter(Document.id == int(document_id)).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail='Document not found')
+    if int(doc.user_id) != int(getattr(teacher, 'id')):
+        raise HTTPException(status_code=403, detail='Not allowed')
+
+    topic_items = payload.get('topics') or []
+    if not isinstance(topic_items, list) or not topic_items:
+        raise HTTPException(status_code=400, detail='topics is required')
+
+    topics = db.query(DocumentTopic).filter(DocumentTopic.document_id == int(document_id)).all()
+    topic_by_id = {int(t.id): t for t in topics}
+    now = datetime.now(timezone.utc)
+
+    updated = []
+    for item in topic_items:
+        if not isinstance(item, dict):
+            continue
+        topic_id = item.get('topic_id')
+        try:
+            topic_id = int(topic_id)
+        except Exception:
+            continue
+
+        topic = topic_by_id.get(topic_id)
+        if not topic:
+            continue
+
+        include = bool(item.get('include', True))
+        topic.is_confirmed = True
+        topic.is_active = include
+
+        if 'title' in item:
+            raw_title = str(item.get('title') or '').strip()
+            if raw_title:
+                cleaned, _warnings = validate_and_clean_topic_title(raw_title)
+                topic.title = (cleaned or raw_title)[:255]
+
+        topic.updated_at = now
+        db.add(topic)
+        updated.append(topic)
+
+    if not updated:
+        raise HTTPException(status_code=400, detail='No valid topics to publish')
+
+    db.commit()
+
+    return {
+        'request_id': request.state.request_id,
+        'data': {
+            'document_id': int(document_id),
+            'topics': [
+                {
+                    'topic_id': int(t.id),
+                    'title': t.title,
+                    'is_confirmed': bool(getattr(t, 'is_confirmed', False)),
+                    'is_active': bool(getattr(t, 'is_active', True)),
+                }
+                for t in sorted(updated, key=lambda x: (int(getattr(x, 'topic_index', 0)), int(x.id)))
+            ],
         },
         'error': None,
     }

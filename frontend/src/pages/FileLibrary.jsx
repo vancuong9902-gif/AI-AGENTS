@@ -61,7 +61,7 @@ export default function FileLibrary() {
                 {filtered.map((d) => (
                   <tr key={d.document_id}>
                     <td>{d.title}</td><td>{d.filename}</td><td>{d.chunk_count}</td><td>{(d.tags || []).join(', ') || '-'}</td>
-                    <td style={{ display: 'flex', gap: 8 }}><Button onClick={() => apiJson(`/documents/${d.document_id}/topics?detail=1`).then(()=>null)}>Xem topics</Button><Link to={`/teacher/documents/${d.document_id}/topic-review`}><Button>Review topics</Button></Link></td>
+                    <td style={{ display: 'flex', gap: 8 }}><Link to={`/teacher/documents/${d.document_id}/topic-review`}><Button>Review & Publish topics</Button></Link></td>
                   </tr>
                 ))}
               </tbody>
