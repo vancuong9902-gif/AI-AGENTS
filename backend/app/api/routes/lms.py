@@ -28,6 +28,8 @@ from app.services.teacher_report_export_service import build_classroom_report_pd
 from app.tasks.report_tasks import task_export_teacher_report_pdf
 from app.models.session import Session as UserSession
 from app.models.student_assignment import StudentAssignment
+from app.models.notification import Notification
+from app.models.user import User
 from app.services.assessment_service import generate_assessment, submit_assessment
 from app.services.lms_service import (
     per_student_bloom_analysis,
@@ -566,6 +568,55 @@ def student_recommendations(request: Request, student_id: int, db: Session = Dep
     ]
     return {"request_id": request.state.request_id, "data": {"student_id": student_id, "recommendations": recs, "assignments": assignments}, "error": None}
 
+
+
+
+@router.get("/teacher/reports/{student_id}")
+def teacher_student_reports(request: Request, student_id: int, db: Session = Depends(get_db)):
+    rows = (
+        db.query(Notification)
+        .filter(Notification.student_id == int(student_id), Notification.type == "student_final_report")
+        .order_by(Notification.created_at.desc())
+        .all()
+    )
+    data = []
+    for r in rows:
+        payload = r.payload_json if isinstance(r.payload_json, dict) else {}
+        student = payload.get("student") if isinstance(payload.get("student"), dict) else {}
+        if not student:
+            u = db.query(User).filter(User.id == int(student_id)).first()
+            student = {
+                "id": int(student_id),
+                "name": str(getattr(u, "full_name", "") or f"User #{student_id}"),
+                "email": str(getattr(u, "email", "") or ""),
+            }
+        data.append(
+            {
+                "id": int(r.id),
+                "type": r.type,
+                "title": r.title,
+                "message": r.message,
+                "is_read": bool(r.is_read),
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "student": student,
+                "quiz_id": int(r.quiz_id),
+                "payload": payload,
+            }
+        )
+    return {"request_id": request.state.request_id, "data": {"student_id": int(student_id), "reports": data}, "error": None}
+
+
+@router.post("/teacher/reports/{report_id}/mark-read")
+def teacher_report_mark_read(request: Request, report_id: int, db: Session = Depends(get_db)):
+    row = db.query(Notification).filter(Notification.id == int(report_id)).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Report not found")
+    if not row.is_read:
+        row.is_read = True
+        row.read_at = datetime.utcnow()
+        db.commit()
+        db.refresh(row)
+    return {"request_id": request.state.request_id, "data": {"id": int(row.id), "is_read": bool(row.is_read)}, "error": None}
 
 @router.get("/teacher/reports")
 def teacher_reports(request: Request, classroom_id: int = 1, db: Session = Depends(get_db)):

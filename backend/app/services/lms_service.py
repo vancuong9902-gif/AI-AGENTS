@@ -27,6 +27,8 @@ from app.models.learner_profile import LearnerProfile
 from app.models.learning_plan import LearningPlan
 from app.models.quiz_set import QuizSet
 from app.models.student_assignment import StudentAssignment
+from app.models.classroom import Classroom, ClassroomMember
+from app.models.notification import Notification
 
 
 @dataclass
@@ -913,6 +915,111 @@ def assign_topic_materials(
     return assignment_ids
 
 
+def _compact_score_map(score_map: dict[str, Any] | None) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for key, value in (score_map or {}).items():
+        if isinstance(value, dict):
+            out[str(key)] = round(float(value.get("percent") or 0.0), 2)
+        else:
+            out[str(key)] = round(float(value or 0.0), 2)
+    return out
+
+
+def _build_final_exam_report_text(*, student_name: str, subject: str, analytics: dict[str, Any]) -> str:
+    total = float((analytics.get("overall") or {}).get("percent") or 0.0)
+    by_topic = _compact_score_map(analytics.get("by_topic") or {})
+    by_difficulty = _compact_score_map(analytics.get("by_difficulty") or {})
+
+    prompt = (
+        f"Tổng hợp năng lực học sinh {student_name} sau bài kiểm tra cuối kỳ môn {subject}:\n"
+        f"- Điểm tổng: {round(total, 2)}%\n"
+        f"- Điểm theo topic: {by_topic}\n"
+        f"- Điểm theo độ khó: {by_difficulty}\n"
+        "- Nhận xét tổng quát: [AI tự viết 2-4 câu nhận xét chuyên nghiệp]\n"
+        "- Đề xuất: [2-3 điểm cần cải thiện hoặc phát huy]"
+    )
+    if llm_available():
+        try:
+            return str(
+                chat_text(
+                    [
+                        {
+                            "role": "system",
+                            "content": "Bạn là trợ lý học thuật cho giáo viên. Viết báo cáo tiếng Việt ngắn gọn, chuyên nghiệp, có cấu trúc rõ ràng.",
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.2,
+                    max_tokens=500,
+                )
+                or ""
+            ).strip()
+        except Exception:
+            pass
+
+    topics = ", ".join(f"{k}: {v}%" for k, v in by_topic.items()) or "chưa có"
+    difficulties = ", ".join(f"{k}: {v}%" for k, v in by_difficulty.items()) or "chưa có"
+    return (
+        f"Học sinh {student_name} hoàn thành bài kiểm tra cuối kỳ môn {subject} với điểm tổng {round(total, 2)}%. "
+        f"Theo topic: {topics}. Theo độ khó: {difficulties}. "
+        "Nhìn chung, học sinh đã nắm được phần kiến thức trọng tâm, tuy nhiên cần tập trung củng cố các mục có điểm thấp. "
+        "Đề xuất: tăng tần suất luyện tập theo topic yếu, bổ sung bài vận dụng mức trung bình-khó, và theo dõi tiến bộ ở lần kiểm tra kế tiếp."
+    )
+
+
+def _send_final_report_to_teacher(
+    db: Session,
+    *,
+    student_id: int,
+    quiz_id: int,
+    analytics: dict[str, Any],
+    breakdown: list[dict[str, Any]],
+) -> Notification | None:
+    student = db.query(User).filter(User.id == int(student_id)).first()
+    if not student:
+        return None
+
+    membership = db.query(ClassroomMember).filter(ClassroomMember.user_id == int(student_id)).first()
+    if not membership:
+        return None
+
+    classroom = db.query(Classroom).filter(Classroom.id == int(membership.classroom_id)).first()
+    if not classroom:
+        return None
+
+    quiz = db.query(QuizSet).filter(QuizSet.id == int(quiz_id)).first()
+    subject = str(getattr(quiz, "topic", "Tổng hợp") or "Tổng hợp")
+    student_name = str(student.full_name or f"User #{student.id}")
+    report_text = _build_final_exam_report_text(student_name=student_name, subject=subject, analytics=analytics or {})
+
+    row = Notification(
+        teacher_id=int(classroom.teacher_id),
+        student_id=int(student_id),
+        quiz_id=int(quiz_id),
+        type="student_final_report",
+        title=f"Báo cáo cuối kỳ: {student_name}",
+        message=report_text,
+        payload_json={
+            "student": {
+                "id": int(student.id),
+                "name": student_name,
+                "email": str(student.email or ""),
+            },
+            "quiz_id": int(quiz_id),
+            "classroom_id": int(classroom.id),
+            "subject": subject,
+            "analytics": analytics or {},
+            "breakdown": breakdown or [],
+            "created_at": datetime.utcnow().isoformat(),
+        },
+        is_read=False,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
 def push_student_report_to_teacher(
     db: Session,
     *,
@@ -921,41 +1028,10 @@ def push_student_report_to_teacher(
     score_percent: float,
     analytics: dict,
 ) -> None:
-    """
-    Lưu event báo giáo viên: học sinh đã hoàn thành final exam.
-    Có thể mở rộng: gửi email, webhook, hoặc lưu vào bảng notifications.
-    """
-    from app.models.classroom import ClassroomMember, Classroom
-
-    membership = db.query(ClassroomMember).filter(
-        ClassroomMember.user_id == int(user_id)
-    ).first()
-    if not membership:
-        return
-
-    classroom = db.query(Classroom).filter(
-        Classroom.id == int(membership.classroom_id)
-    ).first()
-    if not classroom:
-        return
-
-    event = {
-        "type": "final_exam_completed",
-        "student_id": int(user_id),
-        "quiz_id": int(quiz_id),
-        "score_percent": float(score_percent or 0.0),
-        "analytics": analytics or {},
-        "classroom_id": int(classroom.id),
-        "teacher_id": int(classroom.teacher_id),
-        "timestamp": datetime.utcnow().isoformat(),
-    }
-
-    import logging
-
-    logging.getLogger(__name__).info(
-        "[TEACHER_NOTIFY] teacher_id=%s student_id=%s final_exam score=%.1f%% payload=%s",
-        classroom.teacher_id,
-        user_id,
-        float(score_percent or 0.0),
-        event,
+    _send_final_report_to_teacher(
+        db,
+        student_id=int(user_id),
+        quiz_id=int(quiz_id),
+        analytics=analytics or {"overall": {"percent": float(score_percent or 0.0)}},
+        breakdown=[],
     )

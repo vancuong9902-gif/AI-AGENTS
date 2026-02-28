@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { apiJson } from "../lib/api";
 import { GroupedBarChart, HorizontalBarList } from "../components/Charts";
 import { FaArrowLeft, FaChartLine, FaClipboard, FaFilter, FaPaperPlane, FaSearch, FaSyncAlt, FaUsers } from "react-icons/fa";
@@ -17,6 +17,7 @@ function Card({ children, style }) {
     >
       {children}
     </div>
+
   );
 }
 
@@ -122,6 +123,35 @@ function WeakTopicsTable({ topics }) {
         </tbody>
       </table>
     </div>
+
+      {reportModal ? (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 }}>
+          <div style={{ background: "#fff", borderRadius: 12, padding: 16, width: "min(560px, 92vw)" }}>
+            <div style={{ fontWeight: 800, fontSize: 18 }}>Học sinh {reportModal.student?.full_name || `#${reportModal.student?.user_id}`} vừa hoàn thành bài cuối kỳ. Xem báo cáo?</div>
+            <div style={{ color: "#666", marginTop: 8 }}>
+              {reportModal.report?.title || "Báo cáo mới"}
+            </div>
+            <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button onClick={() => setReportModal(null)} style={{ padding: "8px 12px" }}>Đóng</button>
+              <button
+                onClick={async () => {
+                  try {
+                    await apiJson(`/teacher/reports/${reportModal.report.id}/mark-read`, { method: "POST" });
+                  } catch {
+                    // ignore
+                  }
+                  setReportModal(null);
+                  navigate(`/teacher/reports/student/${reportModal.student.user_id}`);
+                }}
+                style={{ padding: "8px 12px" }}
+              >
+                Xem báo cáo
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -133,6 +163,7 @@ function clamp(x, a, b) {
 
 export default function TeacherClassroomDashboard() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const classroomId = Number(id);
 
   const [data, setData] = useState(null);
@@ -160,6 +191,8 @@ export default function TeacherClassroomDashboard() {
   const [minutesPerDay, setMinutesPerDay] = useState(35);
   const [assigning, setAssigning] = useState(false);
   const [assignMsg, setAssignMsg] = useState(null);
+  const [reportsByStudent, setReportsByStudent] = useState({});
+  const [reportModal, setReportModal] = useState(null);
 
   const effectiveDocIds = useMemo(() => {
     return (selectedDocIds || []).map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0);
@@ -203,6 +236,32 @@ export default function TeacherClassroomDashboard() {
     loadDocs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [classroomId]);
+
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      if (!studentsRaw.length) return;
+      try {
+        const entries = await Promise.all(
+          studentsRaw.map(async (s) => {
+            const rep = await apiJson(`/teacher/reports/${Number(s.user_id)}`);
+            const reports = Array.isArray(rep?.reports) ? rep.reports : [];
+            return [Number(s.user_id), reports];
+          })
+        );
+        if (!mounted) return;
+        const map = {};
+        for (const [sid, list] of entries) map[sid] = list;
+        setReportsByStudent(map);
+      } catch {
+        // ignore report polling errors
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, [studentsRaw]);
 
   // Fetch topics for selected documents
   useEffect(() => {
@@ -383,6 +442,7 @@ export default function TeacherClassroomDashboard() {
   };
 
   return (
+    <>
     <div style={{ maxWidth: 1200, margin: "0 auto", padding: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
         <div style={{ display: "grid", gap: 6 }}>
@@ -729,6 +789,11 @@ export default function TeacherClassroomDashboard() {
                         ID: <b>{s.user_id}</b>
                       </div>
                       {s.assigned_topic ? <div style={{ color: "#666", fontSize: 12 }}>Topic: {s.assigned_topic}</div> : null}
+                      {((reportsByStudent[s.user_id] || []).filter((r) => !r.is_read).length > 0) ? (
+                        <span style={{ marginTop: 6, display: "inline-block", background: "#fee2e2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 999, padding: "2px 8px", fontSize: 12, fontWeight: 800 }}>
+                          Báo cáo mới
+                        </span>
+                      ) : null}
                     </td>
 
                     <td style={{ padding: 10, minWidth: 240 }}>
@@ -781,6 +846,24 @@ export default function TeacherClassroomDashboard() {
                         >
                           Xem Learning Path
                         </Link>
+                        <button
+                          onClick={() => {
+                            const latestUnread = (reportsByStudent[s.user_id] || []).find((r) => !r.is_read) || (reportsByStudent[s.user_id] || [])[0] || null;
+                            if (latestUnread) setReportModal({ student: s, report: latestUnread });
+                            else navigate(`/teacher/reports/student/${s.user_id}`);
+                          }}
+                          style={{
+                            padding: "9px 11px",
+                            borderRadius: 12,
+                            border: "1px solid #e6e6e6",
+                            background: "#fff",
+                            color: "#111",
+                            fontWeight: 900,
+                            cursor: "pointer",
+                          }}
+                        >
+                          Xem báo cáo cuối kỳ
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -793,5 +876,34 @@ export default function TeacherClassroomDashboard() {
         </div>
       </Card>
     </div>
+
+      {reportModal ? (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 }}>
+          <div style={{ background: "#fff", borderRadius: 12, padding: 16, width: "min(560px, 92vw)" }}>
+            <div style={{ fontWeight: 800, fontSize: 18 }}>Học sinh {reportModal.student?.full_name || `#${reportModal.student?.user_id}`} vừa hoàn thành bài cuối kỳ. Xem báo cáo?</div>
+            <div style={{ color: "#666", marginTop: 8 }}>
+              {reportModal.report?.title || "Báo cáo mới"}
+            </div>
+            <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button onClick={() => setReportModal(null)} style={{ padding: "8px 12px" }}>Đóng</button>
+              <button
+                onClick={async () => {
+                  try {
+                    await apiJson(`/teacher/reports/${reportModal.report.id}/mark-read`, { method: "POST" });
+                  } catch {
+                    // ignore
+                  }
+                  setReportModal(null);
+                  navigate(`/teacher/reports/student/${reportModal.student.user_id}`);
+                }}
+                style={{ padding: "8px 12px" }}
+              >
+                Xem báo cáo
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
