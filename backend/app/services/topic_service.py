@@ -9,7 +9,12 @@ from app.services.llm_service import llm_available, chat_json, chat_text
 from app.services.external_sources import fetch_external_snippets
 from app.core.config import settings
 from app.services.text_repair import repair_ocr_spacing_line, repair_ocr_spacing_text
-from app.services.vietnamese_font_fix import detect_broken_vn_font, fix_vietnamese_font_encoding, fix_vietnamese_encoding
+from app.services.vietnamese_font_fix import (
+    detect_broken_vn_font,
+    fix_mojibake_topic,
+    fix_vietnamese_encoding,
+    fix_vietnamese_font_encoding,
+)
 
 
 _WORD_RX = re.compile(r"[A-Za-zÀ-ỹà-ỹ0-9_]+", flags=re.UNICODE)
@@ -35,6 +40,14 @@ _AUX_SECTION_RX = re.compile(
 
 _PAGE_PREFIX_RX = re.compile(r"^\s*(?:trang|page|p\.?|pp\.?)\s*\d{1,4}\b", flags=re.IGNORECASE)
 _NON_PRINTABLE_RX = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
+_TOPIC_ALLOWED_CHARS_RX = re.compile(r"[^0-9A-Za-zÀ-ỹà-ỹ\s\-–—:;,.()/%&+\[\]'\"]", flags=re.UNICODE)
+_TOPIC_PREFIX_RX = re.compile(
+    r"^\s*(?:"
+    r"\d{1,3}(?:\.\d{1,3}){0,4}\s*[\.)\]:\-–]?\s*"
+    r"|(?:chương|chuong|chapter)\s+[0-9IVXLCDM]{1,6}\s*[:\-–]?\s*"
+    r")",
+    flags=re.IGNORECASE,
+)
 
 
 
@@ -58,6 +71,71 @@ def validate_topic_title(title: str) -> str:
                 return fixed
             raise ValueError(f"Topic title appears garbled: {cleaned[:50]}")
     return cleaned
+
+
+def clean_topic_title(title: str) -> str:
+    original = str(title or "").strip()
+    cleaned = fix_mojibake_topic(original)
+
+    repaired = repair_ocr_spacing_text(cleaned)
+    # Titles are short; OCR spacing repair can over-split valid words.
+    # Apply only when source title has no spaces and repair introduces readable tokenization.
+    if cleaned.count(" ") == 0 and repaired.count(" ") >= 1 and quality_score(repaired) >= quality_score(cleaned):
+        cleaned = repaired
+
+    cleaned = _TOPIC_ALLOWED_CHARS_RX.sub(" ", cleaned)
+    cleaned = _TOPIC_PREFIX_RX.sub("", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -–—:;,.\t\n\r")
+    if cleaned:
+        cleaned = cleaned[0].upper() + cleaned[1:]
+
+    if len(cleaned) < 3:
+        raise ValueError("Topic title quá ngắn sau khi clean")
+    return cleaned
+
+
+def extract_topics_from_headings(all_chunks: Optional[List[str]]) -> List[Dict[str, Any]]:
+    """Fallback topic extraction from chunk headings when LLM output is not reliable."""
+    if not all_chunks:
+        return []
+    return _extract_by_headings_in_chunks(all_chunks)
+
+
+def post_process_generated_topics(raw_topics: List[Dict[str, Any]], all_chunks: Optional[List[str]]) -> List[Dict[str, Any]]:
+    processed: List[Dict[str, Any]] = []
+    chunks = all_chunks or []
+
+    for topic in raw_topics:
+        if not isinstance(topic, dict):
+            continue
+        title = str(topic.get('title') or '').strip()
+        summary = str(topic.get('summary') or topic.get('body') or '').strip()
+        keywords_raw = topic.get('keywords') if isinstance(topic.get('keywords'), list) else []
+        keywords = [str(x).strip().lower() for x in keywords_raw if str(x).strip()][:10]
+        if not title or not keywords:
+            continue
+        try:
+            cleaned_title = clean_topic_title(title)
+        except ValueError:
+            continue
+
+        matching_chunks = [
+            c for c in chunks
+            if any(kw.lower() in str(c or '').lower() for kw in keywords)
+        ]
+        processed.append({
+            'title': cleaned_title[:255],
+            'body': summary or cleaned_title,
+            '_llm': True,
+            'keywords': keywords,
+            'chunk_count': len(matching_chunks),
+            'is_valid': len(matching_chunks) >= 2,
+        })
+
+    valid_topics = [t for t in processed if t.get('is_valid')]
+    if len(valid_topics) < 1:
+        return extract_topics_from_headings(chunks)
+    return valid_topics
 
 
 def validate_and_clean_topic_title(raw_title: str) -> tuple[str, list[str]]:
@@ -3444,8 +3522,14 @@ def extract_topics(
                 "KHÔNG coi các dòng thuộc khối câu hỏi/đề như: 'Q11', 'Câu 12', hoặc các phương án 'A./B./C./D.' là TOPIC. "
                 "Nếu gặp các mục đó, hãy gộp nội dung của chúng vào TOPIC học tập ngay trước đó (liên quan nhất). "
                 "CHỈ dùng các khái niệm xuất hiện trong văn bản; không bịa thêm nội dung. "
+                "QUAN TRỌNG VỀ FORMAT TOPIC:\n"
+                "- Tên topic phải là tiếng Việt hoặc tiếng Anh chuẩn, KHÔNG có ký tự lạ hay mã hex\n"
+                "- Tên topic phải cụ thể, mô tả đúng nội dung (ví dụ: 'Phương trình bậc hai' thay vì 'Toán học')\n"
+                "- Mỗi topic phải có tối thiểu 2-3 đoạn nội dung trong tài liệu\n"
+                "- Không tạo topic là phần phụ trợ như 'Bài tập', 'Ví dụ', 'Đáp án'\n"
+                "- Output JSON với mảng topics, mỗi topic có: title, summary (2-3 câu), keywords (list)\n"
                 "Trả JSON hợp lệ: {topics:[{title, summary, keywords}]} với 5-10 topics. "
-                "summary: 1-2 câu, nêu đúng trọng tâm. keywords: 6-10 từ khóa."
+                "summary: 2-3 câu, nêu đúng trọng tâm. keywords: 6-10 từ khóa."
             )
             user = f"Văn bản tài liệu (trích): {excerpt}"
             try:
@@ -3456,17 +3540,10 @@ def extract_topics(
                 )
                 llm_topics = obj.get("topics") if isinstance(obj, dict) else None
                 if isinstance(llm_topics, list):
-                    topics_raw = []
-                    for it in llm_topics[: max(3, int(max_topics))]:
-                        if not isinstance(it, dict):
-                            continue
-                        title = str(it.get("title") or "").strip()
-                        if not title:
-                            continue
-                        summary = str(it.get("summary") or "").strip()
-                        kws = it.get("keywords") if isinstance(it.get("keywords"), list) else []
-                        kws = [str(x).strip().lower() for x in kws if str(x).strip()][:10]
-                        topics_raw.append({"title": title[:255], "body": summary or title, "_llm": True, "keywords": kws})
+                    topics_raw = post_process_generated_topics(
+                        llm_topics[: max(3, int(max_topics))],
+                        chunks_texts or [full_text],
+                    )
             except Exception:
                 topics_raw = []
 
