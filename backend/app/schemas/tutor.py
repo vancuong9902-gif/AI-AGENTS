@@ -36,6 +36,7 @@ class TutorChatData(BaseModel):
     confidence: float = 0.8
     suggested_topics: List[str] = Field(default_factory=list)
     follow_up_questions: List[str] = Field(default_factory=list)
+    suggested_questions: List[str] = Field(default_factory=list)
     quick_check_mcq: List[Dict[str, Any]] = Field(default_factory=list)
     sources: List[TutorSource] = Field(default_factory=list)
     retrieval: Dict[str, Any] = Field(default_factory=dict)

@@ -1,6 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { apiJson } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
+
+const bubble = {
+  user: { alignSelf: "flex-end", background: "#e9edff", border: "1px solid #c9d2ff" },
+  assistant: { alignSelf: "flex-start", background: "#fff", border: "1px solid #ececec" },
+};
 
 export default function Tutor() {
   const { userId } = useAuth();
@@ -9,13 +14,13 @@ export default function Tutor() {
   const [docs, setDocs] = useState([]);
   const [docId, setDocId] = useState("");
   const [messages, setMessages] = useState([]);
+  const [rightSuggestions, setRightSuggestions] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [learningPlan, setLearningPlan] = useState(null);
   const questionInputRef = useRef(null);
 
-  const selectedDoc = (docs || []).find((d) => String(d.document_id) === String(docId));
-  const currentTopic = (topic || "").trim() || selectedDoc?.title || "tài liệu hiện tại";
+  const storageKey = useMemo(() => `tutor_conv_${userId ?? 1}_${docId || "auto"}`, [userId, docId]);
 
   useEffect(() => {
     (async () => {
@@ -23,10 +28,9 @@ export default function Tutor() {
         const data = await apiJson("/documents");
         const arr = data?.documents || [];
         setDocs(arr);
-        if (!docId && Array.isArray(arr) && arr.length > 0) {
+        if (!docId && arr.length > 0) {
           const saved = localStorage.getItem("active_document_id");
-          if (saved) setDocId(saved);
-          else setDocId(String(arr[0].document_id));
+          setDocId(saved || String(arr[0].document_id));
         }
       } catch {
         // ignore
@@ -34,7 +38,6 @@ export default function Tutor() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
 
   useEffect(() => {
     (async () => {
@@ -47,6 +50,20 @@ export default function Tutor() {
     })();
   }, [userId]);
 
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      const parsed = raw ? JSON.parse(raw) : [];
+      setMessages(Array.isArray(parsed) ? parsed : []);
+    } catch {
+      setMessages([]);
+    }
+  }, [storageKey]);
+
+  useEffect(() => {
+    localStorage.setItem(storageKey, JSON.stringify(messages));
+  }, [messages, storageKey]);
+
   const ask = async (overrideQuestion) => {
     const q = ((overrideQuestion ?? question) || "").trim();
     if (!q || loading) return;
@@ -57,208 +74,105 @@ export default function Tutor() {
     try {
       const data = await apiJson("/tutor/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: {
           user_id: userId ?? 1,
           question: q,
           topic: (topic || "").trim() || null,
           top_k: 6,
           document_ids: docId ? [Number(docId)] : null,
           allowed_topics: Array.isArray(learningPlan?.topics) ? learningPlan.topics : [],
-        }),
+        },
       });
-
-      const answer = data?.answer || data?.answer_md || "(Không có câu trả lời)";
+      const answer = data?.answer_md || data?.answer || "(Không có câu trả lời)";
       const isOffTopic = data?.is_off_topic === true || data?.off_topic === true;
+      const suggested = data?.suggested_questions || data?.follow_up_questions || [];
+      setRightSuggestions(Array.isArray(suggested) ? suggested.slice(0, 5) : []);
       setMessages((prev) => [...prev, { role: "assistant", text: answer, meta: data, offTopic: isOffTopic }]);
     } catch (e) {
       const msg = e?.message || "Tutor lỗi";
-      const sug = e?.details?.suggestion || e?.details?.details?.suggestion || null;
-      const full = sug ? `${msg}\n\n👉 ${sug}` : msg;
-      setError(full);
-      setMessages((prev) => [...prev, { role: "assistant", text: `❌ ${full}` }]);
+      setError(msg);
+      setMessages((prev) => [...prev, { role: "assistant", text: `❌ ${msg}`, meta: {} }]);
     } finally {
       setLoading(false);
     }
   };
 
-  const confidenceText = (value) => {
-    const c = Number(value ?? 0.8);
-    if (c >= 0.8) return "";
-    if (c >= 0.5) return "Thông tin này có thể cần xác minh thêm";
-    return "Tôi không chắc chắn, vui lòng tham khảo tài liệu gốc";
-  };
-
   return (
-    <div style={{ maxWidth: 900, margin: "0 auto", padding: 16 }}>
-      <h2>🤖 Virtual AI Tutor</h2>
-      <p style={{ color: "#555", marginTop: 0 }}>
-        Học sinh dùng Tutor để <b>hỏi - đáp</b> dựa trên tài liệu giáo viên đã upload. Nếu tài liệu OCR lỗi/rời rạc, Tutor sẽ yêu cầu upload bản sạch.
-      </p>
-
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-        <select
-          value={docId}
-          onChange={(e) => {
-            const v = e.target.value;
-            setDocId(v);
-            if (v) localStorage.setItem("active_document_id", String(v));
-          }}
-          title="Chọn tài liệu để Tutor trả lời đúng ngữ liệu"
-          style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", flex: "0 0 260px" }}
-        >
-          <option value="">Tự động (theo topic)</option>
-          {(docs || []).map((d) => (
-            <option key={d.document_id} value={d.document_id}>
-              {d.title} (id={d.document_id})
-            </option>
-          ))}
-        </select>
-
-        <input
-          value={topic}
-          onChange={(e) => setTopic(e.target.value)}
-          placeholder="(Tuỳ chọn) Topic..."
-          style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", flex: "0 0 220px" }}
-        />
-        <input
-          ref={questionInputRef}
-          value={question}
-          onChange={(e) => setQuestion(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              ask();
-            }
-          }}
-          placeholder="Nhập câu hỏi..."
-          style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", flex: "1 1 420px" }}
-        />
-        <button onClick={() => ask()} disabled={loading} style={{ padding: "10px 14px" }}>
-          {loading ? "Đang hỏi…" : "Gửi"}
-        </button>
-      </div>
-      <div style={{ marginTop: 10 }}>
-        <span style={{ background: "#e8f5e9", color: "#2e7d32", padding: "6px 10px", borderRadius: 999, fontSize: 13, fontWeight: 700 }}>
-          🎯 Đang học: {currentTopic}
-        </span>
-      </div>
-
-      {error && (
-        <div style={{ marginTop: 12, background: "#fff3f3", border: "1px solid #ffd0d0", padding: 12, borderRadius: 12 }}>
-          {error}
+    <div style={{ maxWidth: 1100, margin: "0 auto", padding: 16, display: "grid", gridTemplateColumns: "1fr 320px", gap: 16 }}>
+      <div>
+        <h2>🤖 Virtual AI Tutor</h2>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+          <select value={docId} onChange={(e) => { const v = e.target.value; setDocId(v); localStorage.setItem("active_document_id", String(v)); }} style={{ padding: 10, borderRadius: 10 }}>
+            <option value="">Tự động (theo topic)</option>
+            {(docs || []).map((d) => <option key={d.document_id} value={d.document_id}>{d.title} (id={d.document_id})</option>)}
+          </select>
+          <input value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="(Tuỳ chọn) Topic..." style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", flex: 1 }} />
         </div>
-      )}
 
-      <div style={{ marginTop: 16, display: "grid", gap: 12 }}>
-        {messages.map((m, idx) => {
-          const warn = m.role === "assistant" && m.offTopic;
-          const confidenceMsg = m.role === "assistant" ? confidenceText(m.meta?.confidence) : "";
-          if (m.role === "assistant" && m.offTopic) {
-            const topicScope = m.meta?.topic_scope || currentTopic;
-            const redirectHint = m.meta?.redirect_hint || `Mình muốn hỏi về ${topicScope}`;
-            const followUps = Array.isArray(m.meta?.follow_up_questions) ? m.meta.follow_up_questions.slice(0, 3) : [];
+        <div style={{ minHeight: 320, display: "flex", flexDirection: "column", gap: 10, background: "#f8f9ff", borderRadius: 12, padding: 12 }}>
+          {messages.map((m, idx) => (
+            <div key={idx} style={{ maxWidth: "82%", borderRadius: 14, padding: 10, ...bubble[m.role === "user" ? "user" : "assistant"] }}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>{m.role === "user" ? "Bạn" : m.offTopic ? "⚠️ Tutor" : "Tutor"}</div>
+              <div style={{ whiteSpace: "pre-wrap" }}>{m.text}</div>
 
-            return (
-              <div
-                key={idx}
-                style={{
-                  position: "relative",
-                  background: "#fff3cd",
-                  border: "1px solid #f0c75e",
-                  padding: 12,
-                  borderRadius: 10,
-                  margin: "8px 0",
-                }}
-              >
-                <div style={{ position: "absolute", top: 8, right: 10, fontSize: 18 }}>⚠️</div>
-                <div style={{ fontWeight: 900, marginBottom: 6 }}>Câu hỏi ngoài phạm vi</div>
-                <div style={{ whiteSpace: "pre-wrap" }}>{m.text}</div>
-                {followUps.length > 0 && (
-                  <div style={{ marginTop: 10 }}>
-                    <div style={{ fontWeight: 800, marginBottom: 8 }}>Thay vào đó, bạn có muốn hỏi về:</div>
-                    <div style={{ display: "grid", gap: 8 }}>
-                      {followUps.map((fq, i) => (
-                        <button
-                          key={i}
-                          type="button"
-                          onClick={() => {
-                            setQuestion(fq);
-                            questionInputRef.current?.focus();
-                          }}
-                          style={{
-                            textAlign: "left",
-                            borderRadius: 8,
-                            border: "1px solid #f0c75e",
-                            background: "#fff9e8",
-                            padding: "8px 10px",
-                            cursor: "pointer",
-                          }}
-                        >
-                          {fq}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                <div style={{ marginTop: 10 }}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setQuestion(redirectHint);
-                      questionInputRef.current?.focus();
-                    }}
-                    style={{ padding: "8px 12px", borderRadius: 8, border: "1px solid #e0b000", background: "#fff" }}
-                  >
-                    Hỏi về {topicScope}
-                  </button>
-                </div>
-              </div>
-            );
-          }
-          return (
-            <div
-              key={idx}
-              style={{
-                background: warn ? "#fff8db" : m.role === "user" ? "#f7f7ff" : "#fff",
-                borderRadius: 12,
-                padding: 12,
-                boxShadow: "0 2px 10px rgba(0,0,0,0.06)",
-                border: warn ? "1px solid #ffdf80" : "none",
-              }}
-            >
-              <div style={{ fontWeight: 900, marginBottom: 6 }}>{m.role === "user" ? "Bạn" : warn ? "⚠️ Tutor" : "Tutor"}</div>
-              <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontFamily: "inherit" }}>{m.text}</pre>
-
-              {m.role === "assistant" && m.meta?.sources_used?.length > 0 && (
-                <div style={{ marginTop: 8, color: "#777", fontSize: 13 }}>📚 Dựa trên: {m.meta.sources_used.join(", ")}</div>
+              {m.role === "assistant" && Array.isArray(m.meta?.sources) && m.meta.sources.length > 0 && (
+                <details style={{ marginTop: 8 }}>
+                  <summary>📚 Sources</summary>
+                  <ul style={{ margin: "6px 0", paddingLeft: 18 }}>
+                    {m.meta.sources.map((s, i) => (
+                      <li key={`${s.chunk_id}-${i}`}>
+                        <b>Chunk #{s.chunk_id}</b> (score {Number(s.score || 0).toFixed(2)}): {s.preview}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
               )}
 
-              {confidenceMsg && <div style={{ marginTop: 8, color: "#9c6b00", fontSize: 13 }}>{confidenceMsg}</div>}
-
-              {m.role === "assistant" && m.meta?.follow_up_questions?.length > 0 && (
-                <div style={{ marginTop: 10 }}>
-                  <div style={{ fontWeight: 900, marginBottom: 6 }}>Gợi ý hỏi thêm</div>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    {m.meta.follow_up_questions.map((q, i) => (
-                      <button
-                        key={i}
-                        type="button"
-                        onClick={() => ask(q)}
-                        style={{ borderRadius: 999, border: "1px solid #d6d6d6", background: "#fafafa", padding: "6px 10px", cursor: "pointer" }}
-                      >
-                        {q}
-                      </button>
-                    ))}
-                  </div>
+              {m.role === "assistant" && Array.isArray(m.meta?.follow_up_questions) && m.meta.follow_up_questions.length > 0 && (
+                <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {m.meta.follow_up_questions.slice(0, 3).map((fq, i) => (
+                    <button key={i} type="button" onClick={() => ask(fq)} style={{ borderRadius: 999, border: "1px solid #ddd", padding: "4px 10px", background: "#fff" }}>{fq}</button>
+                  ))}
                 </div>
               )}
             </div>
-          );
-        })}
+          ))}
+        </div>
 
-        {messages.length === 0 && <div style={{ color: "#666" }}>Chưa có hội thoại. Hãy hỏi 1 câu.</div>}
+        {error && <div style={{ marginTop: 10, color: "#c62828" }}>{error}</div>}
+
+        <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+          <input
+            ref={questionInputRef}
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                ask();
+              }
+            }}
+            placeholder="Nhập câu hỏi..."
+            style={{ padding: 10, borderRadius: 10, border: "1px solid #ddd", flex: 1 }}
+          />
+          <button onClick={() => ask()} disabled={loading} style={{ padding: "10px 14px" }}>{loading ? "Đang hỏi…" : "Gửi"}</button>
+        </div>
       </div>
+
+      <aside style={{ border: "1px solid #ececec", borderRadius: 12, padding: 12, height: "fit-content", background: "#fff" }}>
+        <h3 style={{ marginTop: 0 }}>Panel gợi ý</h3>
+        <div style={{ marginBottom: 8, color: "#666" }}>Topic hiện tại</div>
+        <div style={{ fontWeight: 700, marginBottom: 12 }}>{(topic || "").trim() || "(đang theo tài liệu đã chọn)"}</div>
+        <div style={{ marginBottom: 8, color: "#666" }}>Suggested questions</div>
+        <div style={{ display: "grid", gap: 8 }}>
+          {(rightSuggestions || []).length === 0 && <div style={{ color: "#999" }}>Chưa có gợi ý.</div>}
+          {(rightSuggestions || []).map((sq, i) => (
+            <button key={i} type="button" onClick={() => ask(sq)} style={{ textAlign: "left", borderRadius: 8, border: "1px solid #ddd", background: "#fafafa", padding: "8px 10px" }}>
+              {sq}
+            </button>
+          ))}
+        </div>
+      </aside>
     </div>
   );
 }

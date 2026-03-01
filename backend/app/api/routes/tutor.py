@@ -58,23 +58,24 @@ def _format_tutor_contract(data: Dict[str, Any], payload: TutorChatRequest) -> D
     for s in (data.get("sources") or []):
         if not isinstance(s, dict):
             continue
-        chunk_id = s.get("chunk_id")
-        meta = s.get("meta") if isinstance(s.get("meta"), dict) else {}
-        page = meta.get("page")
-        if page is None:
-            page = meta.get("page_number")
         try:
-            chunk_id = int(chunk_id)
+            chunk_id = int(s.get("chunk_id"))
         except Exception:
             continue
-        src = {"chunk_id": chunk_id, "page": page}
-        srcs.append(src)
+        srcs.append(
+            {
+                "chunk_id": chunk_id,
+                "preview": str(s.get("preview") or ""),
+                "score": float(s.get("score", 0.0) or 0.0),
+            }
+        )
 
     return {
         **data,
         "status": status,
         "answer_md": answer_md,
         "follow_up_questions": follow_ups[:3],
+        "suggested_questions": [str(x).strip() for x in (data.get("suggested_questions") or follow_ups[:3]) if str(x).strip()][:3],
         "sources": srcs,
     }
 
