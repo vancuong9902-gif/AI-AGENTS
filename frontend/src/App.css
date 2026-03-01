@@ -65,7 +65,13 @@
 .topbar-heading { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .topbar-title { font-size: clamp(1.4rem, 1.8vw, 1.9rem); margin: 0; }
 .topbar-subtitle { margin: 2px 0 0; color: var(--muted); font-size: var(--text-sm); }
-.topbar-actions { display: flex; align-items: center; gap: 10px; }
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
 .page-content { padding: 22px 0 30px; }
 
 .user-pill {
@@ -102,7 +108,7 @@
 }
 
 .notification-wrap { position: relative; }
-.notification-bell { position: relative; border: 1px solid var(--border); background: var(--surface); border-radius: 12px; padding: 7px 10px; cursor: pointer; font-size: 18px; color: var(--text); }
+.notification-bell { position: relative; border: 1px solid var(--border); background: var(--surface); border-radius: 12px; padding: 7px 10px; cursor: pointer; font-size: 18px; color: var(--text); display: inline-flex; align-items: center; justify-content: center; min-width: 42px; min-height: 40px; }
 .notification-badge { position: absolute; top: -6px; right: -6px; min-width: 18px; height: 18px; border-radius: 999px; background: var(--danger); color: #fff; font-size: 11px; line-height: 18px; text-align: center; padding: 0 4px; }
 .notification-dropdown { position: absolute; top: 42px; right: 0; width: 320px; max-width: 90vw; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow-md); padding: 10px; z-index: 60; }
 .notification-title { font-weight: 700; margin-bottom: 8px; }
@@ -128,5 +134,14 @@
   .sidebar.open { transform: translateX(0); }
   .sidebar-overlay { display: block; }
   .nav-toggle { display: inline-flex; }
+  .topbar-inner {
+    width: min(1200px, calc(100vw - 24px));
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .topbar-title { font-size: clamp(1.2rem, 5vw, 1.5rem); }
+  .topbar-actions { width: 100%; justify-content: space-between; }
+  .logout-btn { margin-left: auto; }
   .topbar-actions .user-pill { display: none; }
+  .notification-dropdown { right: -6px; }
 }

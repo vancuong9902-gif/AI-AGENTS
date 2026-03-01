@@ -34,8 +34,15 @@ export default function NotificationBell() {
         setOpen(false);
       }
     };
+    const onEscape = (e) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
     document.addEventListener('mousedown', onClickOutside);
-    return () => document.removeEventListener('mousedown', onClickOutside);
+    document.addEventListener('keydown', onEscape);
+    return () => {
+      document.removeEventListener('mousedown', onClickOutside);
+      document.removeEventListener('keydown', onEscape);
+    };
   }, []);
 
   if (role !== 'student') return null;
@@ -56,13 +63,20 @@ export default function NotificationBell() {
 
   return (
     <div className='notification-wrap' ref={panelRef}>
-      <button className='notification-bell' onClick={() => setOpen((v) => !v)} aria-label='Thông báo'>
+      <button
+        className='notification-bell focus-ring'
+        onClick={() => setOpen((v) => !v)}
+        aria-label='Mở danh sách thông báo'
+        aria-haspopup='dialog'
+        aria-expanded={open}
+        aria-controls='notification-panel'
+      >
         🔔
         {unreadCount > 0 && <span className='notification-badge'>{unreadCount}</span>}
       </button>
 
       {open && (
-        <div className='notification-dropdown'>
+        <div id='notification-panel' className='notification-dropdown' role='dialog' aria-label='Danh sách thông báo'>
           <div className='notification-title'>Thông báo</div>
           {!items.length ? (
             <div className='notification-empty'>Không có thông báo mới.</div>

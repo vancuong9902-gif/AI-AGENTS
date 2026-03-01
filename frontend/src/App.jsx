@@ -29,6 +29,25 @@ function App() {
     setOpen(false);
   }, [location.pathname]);
 
+  useEffect(() => {
+    if (!open) return undefined;
+    const onEscape = (event) => {
+      if (event.key === 'Escape') {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('keydown', onEscape);
+    return () => document.removeEventListener('keydown', onEscape);
+  }, [open]);
+
+  useEffect(() => {
+    if (window.innerWidth > 960) return undefined;
+    document.body.style.overflow = open ? 'hidden' : '';
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [open]);
+
   const pageMeta = useMemo(
     () => PAGE_META.find((item) => item.match.test(location.pathname)) || { title: 'AI-AGENTS LMS', subtitle: 'Nền tảng học tập thông minh' },
     [location.pathname],
@@ -38,7 +57,7 @@ function App() {
 
   return (
     <div className='app-shell'>
-      <aside className={`sidebar ${open ? 'open' : ''}`}>
+      <aside id='app-sidebar' className={`sidebar ${open ? 'open' : ''}`} aria-label='Thanh điều hướng chính'>
         <Navbar onNavigate={() => setOpen(false)} />
       </aside>
       {open ? <button type='button' className='sidebar-overlay' aria-label='Đóng menu điều hướng' onClick={() => setOpen(false)} /> : null}
@@ -50,6 +69,8 @@ function App() {
                 type='button'
                 className='nav-toggle focus-ring'
                 aria-label={open ? 'Đóng menu' : 'Mở menu'}
+                aria-controls='app-sidebar'
+                aria-expanded={open}
                 onClick={() => setOpen((v) => !v)}
               >
                 {open ? <FiX /> : <FiMenu />}
