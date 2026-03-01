@@ -56,6 +56,15 @@ export default function FileLibrary() {
     }
   };
 
+  const retryTopicsModal = async () => {
+    if (!topicsModal.documentId) return;
+    await openTopicsModal({
+      document_id: topicsModal.documentId,
+      title: topicsModal.documentTitle,
+      filename: topicsModal.documentTitle,
+    });
+  };
+
   const refresh = async () => {
     setLoading(true);
     try {
@@ -127,7 +136,12 @@ export default function FileLibrary() {
         actions={<Button onClick={closeTopicsModal}>Đóng</Button>}
       >
         {topicsModal.loading ? <Spinner /> : null}
-        {!topicsModal.loading && topicsModal.error ? <Banner tone='error'>{topicsModal.error}</Banner> : null}
+        {!topicsModal.loading && topicsModal.error ? (
+          <div className='stack-sm'>
+            <Banner tone='error'>{topicsModal.error}</Banner>
+            <Button onClick={retryTopicsModal}>Thử lại</Button>
+          </div>
+        ) : null}
         {!topicsModal.loading && !topicsModal.error && topicsModal.topics.length === 0 ? (
           <EmptyState
             icon='🧩'
@@ -140,8 +154,8 @@ export default function FileLibrary() {
             {topicsModal.topics.map((topic) => (
               <Card key={topic.id} className='stack-xs'>
                 <div><strong>{topic.title}</strong></div>
-                <div style={{ color: 'var(--text-muted)' }}>Số chunks/notes: {topic.chunkCount}</div>
-                {topic.summary ? <div>{topic.summary}</div> : <div style={{ color: 'var(--text-muted)' }}>Chưa có mô tả ngắn.</div>}
+                <div className='text-muted'>Số chunks/notes: {topic.chunkCount}</div>
+                {topic.summary ? <div>{topic.summary}</div> : <div className='text-muted'>Chưa có mô tả ngắn.</div>}
                 <div>
                   <Link to={`/documents/${topicsModal.documentId}/topics/${topic.id}`}><Button variant='ghost'>Mở/Chi tiết</Button></Link>
                 </div>

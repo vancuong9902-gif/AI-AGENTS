@@ -1,4 +1,15 @@
+import { useEffect } from 'react';
+
 export default function Modal({ open, title, children, onClose, actions, footer }) {
+  useEffect(() => {
+    if (!open) return undefined;
+    const handleEsc = (event) => {
+      if (event.key === 'Escape') onClose?.();
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [open, onClose]);
+
   if (!open) return null;
   return (
     <div className='modal-backdrop' onClick={onClose}>
