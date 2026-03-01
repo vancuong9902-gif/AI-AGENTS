@@ -3,8 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from app.api.routes import lms
-from app.models.attempt import Attempt
-from app.models.classroom import ClassroomMember
+from app.models.classroom_assessment import ClassroomAssessment
 
 
 def test_quiz_duration_map_uses_duration_seconds():
@@ -30,9 +29,7 @@ class _Q:
 
     def all(self):
         text = " ".join(str(c) for c in self.criteria)
-        if self.entity is ClassroomMember.user_id:
-            return [(101,), (102,)]
-        if self.entity is Attempt.quiz_set_id:
+        if self.entity is ClassroomAssessment.assessment_id:
             self.db.captured_filter_text = text
             return [(11,), (12,)]
         return []
@@ -45,7 +42,7 @@ class _DB:
         return _Q(self, entity)
 
 
-def test_lms_generate_final_uses_student_ids(monkeypatch):
+def test_lms_generate_final_excludes_assigned_classroom_assessments(monkeypatch):
     db = _DB()
     payload = lms.GenerateLmsQuizIn(teacher_id=1, classroom_id=9)
     req = SimpleNamespace(state=SimpleNamespace(request_id="r1"))
@@ -58,7 +55,7 @@ def test_lms_generate_final_uses_student_ids(monkeypatch):
 
     out = lms.lms_generate_final(req, payload, db)
     assert out["data"]["excluded_from_count"] == 2
-    assert "attempts.user_id IN" in db.captured_filter_text
+    assert "classroom_assessments.classroom_id" in db.captured_filter_text
 
 
 def test_submit_attempt_by_id_publishes_entry_event(monkeypatch):
