@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import json
+import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.text_quality import quality_report, quality_score
@@ -10,7 +11,9 @@ from app.services.external_sources import fetch_external_snippets
 from app.core.config import settings
 from app.services.text_repair import repair_ocr_spacing_line, repair_ocr_spacing_text
 from app.services.vietnamese_font_fix import (
+    detect_vni_typing,
     detect_broken_vn_font,
+    convert_vni_typing_to_unicode,
     fix_mojibake_topic,
     fix_vietnamese_encoding,
     fix_vietnamese_font_encoding,
@@ -60,6 +63,9 @@ _GARBLED_TOPIC_PATTERNS = [
 def validate_topic_title(title: str) -> str:
     """Đảm bảo topic title không chứa ký tự lỗi font."""
     cleaned = str(title or "").strip()
+    if detect_vni_typing(cleaned):
+        cleaned = convert_vni_typing_to_unicode(cleaned).strip()
+
     for pattern in _GARBLED_TOPIC_PATTERNS:
         if pattern.search(cleaned):
             fixed = fix_vietnamese_encoding(cleaned).strip()
@@ -108,8 +114,15 @@ def post_process_generated_topics(raw_topics: List[Dict[str, Any]], all_chunks: 
     for topic in raw_topics:
         if not isinstance(topic, dict):
             continue
-        title = str(topic.get('title') or '').strip()
-        summary = str(topic.get('summary') or topic.get('body') or '').strip()
+        title = fix_mojibake_topic(str(topic.get('title') or '').strip())
+        if detect_broken_vn_font(title):
+            title = fix_vietnamese_font_encoding(title)
+        title = unicodedata.normalize("NFC", title)
+
+        summary = fix_mojibake_topic(str(topic.get('summary') or topic.get('body') or '').strip())
+        if detect_broken_vn_font(summary):
+            summary = fix_vietnamese_font_encoding(summary)
+        summary = unicodedata.normalize("NFC", summary)
         keywords_raw = topic.get('keywords') if isinstance(topic.get('keywords'), list) else []
         keywords = [str(x).strip().lower() for x in keywords_raw if str(x).strip()][:10]
         if not title or not keywords:
