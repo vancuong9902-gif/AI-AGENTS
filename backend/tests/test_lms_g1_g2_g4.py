@@ -27,6 +27,9 @@ class _Q:
 
     def all(self):
         if self.entity is ClassroomAssessment.assessment_id:
+        text = " ".join(str(c) for c in self.criteria)
+        if self.entity is ClassroomAssessment.assessment_id:
+            self.db.captured_filter_text = text
             return [(11,), (12,)]
         return []
 
@@ -37,6 +40,7 @@ class _DB:
 
 
 def test_lms_generate_final_uses_classroom_assessment_ids(monkeypatch):
+def test_lms_generate_final_excludes_assigned_classroom_assessments(monkeypatch):
     db = _DB()
     payload = lms.GenerateLmsQuizIn(teacher_id=1, classroom_id=9)
     req = SimpleNamespace(state=SimpleNamespace(request_id="r1"))
@@ -49,6 +53,7 @@ def test_lms_generate_final_uses_classroom_assessment_ids(monkeypatch):
 
     out = lms.lms_generate_final(req, payload, db)
     assert out["data"]["excluded_from_count"] == 2
+    assert "classroom_assessments.classroom_id" in db.captured_filter_text
 
 
 def test_submit_attempt_by_id_publishes_entry_event(monkeypatch):
