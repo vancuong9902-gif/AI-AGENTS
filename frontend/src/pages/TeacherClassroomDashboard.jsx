@@ -156,7 +156,7 @@ export default function TeacherClassroomDashboard() {
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={generateVariants} style={{ border: "1px solid #ddd", borderRadius: 8, padding: "10px 14px", background: "#f3f4f6", color: "#111", fontWeight: 700 }}>Sinh N mã đề</button>
           <button onClick={exportXlsx} style={{ border: "1px solid #ddd", borderRadius: 8, padding: "10px 14px", background: "#0f766e", color: "#fff", fontWeight: 700 }}>Xuất Excel</button>
-          <button onClick={exportPdf} style={{ border: "1px solid #ddd", borderRadius: 8, padding: "10px 14px", background: "#111", color: "#fff", fontWeight: 700 }}>Xuất báo cáo PDF</button>
+          <button onClick={exportPdf} style={{ border: "1px solid #ddd", borderRadius: 8, padding: "10px 14px", background: "#111", color: "#fff", fontWeight: 700 }}>Tải báo cáo PDF lớp</button>
         </div>
       </div>
 

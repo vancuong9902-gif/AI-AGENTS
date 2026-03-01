@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { apiJson } from "../lib/api";
+import { API_BASE, apiJson } from "../lib/api";
 
 function ScorePill({ score, max }) {
   const s = Number.isFinite(score) ? score : 0;
@@ -22,6 +22,33 @@ export default function TeacherStudentPlan() {
   const plan = data?.plan || null;
   const days = useMemo(() => ((plan?.days || []).slice().sort((a, b) => Number(a.day_index) - Number(b.day_index))), [plan]);
   const submissions = data?.homework_submissions || {};
+
+
+
+  const downloadStudentPdf = async () => {
+    if (!classroomId) {
+      setError("Thiếu classroom_id để xuất PDF học viên");
+      return;
+    }
+    try {
+      const headers = { "Cache-Control": "no-cache" };
+      const uid = localStorage.getItem("user_id");
+      const role = localStorage.getItem("role");
+      if (uid) headers["X-User-Id"] = uid;
+      if (role) headers["X-User-Role"] = role;
+      const url = `${API_BASE}/lms/teacher/report/${Number(classroomId)}/student/${Number(studentId)}/export?format=pdf`;
+      const res = await fetch(url, { headers });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `student_${Number(studentId)}_report.pdf`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+    } catch (e) {
+      setError(`Tải PDF học viên thất bại: ${e?.message || e}`);
+    }
+  };
 
   useEffect(() => {
     (async () => {
@@ -50,6 +77,8 @@ export default function TeacherStudentPlan() {
       <div style={{ color: "#666", marginTop: 4 }}>Student ID: <strong>{studentId}</strong>{classroomId ? <> • Classroom ID: <strong>{classroomId}</strong></> : null}</div>
       <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
         {classroomId ? <Link to={`/teacher/classrooms/${classroomId}`} style={{ textDecoration: "none" }}>← Quay lại lớp</Link> : <Link to="/teacher/classrooms" style={{ textDecoration: "none" }}>← Quay lại danh sách lớp</Link>}
+        {classroomId ? <button onClick={downloadStudentPdf} style={{ border: "1px solid #ddd", borderRadius: 8, padding: "6px 12px", background: "#111", color: "#fff", fontWeight: 700 }}>PDF học viên</button> : null}
+
       </div>
 
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>

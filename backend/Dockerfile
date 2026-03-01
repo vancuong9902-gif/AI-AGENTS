@@ -13,6 +13,7 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
+        fonts-dejavu-core \
         tesseract-ocr \
         tesseract-ocr-eng \
         poppler-utils; \
