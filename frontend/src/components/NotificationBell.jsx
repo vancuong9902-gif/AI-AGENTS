@@ -48,6 +48,7 @@ export default function NotificationBell() {
       // no-op
     }
 
+    const topic = n?.payload_json?.topic || n?.data?.topic;
     const topic = n?.payload_json?.topic;
     if (topic) navigate(`/learning-path?topic=${encodeURIComponent(topic)}`);
     else navigate('/learning-path');

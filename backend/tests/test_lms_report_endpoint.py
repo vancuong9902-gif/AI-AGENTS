@@ -72,3 +72,30 @@ def test_teacher_report_returns_enhanced_shape(monkeypatch):
     assert set(data["per_student"][0].keys()) >= {"placement_score", "final_score", "improvement", "weak_topics", "strong_topics", "homework_completion_rate", "tutor_sessions_count", "ai_comment"}
 
     app.dependency_overrides.clear()
+
+
+def test_teacher_report_contains_per_student_and_topic_heatmap(monkeypatch):
+    app.dependency_overrides[get_db] = lambda: _FakeDB()
+    from app.api.routes import lms as lms_route
+    lms_route._report_cache.clear()
+    lms_route._report_cache_time.clear()
+
+    monkeypatch.setattr(
+        "app.api.routes.lms.generate_full_teacher_report",
+        lambda classroom_id, db: {
+            "classroom_id": classroom_id,
+            "summary": {"total_students": 1},
+            "per_student": [{"student_id": 101, "name": "HS A", "improvement": 12}],
+            "topic_heatmap": [{"topic": "dao_ham", "avg_score": 72.0, "students": 1}],
+        },
+    )
+
+    client = TestClient(app)
+    response = client.get("/api/lms/teacher/report/1")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert "per_student" in data
+    assert "topic_heatmap" in data
+    assert data["per_student"][0]["name"] == "HS A"
+
+    app.dependency_overrides.clear()

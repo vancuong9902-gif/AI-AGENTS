@@ -1319,6 +1319,53 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
     except Exception:
         pass
 
+    try:
+        if str(getattr(quiz, "kind", "") or "").lower() == "diagnostic_post":
+            ca = db.query(ClassroomAssessment).filter(ClassroomAssessment.assessment_id == int(quiz_id)).first()
+            if ca:
+                classroom_id = int(ca.classroom_id)
+                student_rows = db.query(ClassroomMember.user_id).filter(ClassroomMember.classroom_id == classroom_id).all()
+                student_ids = {int(uid) for uid, in student_rows}
+                q_submitted = (
+                    db.query(Attempt.user_id)
+                    .join(QuizSet, QuizSet.id == Attempt.quiz_set_id)
+                    .join(ClassroomAssessment, ClassroomAssessment.assessment_id == QuizSet.id)
+                    .filter(
+                        ClassroomAssessment.classroom_id == classroom_id,
+                        QuizSet.kind == "diagnostic_post",
+                    )
+                )
+                if student_ids:
+                    q_submitted = q_submitted.filter(Attempt.user_id.in_(student_ids))
+                submitted_rows = q_submitted.distinct().all()
+                submitted_ids = {int(uid) for uid, in submitted_rows}
+                if student_ids and submitted_ids == student_ids:
+                    classroom_obj = db.query(Classroom).filter(Classroom.id == classroom_id).first()
+                    teacher_id = int(getattr(classroom_obj, "teacher_id", 0) or 0)
+                    if teacher_id:
+                        existing = (
+                            db.query(Notification)
+                            .filter(Notification.user_id == teacher_id, Notification.type == "report_ready")
+                            .order_by(Notification.created_at.desc())
+                            .limit(20)
+                            .all()
+                        )
+                        exists = any(int((n.payload_json or {}).get("classroom_id") or 0) == classroom_id for n in existing)
+                        if not exists:
+                            db.add(
+                                Notification(
+                                    user_id=teacher_id,
+                                    type="report_ready",
+                                    title="Báo cáo lớp đã sẵn sàng",
+                                    message=f"Tất cả học sinh lớp {classroom_id} đã nộp bài final.",
+                                    payload_json={"classroom_id": classroom_id},
+                                    is_read=False,
+                                )
+                            )
+                            db.commit()
+    except Exception:
+        pass
+
     base = _normalize_synced_diagnostic(base)
 
     if str(getattr(quiz, "kind", "") or "") == "diagnostic_pre":
@@ -1499,31 +1546,21 @@ def student_progress_comparison(request: Request, user_id: int, classroomId: int
 def teacher_student_reports(request: Request, student_id: int, db: Session = Depends(get_db)):
     rows = (
         db.query(Notification)
-        .filter(Notification.student_id == int(student_id), Notification.type == "student_final_report")
+        .filter(Notification.user_id == int(student_id))
         .order_by(Notification.created_at.desc())
         .all()
     )
     data = []
     for r in rows:
         payload = r.payload_json if isinstance(r.payload_json, dict) else {}
-        student = payload.get("student") if isinstance(payload.get("student"), dict) else {}
-        if not student:
-            u = db.query(User).filter(User.id == int(student_id)).first()
-            student = {
-                "id": int(student_id),
-                "name": str(getattr(u, "full_name", "") or f"User #{student_id}"),
-                "email": str(getattr(u, "email", "") or ""),
-            }
         data.append(
             {
                 "id": int(r.id),
-                "type": r.type,
+                "type": str(getattr(r.type, "value", r.type)),
                 "title": r.title,
                 "message": r.message,
                 "is_read": bool(r.is_read),
                 "created_at": r.created_at.isoformat() if r.created_at else None,
-                "student": student,
-                "quiz_id": int(r.quiz_id),
                 "payload": payload,
             }
         )
@@ -1537,7 +1574,6 @@ def teacher_report_mark_read(request: Request, report_id: int, db: Session = Dep
         raise HTTPException(status_code=404, detail="Report not found")
     if not row.is_read:
         row.is_read = True
-        row.read_at = datetime.utcnow()
         db.commit()
         db.refresh(row)
     return {"request_id": request.state.request_id, "data": {"id": int(row.id), "is_read": bool(row.is_read)}, "error": None}

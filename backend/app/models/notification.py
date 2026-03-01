@@ -26,6 +26,9 @@ class Notification(Base):
     type: Mapped[NotificationType | str] = mapped_column(
         SQLEnum(NotificationType, name="notification_type", native_enum=False), nullable=False, index=True
     )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     title: Mapped[str] = mapped_column(String(255), nullable=False, default="Thông báo")
     message: Mapped[str] = mapped_column(Text, nullable=False, default="")
     payload_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=dict)
