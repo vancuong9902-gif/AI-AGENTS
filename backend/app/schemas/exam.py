@@ -73,3 +73,20 @@ class ExamAnalyzeOut(BaseModel):
     by_topic: Dict[str, int]
     estimated_points: int
     notes: List[str] = Field(default_factory=list)
+
+
+class BatchExamGenerateRequest(BaseModel):
+    teacher_id: Optional[int] = None
+    classroom_id: int
+    title: str
+    document_ids: List[int] = Field(default_factory=list)
+    topics: List[str] = Field(default_factory=list)
+    num_papers: int = Field(ge=1, le=10, default=3)
+    questions_per_paper: int = Field(ge=5, le=100, default=20)
+    mcq_ratio: float = Field(ge=0.0, le=1.0, default=0.7)
+    difficulty_distribution: Dict[str, float] = Field(
+        default_factory=lambda: {"easy": 0.3, "medium": 0.4, "hard": 0.3}
+    )
+    similarity_threshold: float = 0.75
+    include_answer_key: bool = True
+    paper_code_style: Literal["ABC", "NUM"] = "ABC"
