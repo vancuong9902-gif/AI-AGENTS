@@ -8,7 +8,7 @@ import tempfile
 import time
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.attempt import Attempt
 from app.models.classroom import Classroom, ClassroomMember
+from app.models.classroom import ClassroomMember
 from app.models.classroom_assessment import ClassroomAssessment
 from app.mas.base import AgentContext
 from app.mas.contracts import Event
@@ -41,6 +42,7 @@ from app.models.notification import Notification
 from app.models.user import User
 from app.services.assessment_service import generate_assessment, submit_assessment
 from app.services.notification_service import notify_teacher_student_finished
+from app.services.llm_service import chat_text, llm_available
 from app.services.lms_service import (
     per_student_bloom_analysis,
     analyze_topic_weak_points,
@@ -56,6 +58,7 @@ from app.services.lms_service import (
     get_student_homework_results,
     resolve_student_name,
     score_breakdown,
+    _difficulty_from_breakdown_item,
     assign_topic_materials,
     assign_learning_path,
     teacher_report as build_teacher_report,
@@ -117,6 +120,32 @@ class StartAttemptIn(BaseModel):
 class SubmitAttemptByIdIn(BaseModel):
     answers: list[dict] = Field(default_factory=list)
 
+
+class HeartbeatAttemptIn(BaseModel):
+    answers: list[dict] = Field(default_factory=list)
+def _attempt_status_payload(*, started: UserSession, duration_seconds: int) -> dict:
+    now = datetime.now(timezone.utc)
+    started_at = started.started_at or now
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+
+    deadline = started_at
+    if int(duration_seconds or 0) > 0:
+        deadline = started_at + timedelta(seconds=int(duration_seconds))
+
+    remaining_seconds = max(0, int((deadline - now).total_seconds())) if int(duration_seconds or 0) > 0 else None
+
+    return {
+        "attempt_id": int(started.id),
+        "quiz_id": int(str(started.type).split(":", 1)[1]),
+        "student_id": int(started.user_id),
+        "start_time": started_at.isoformat(),
+        "duration_seconds": int(duration_seconds or 0),
+        "deadline": deadline.isoformat(),
+        "server_time": now.isoformat(),
+        "remaining_seconds": remaining_seconds,
+        "timed_out": bool(remaining_seconds is not None and remaining_seconds <= 0),
+    }
 
 def _normalize_synced_diagnostic(base: dict) -> dict:
     """Ensure submit responses expose synced diagnostic payload consistently."""
@@ -504,7 +533,74 @@ def _collect_quiz_ids_from_learning_plan_json(plan_json: dict | None) -> set[int
 
 def collect_excluded_quiz_ids_for_classroom_final(db: Session, classroom_id: int) -> list[int]:
     cid = int(classroom_id)
-    excluded: set[int] = set()
+    assigned_ids = {
+        int(r[0])
+        for r in (
+            db.query(ClassroomAssessment.assessment_id)
+            .filter(ClassroomAssessment.classroom_id == cid)
+            .distinct()
+            .all()
+        )
+        if r and r[0] is not None
+    }
+
+    placement_ids = {
+        int(r[0])
+        for r in (
+            db.query(ClassroomAssessment.assessment_id)
+            .join(QuizSet, QuizSet.id == ClassroomAssessment.assessment_id)
+            .filter(
+                ClassroomAssessment.classroom_id == cid,
+                QuizSet.kind == "diagnostic_pre",
+            )
+            .distinct()
+            .all()
+        )
+        if r and r[0] is not None
+    }
+
+    excluded = assigned_ids | placement_ids
+    return sorted(excluded)
+
+
+def build_classroom_final_exclude_quiz_ids(
+    db: Session,
+    *,
+    classroom_id: int,
+    current_quiz_id: int | None = None,
+) -> list[int]:
+    cid = int(classroom_id)
+    placement_ids = {
+        int(r[0])
+        for r in (
+            db.query(ClassroomAssessment.assessment_id)
+            .join(QuizSet, QuizSet.id == ClassroomAssessment.assessment_id)
+            .filter(
+                ClassroomAssessment.classroom_id == cid,
+                QuizSet.kind == "diagnostic_pre",
+            )
+            .distinct()
+            .all()
+        )
+        if r and r[0] is not None
+    }
+
+    extra_exclude_ids = {
+        int(r[0])
+        for r in (
+            db.query(ClassroomAssessment.assessment_id)
+            .filter(ClassroomAssessment.classroom_id == cid)
+            .distinct()
+            .all()
+        )
+        if r and r[0] is not None
+    }
+
+    if current_quiz_id is not None:
+        extra_exclude_ids.discard(int(current_quiz_id))
+
+    return sorted(placement_ids | extra_exclude_ids)
+    excluded: set[int] = set(_placement_quiz_ids_by_classroom(db, classroom_id=cid))
 
     assigned_ids = (
         db.query(ClassroomAssessment.assessment_id)
@@ -513,32 +609,6 @@ def collect_excluded_quiz_ids_for_classroom_final(db: Session, classroom_id: int
         .all()
     )
     excluded.update(int(r[0]) for r in assigned_ids if r and r[0] is not None)
-
-    student_ids = [
-        int(r[0])
-        for r in db.query(ClassroomMember.user_id)
-        .filter(ClassroomMember.classroom_id == cid)
-        .distinct()
-        .all()
-        if r and r[0] is not None
-    ]
-    if student_ids:
-        attempted_ids = (
-            db.query(Attempt.quiz_set_id)
-            .filter(Attempt.user_id.in_(student_ids), Attempt.quiz_set_id.isnot(None))
-            .distinct()
-            .all()
-        )
-        excluded.update(int(r[0]) for r in attempted_ids if r and r[0] is not None)
-
-        lp_rows = (
-            db.query(LearningPlan.plan_json)
-            .filter(LearningPlan.classroom_id == cid, LearningPlan.user_id.in_(student_ids))
-            .all()
-        )
-        for row in lp_rows:
-            excluded.update(_collect_quiz_ids_from_learning_plan_json((row[0] if row else None) or {}))
-
     return sorted(excluded)
 
 
@@ -610,6 +680,47 @@ def _quiz_duration_map(quiz: QuizSet) -> int:
         return 1800
 
 
+def _attempt_quiz_id(session: UserSession) -> int:
+    raw = str(getattr(session, "type", "") or "")
+    if not raw.startswith("quiz_attempt:"):
+        raise HTTPException(status_code=404, detail="Attempt not found")
+    try:
+        return int(raw.split(":", 1)[1])
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail="Attempt not found") from exc
+
+
+def _normalize_started_at_utc(session: UserSession, now: datetime) -> datetime:
+    started_at = session.started_at or now
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    return started_at
+
+
+def _build_answer_list_from_questions(*, questions: list[Question], answers: list[dict]) -> list[dict]:
+    by_qid: dict[int, dict] = {}
+    for item in answers or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            qid = int(item.get("question_id"))
+        except Exception:
+            continue
+        by_qid[qid] = item
+
+    normalized: list[dict] = []
+    for q in questions or []:
+        src = by_qid.get(int(q.id), {})
+        normalized.append(
+            {
+                "question_id": int(q.id),
+                "answer_index": src.get("answer_index"),
+                "answer_text": src.get("answer_text"),
+            }
+        )
+    return normalized
+
+
 def _publish_mas_event_non_blocking(db: Session, *, event: Event) -> None:
     """Phát event MAS theo cơ chế non-blocking để không ảnh hưởng luồng nộp bài."""
 
@@ -637,7 +748,10 @@ def lms_generate_placement(request: Request, payload: GenerateLmsQuizIn, db: Ses
 @router.post("/lms/final/generate")
 def lms_generate_final(request: Request, payload: GenerateLmsQuizIn, db: Session = Depends(get_db)):
     payload.title = payload.title or "Final Test"
-    exclude_ids = collect_excluded_quiz_ids_for_classroom_final(db, classroom_id=int(payload.classroom_id))
+    exclude_ids = build_classroom_final_exclude_quiz_ids(
+        db,
+        classroom_id=int(payload.classroom_id),
+    )
 
     data = generate_assessment(
         db,
@@ -734,7 +848,10 @@ def create_final_quiz(request: Request, payload: PlacementQuizIn, db: Session = 
         medium_count=int(payload.difficulty_settings.get("medium", 4)),
         hard_count=int(payload.difficulty_settings.get("hard", 2)),
     )
-    exclude_ids = collect_excluded_quiz_ids_for_classroom_final(db, classroom_id=int(payload.classroom_id))
+    exclude_ids = build_classroom_final_exclude_quiz_ids(
+        db,
+        classroom_id=int(payload.classroom_id),
+    )
     response = _generate_assessment_lms(
         request=request,
         db=db,
@@ -780,26 +897,235 @@ def start_attempt(request: Request, payload: StartAttemptIn, db: Session = Depen
     quiz = db.query(QuizSet).filter(QuizSet.id == quiz_id).first()
     duration_seconds = _quiz_duration_map(quiz) if quiz else 0
 
+    server_now = datetime.now(timezone.utc)
+    started_at = _normalize_started_at_utc(session, server_now)
+    deadline_utc = started_at
+    if int(duration_seconds or 0) > 0:
+        deadline_utc = started_at + timedelta(seconds=int(duration_seconds))
+
     return {
         "request_id": request.state.request_id,
         "data": {
             "attempt_id": int(session.id),
             "quiz_id": quiz_id,
             "student_id": student_id,
-            "start_time": session.started_at.isoformat() if session.started_at else datetime.now(timezone.utc).isoformat(),
+            "start_time": started_at.isoformat(),
             "duration_seconds": int(duration_seconds or 0),
+            "server_now": server_now.isoformat(),
+            "deadline_utc": deadline_utc.isoformat(),
         },
+        "data": _attempt_status_payload(started=session, duration_seconds=int(duration_seconds or 0)),
+        "error": None,
+    }
+
+
+@router.post("/attempts/{attempt_id}/heartbeat")
+def heartbeat_attempt(request: Request, attempt_id: int, payload: HeartbeatAttemptIn, db: Session = Depends(get_db)):
+    started = db.query(UserSession).filter(UserSession.id == int(attempt_id)).first()
+    if not started:
+        raise HTTPException(status_code=404, detail="Attempt not found")
+
+    quiz_id = _attempt_quiz_id(started)
+    quiz = db.query(QuizSet).filter(QuizSet.id == int(quiz_id)).first()
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    now = datetime.now(timezone.utc)
+    started_at = _normalize_started_at_utc(started, now)
+    elapsed = max(0, int((now - started_at).total_seconds()))
+    duration_seconds = int(_quiz_duration_map(quiz) or 0)
+
+    locked = False
+    if duration_seconds > 0 and elapsed >= duration_seconds:
+        locked = True
+        if started.locked_at is None:
+            started.locked_at = now
+        if started.ended_at is None:
+            started.ended_at = now
+    elif started.locked_at is not None:
+        locked = True
+
+    started.last_heartbeat_at = now
+    if not locked:
+        started.answers_snapshot_json = payload.answers or []
+
+    db.add(started)
+    db.commit()
+
+    elapsed_seconds = max(0, int((now - started_at).total_seconds()))
+    time_left_seconds = max(0, int(duration_seconds) - elapsed_seconds) if duration_seconds > 0 else 0
+
+    return {
+        "request_id": request.state.request_id,
+        "data": {
+            "attempt_id": int(started.id),
+            "server_now": now.isoformat(),
+            "duration_seconds": int(duration_seconds),
+            "elapsed_seconds": int(elapsed_seconds),
+            "time_left_seconds": int(time_left_seconds),
+            "locked": bool(locked),
+        },
+
+@router.get("/attempts/{attempt_id}/status")
+def get_attempt_status(request: Request, attempt_id: int, db: Session = Depends(get_db)):
+    started = db.query(UserSession).filter(
+        UserSession.id == int(attempt_id)).first()
+    if not started or not str(started.type or "").startswith("quiz_attempt:"):
+        raise HTTPException(status_code=404, detail="Attempt not found")
+
+    quiz_id = int(str(started.type).split(":", 1)[1])
+    quiz = db.query(QuizSet).filter(QuizSet.id == quiz_id).first()
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    duration_seconds = _quiz_duration_map(quiz)
+    return {
+        "request_id": request.state.request_id,
+        "data": _attempt_status_payload(started=started, duration_seconds=int(duration_seconds or 0)),
+        "error": None,
+    }
+
+
+@router.get("/attempts/{attempt_id}/result")
+def get_attempt_result(request: Request, attempt_id: int, db: Session = Depends(get_db)):
+    session = db.query(UserSession).filter(UserSession.id == int(attempt_id)).first()
+    if not session or not str(session.type or "").startswith("quiz_attempt:"):
+        raise HTTPException(status_code=404, detail="Attempt session not found")
+
+    try:
+        quiz_id = int(str(session.type).split(":", 1)[1])
+    except Exception:
+        raise HTTPException(status_code=400, detail="Attempt session payload is invalid")
+
+    quiz = db.query(QuizSet).filter(QuizSet.id == int(quiz_id)).first()
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    linked_attempt_record_id = getattr(session, "linked_attempt_record_id", None)
+    attempt_record = None
+    if linked_attempt_record_id is not None:
+        attempt_record = db.query(Attempt).filter(Attempt.id == int(linked_attempt_record_id)).first()
+
+    if not attempt_record:
+        q = (
+            db.query(Attempt)
+            .filter(Attempt.user_id == int(session.user_id), Attempt.quiz_set_id == int(quiz_id))
+            .order_by(Attempt.created_at.desc())
+        )
+        if getattr(session, "started_at", None) is not None:
+            q = q.filter(Attempt.created_at >= session.started_at)
+        attempt_record = q.first()
+
+    if not attempt_record:
+        raise HTTPException(status_code=404, detail="Attempt result not found")
+
+    questions = (
+        db.query(Question)
+        .filter(Question.quiz_set_id == int(quiz_id))
+        .order_by(Question.order_no.asc())
+        .all()
+    )
+    q_by_id = {int(q.id): q for q in questions}
+
+    breakdown = list(attempt_record.breakdown_json or [])
+    by_qid = {}
+    for item in breakdown:
+        try:
+            by_qid[int(item.get("question_id") or 0)] = item
+        except Exception:
+            continue
+
+    questions_detail = []
+    for q in questions:
+        item = by_qid.get(int(q.id), {})
+        options = list(getattr(q, "options", None) or [])
+        student_answer_idx = item.get("chosen") if str(item.get("type") or q.type or "").lower() == "mcq" else None
+        correct_answer_idx = int(getattr(q, "correct_index", -1)) if str(q.type or "").lower() == "mcq" else None
+
+        try:
+            student_answer_idx = int(student_answer_idx) if student_answer_idx is not None else None
+        except Exception:
+            student_answer_idx = None
+
+        student_answer_text = item.get("answer_text")
+        if str(q.type or "").lower() == "mcq":
+            if student_answer_idx is not None and 0 <= student_answer_idx < len(options):
+                student_answer_text = options[student_answer_idx]
+            else:
+                student_answer_text = None
+
+        correct_answer_text = None
+        if correct_answer_idx is not None and 0 <= correct_answer_idx < len(options):
+            correct_answer_text = options[correct_answer_idx]
+
+        enriched_item = dict(item or {})
+        if not enriched_item.get("bloom_level"):
+            enriched_item["bloom_level"] = getattr(q, "bloom_level", None)
+        difficulty = _difficulty_from_breakdown_item(enriched_item)
+
+        questions_detail.append({
+            "question_id": int(q.id),
+            "order_no": int(item.get("order_no") or getattr(q, "order_no", 0) or 0),
+            "question_text": str(getattr(q, "stem", "") or ""),
+            "type": str(getattr(q, "type", "mcq") or "mcq"),
+            "bloom_level": item.get("bloom_level") or getattr(q, "bloom_level", None),
+            "difficulty": difficulty,
+            "topic": item.get("topic") or str(getattr(quiz, "topic", "") or ""),
+            "options": options,
+            "student_answer_idx": student_answer_idx,
+            "correct_answer_idx": correct_answer_idx,
+            "student_answer_text": student_answer_text,
+            "correct_answer_text": correct_answer_text,
+            "is_correct": bool(item.get("is_correct")) if str(q.type or "").lower() == "mcq" else None,
+            "score_earned": int(item.get("score_points") or 0),
+            "score_max": int(item.get("max_points") or (1 if str(q.type or "").lower() == "mcq" else 0)),
+            "explanation": item.get("explanation") or getattr(q, "explanation", None),
+            "sources": item.get("sources") or list(getattr(q, "sources", None) or []),
+        })
+
+    summary = score_breakdown(breakdown)
+    for key in ("easy", "medium", "hard"):
+        summary.setdefault("by_difficulty", {}).setdefault(key, {"earned": 0, "total": 0, "percent": 0.0})
+
+    level_obj = classify_student_level(int(round(float(summary.get("overall", {}).get("percent") or attempt_record.score_percent or 0))))
+
+    duration_seconds = _quiz_duration_map(quiz)
+    spent = int(getattr(attempt_record, "duration_sec", 0) or 0)
+    timed_out = bool(getattr(attempt_record, "is_late", False) or (duration_seconds and spent > int(duration_seconds)))
+
+    title = str(getattr(quiz, "topic", "") or "").strip() or f"Quiz #{quiz_id}"
+
+    result_detail = {
+        "attempt_record_id": int(attempt_record.id),
+        "quiz_id": int(quiz_id),
+        "quiz_kind": str(getattr(quiz, "kind", "") or ""),
+        "quiz_title": title,
+        "score_percent": int(getattr(attempt_record, "score_percent", 0) or 0),
+        "total_score_percent": float(summary.get("overall", {}).get("percent") or 0.0),
+        "score_points": int(summary.get("overall", {}).get("earned") or 0),
+        "max_points": int(summary.get("overall", {}).get("total") or 0),
+        "classification": str(level_obj.get("level_key") or ""),
+        "level_label": str(level_obj.get("label") or ""),
+        "time_spent_seconds": spent,
+        "timed_out": timed_out,
+        "questions_detail": questions_detail,
+        "summary": summary,
+    }
+
+    return {
+        "request_id": request.state.request_id,
+        "data": {"result_detail": result_detail},
         "error": None,
     }
 
 
 @router.post("/attempts/{attempt_id}/submit")
 def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttemptByIdIn, db: Session = Depends(get_db)):
-    started = db.query(UserSession).filter(
-        UserSession.id == int(attempt_id)).first()
-    if not started or not str(started.type or "").startswith("quiz_attempt:"):
+    started = db.query(UserSession).filter(UserSession.id == int(attempt_id)).first()
+    if not started:
         raise HTTPException(status_code=404, detail="Attempt not found")
-    quiz_id = int(str(started.type).split(":", 1)[1])
+
+    quiz_id = _attempt_quiz_id(started)
     quiz = db.query(QuizSet).filter(QuizSet.id == quiz_id).first()
     if not quiz:
         raise HTTPException(status_code=404, detail="Quiz not found")
@@ -816,21 +1142,61 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
     if not allowed:
         raise HTTPException(status_code=404, detail="Attempt not found")
 
-    duration_seconds = _quiz_duration_map(quiz)
+    duration_seconds = int(_quiz_duration_map(quiz) or 0)
     now = datetime.now(timezone.utc)
-    started_at = (started.started_at or now)
-    if started_at.tzinfo is None:
-        started_at = started_at.replace(tzinfo=timezone.utc)
+    started_at = _normalize_started_at_utc(started, now)
     spent = max(0, int((now - started_at).total_seconds()))
-    timed_out = bool(duration_seconds and spent > int(duration_seconds))
+    grace_seconds = 30
+    timed_out = bool(duration_seconds and spent > duration_seconds)
+
+    lock_due_to_timeout = bool(duration_seconds and spent >= duration_seconds)
+    if lock_due_to_timeout and started.locked_at is None:
+        started.locked_at = now
+    if lock_due_to_timeout and started.ended_at is None:
+        started.ended_at = now
+
+    late_by_seconds = max(0, spent - duration_seconds)
+    is_late = bool(started.locked_at is not None or (duration_seconds and spent > (duration_seconds + grace_seconds)))
+
+    snapshot_answers = started.answers_snapshot_json or []
+    snapshot_non_empty = isinstance(snapshot_answers, list) and len(snapshot_answers) > 0
+    used_snapshot = bool(is_late and snapshot_non_empty)
+
+    answers_for_scoring = payload.answers
+    late_note = None
+    if used_snapshot:
+        answers_for_scoring = snapshot_answers
+    elif is_late and not snapshot_non_empty:
+        late_note = "late_no_snapshot"
+
+    questions = (
+        db.query(Question)
+        .filter(Question.quiz_set_id == int(quiz_id))
+        .order_by(Question.order_no.asc())
+        .all()
+    )
+    normalized_answers_for_event = _build_answer_list_from_questions(questions=questions, answers=answers_for_scoring)
 
     base = submit_assessment(
         db,
         assessment_id=quiz_id,
         user_id=int(started.user_id),
-        duration_sec=spent,
-        answers=payload.answers,
+        duration_sec=min(spent, duration_seconds) if duration_seconds > 0 else spent,
+        answers=answers_for_scoring,
     )
+    if str(getattr(quiz, "kind", "") or "") == "diagnostic_post":
+        ca_row = db.query(ClassroomAssessment).filter(ClassroomAssessment.assessment_id == int(quiz_id)).first()
+        if ca_row:
+            _ensure_class_final_notification(db, classroom_id=int(ca_row.classroom_id), final_quiz_id=int(quiz_id))
+
+    attempt_id_created = int(base.get("attempt_id") or 0)
+    if attempt_id_created > 0:
+        attempt_row = db.query(Attempt).filter(Attempt.id == attempt_id_created).first()
+        if attempt_row:
+            attempt_row.is_late = bool(is_late)
+            attempt_row.deadline_seconds = int(duration_seconds or 0)
+            db.add(attempt_row)
+            db.commit()
 
     # Auto-trigger learning plan generation for diagnostic entry test submissions.
     try:
@@ -884,14 +1250,21 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
     recommendations = build_recommendations(
         breakdown=breakdown, document_topics=topics, multidim_profile=multidim_profile)
 
-    if timed_out:
+    if timed_out or is_late:
         base["is_late_submission"] = True
-        base["late_by_seconds"] = max(0, spent - int(duration_seconds or 0))
-        base["notes"] = (
-            f"⚠️ Bài nộp trễ {spent - int(duration_seconds)} giây. "
-            f"Điểm được tính theo câu trả lời tại thời điểm hết giờ. "
-            f"Kết quả có thể ảnh hưởng đến xếp loại."
-        )
+        base["late_by_seconds"] = int(late_by_seconds)
+        if late_note:
+            base["notes"] = "late_no_snapshot"
+        elif used_snapshot:
+            base["notes"] = (
+                f"⚠️ Bài nộp trễ {int(late_by_seconds)} giây. "
+                "Điểm được chấm theo snapshot tự động lưu trước deadline."
+            )
+        else:
+            base["notes"] = (
+                f"⚠️ Bài nộp trễ {int(late_by_seconds)} giây. "
+                "Không có snapshot trước deadline, hệ thống chấm theo bài nộp hiện tại."
+            )
     else:
         base["is_late_submission"] = False
         base["notes"] = "Bài nộp đúng hạn."
@@ -1002,7 +1375,7 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
             payload={
                 "quiz_id": int(quiz_id),
                 "user_id": int(started.user_id),
-                "answers": payload.answers,
+                "answers": normalized_answers_for_event,
                 "duration_sec": int(spent),
                 "classroom_id": int(getattr(quiz, "classroom_id", 0) or 0),
             },
@@ -1018,6 +1391,8 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
             "time_spent_seconds": spent,
             "duration_seconds": duration_seconds,
             "timed_out": timed_out,
+            "is_late": bool(is_late),
+            "used_snapshot": bool(used_snapshot),
             "score_breakdown": breakdown,
             "classification": level,
             "recommendations": recommendations,
@@ -1329,20 +1704,212 @@ def get_multidim_profile(request: Request, user_id: int, db: Session = Depends(g
         "error": None,
     }
 
+
+
+def _quiz_kind_map_for_classroom(db: Session, classroom_id: int) -> dict[str, int]:
+    rows = (
+        db.query(QuizSet.id, QuizSet.kind)
+        .join(ClassroomAssessment, ClassroomAssessment.assessment_id == QuizSet.id)
+        .filter(ClassroomAssessment.classroom_id == int(classroom_id))
+        .all()
+    )
+    out: dict[str, int] = {}
+    for quiz_id, kind in rows:
+        if kind and str(kind) not in out:
+            out[str(kind)] = int(quiz_id)
+    return out
+
+
+def _ensure_class_final_notification(db: Session, *, classroom_id: int, final_quiz_id: int) -> None:
+    classroom = db.query(Classroom).filter(Classroom.id == int(classroom_id)).first()
+    if not classroom:
+        return
+
+    student_ids = [
+        int(uid)
+        for uid, in db.query(ClassroomMember.user_id).filter(
+            ClassroomMember.classroom_id == int(classroom_id),
+            ClassroomMember.user_id != int(classroom.teacher_id),
+        ).all()
+    ]
+    if not student_ids:
+        return
+
+    submitted_ids = {
+        int(uid)
+        for uid, in db.query(Attempt.user_id)
+        .filter(Attempt.quiz_set_id == int(final_quiz_id), Attempt.user_id.in_(student_ids))
+        .distinct()
+        .all()
+    }
+    if not set(student_ids).issubset(submitted_ids):
+        return
+
+    exists = db.query(Notification.id).filter(
+        Notification.user_id == int(classroom.teacher_id),
+        Notification.type == "class_final_ready",
+        Notification.quiz_id == int(final_quiz_id),
+    ).first()
+    if exists:
+        return
+
+    db.add(
+        Notification(
+            user_id=int(classroom.teacher_id),
+            teacher_id=int(classroom.teacher_id),
+            quiz_id=int(final_quiz_id),
+            type="class_final_ready",
+            title="Báo cáo lớp sẵn sàng",
+            message="Tất cả học sinh đã nộp final. Báo cáo sẵn sàng.",
+            payload_json={"classroom_id": int(classroom_id), "quiz_id": int(final_quiz_id)},
+            is_read=False,
+        )
+    )
+    db.commit()
+
+
+def _build_enhanced_teacher_report(*, classroom_id: int, db: Session) -> dict:
+    quiz_kind_map = _quiz_kind_map_for_classroom(db, classroom_id)
+    pre_quiz_id = quiz_kind_map.get("diagnostic_pre")
+    final_quiz_id = quiz_kind_map.get("diagnostic_post")
+
+    classroom = db.query(Classroom).filter(Classroom.id == int(classroom_id)).first()
+    teacher_id = int(classroom.teacher_id) if classroom else None
+    members = db.query(ClassroomMember).filter(ClassroomMember.classroom_id == int(classroom_id)).all()
+
+    per_student: list[dict] = []
+    topic_heatmap_acc: dict[str, dict[str, float]] = {}
+
+    for member in members:
+        uid = int(member.user_id)
+        if teacher_id and uid == teacher_id:
+            continue
+
+        pre_attempt = None
+        if pre_quiz_id:
+            pre_attempt = (
+                db.query(Attempt)
+                .filter(Attempt.user_id == uid, Attempt.quiz_set_id == int(pre_quiz_id))
+                .order_by(Attempt.created_at.desc())
+                .first()
+            )
+        final_attempt = None
+        if final_quiz_id:
+            final_attempt = (
+                db.query(Attempt)
+                .filter(Attempt.user_id == uid, Attempt.quiz_set_id == int(final_quiz_id))
+                .order_by(Attempt.created_at.desc())
+                .first()
+            )
+
+        placement_score = float(pre_attempt.score_percent) if pre_attempt else None
+        final_score = float(final_attempt.score_percent) if final_attempt else None
+        improvement = round(final_score - placement_score, 2) if placement_score is not None and final_score is not None else None
+
+        breakdown_candidates = [x.breakdown_json or [] for x in [pre_attempt, final_attempt] if x]
+        weak_topics = analyze_topic_weak_points(breakdown_candidates) if breakdown_candidates else []
+        final_breakdown = score_breakdown((final_attempt.breakdown_json if final_attempt else []) or [])
+        by_topic = final_breakdown.get("by_topic") or {}
+        strong_topics = [topic for topic, stat in by_topic.items() if float((stat or {}).get("percent") or 0.0) >= 75.0]
+
+        latest_plan = (
+            db.query(LearningPlan)
+            .filter(LearningPlan.user_id == uid, LearningPlan.classroom_id == int(classroom_id))
+            .order_by(LearningPlan.created_at.desc())
+            .first()
+        )
+        homework_completion_rate = 0.0
+        if latest_plan:
+            total_days = max(1, int(latest_plan.days_total or 0))
+            task_done = db.query(LearningPlanTaskCompletion).filter(
+                LearningPlanTaskCompletion.plan_id == int(latest_plan.id),
+                LearningPlanTaskCompletion.completed.is_(True),
+            ).count()
+            hw_done = db.query(LearningPlanHomeworkSubmission).filter(
+                LearningPlanHomeworkSubmission.plan_id == int(latest_plan.id),
+                LearningPlanHomeworkSubmission.user_id == uid,
+            ).count()
+            homework_completion_rate = round(min(1.0, (float(task_done + hw_done) / float(total_days * 2))) * 100, 2)
+
+        tutor_sessions_count = db.query(UserSession).filter(UserSession.user_id == uid, UserSession.type == "tutor_chat").count()
+
+        weak_topic_names = [str(x.get("topic") or "") for x in weak_topics if isinstance(x, dict) and x.get("topic")]
+        if llm_available():
+            ai_comment = chat_text(
+                f"Nhận xét 1-2 câu cho học sinh với placement={placement_score}, final={final_score}, improvement={improvement}, weak_topics={weak_topic_names}",
+                max_tokens=100,
+            )
+        else:
+            if improvement is not None and improvement < 0:
+                ai_comment = "Điểm cuối kỳ giảm, cần can thiệp theo các chủ đề yếu và tăng hỗ trợ cá nhân."
+            elif weak_topic_names:
+                ai_comment = f"Cần củng cố các chủ đề: {', '.join(weak_topic_names[:3])}."
+            else:
+                ai_comment = "Tiến độ ổn định, tiếp tục duy trì lộ trình học."
+
+        per_student.append(
+            {
+                "student_id": uid,
+                "student_name": resolve_student_name(db, uid),
+                "placement_score": placement_score,
+                "final_score": final_score,
+                "improvement": improvement,
+                "weak_topics": weak_topics,
+                "strong_topics": strong_topics,
+                "homework_completion_rate": homework_completion_rate,
+                "tutor_sessions_count": int(tutor_sessions_count),
+                "needs_support": bool((improvement is not None and improvement < 0) or (final_score is not None and final_score < 50)),
+                "ai_comment": ai_comment,
+            }
+        )
+
+        for topic, stat in by_topic.items():
+            bucket = topic_heatmap_acc.setdefault(str(topic), {"sum": 0.0, "count": 0.0})
+            bucket["sum"] += float((stat or {}).get("percent") or 0.0)
+            bucket["count"] += 1
+
+    final_scores = [float(s["final_score"]) for s in per_student if s.get("final_score") is not None]
+    improvements = [float(s["improvement"]) for s in per_student if s.get("improvement") is not None]
+    class_summary = {
+        "total_students": len(per_student),
+        "students_with_final": len(final_scores),
+        "average_final_score": round(sum(final_scores) / max(1, len(final_scores)), 2) if final_scores else 0.0,
+        "average_improvement": round(sum(improvements) / max(1, len(improvements)), 2) if improvements else 0.0,
+    }
+    topic_heatmap = {
+        topic: {"avg_score": round(acc["sum"] / max(1.0, acc["count"]), 2), "students_count": int(acc["count"])}
+        for topic, acc in topic_heatmap_acc.items()
+    }
+
+    if llm_available():
+        ai_class_narrative = generate_class_narrative(per_student)
+    else:
+        ai_class_narrative = "Lớp có sự phân hóa kết quả, cần hỗ trợ nhóm học sinh điểm thấp và củng cố theo topic yếu."
+
+    return {
+        "classroom_id": int(classroom_id),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "class_summary": class_summary,
+        "per_student": per_student,
+        "topic_heatmap": topic_heatmap,
+        "ai_class_narrative": ai_class_narrative,
+        "recommendations_for_teacher": [
+            "Theo dõi nhóm học sinh có improvement âm hoặc final dưới 50.",
+            "Ưu tiên ôn tập theo các topic có điểm heatmap thấp.",
+            "Khuyến khích dùng tutor AI đều đặn cho học sinh có ít tutor sessions.",
+        ],
+    }
+
 @router.get("/lms/teacher/report/{classroom_id}")
 def teacher_report(request: Request, classroom_id: int, db: Session = Depends(get_db)):
     classroom_id = int(classroom_id)
     if classroom_id in _report_cache and time.time() - _report_cache_time.get(classroom_id, 0) < 1800:
         report = _report_cache[classroom_id]
     else:
-        report = generate_full_teacher_report(classroom_id=classroom_id, db=db)
+        report = _build_enhanced_teacher_report(classroom_id=classroom_id, db=db)
         _report_cache[classroom_id] = report
         _report_cache_time[classroom_id] = time.time()
-    return {
-        "request_id": request.state.request_id,
-        "data": report,
-        "error": None,
-    }
+    return {"request_id": request.state.request_id, "data": report, "error": None}
 
 
 def _render_teacher_report_html(report: dict[str, object]) -> str:

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import re
+import time
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -14,8 +16,10 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.agent_log import AgentLog
 from app.models.classroom import ClassroomMember
+from app.models.document import Document
 from app.models.document_topic import DocumentTopic
 from app.models.learning_plan import LearningPlan
+from app.models.session import Session as UserSession
 from app.schemas.tutor import TutorChatData, TutorGenerateQuestionsData
 from app.services.embedding_service import embed_texts
 from app.services.user_service import ensure_user_exists
@@ -139,6 +143,118 @@ class OffTopicDetector:
 _off_topic_detector = OffTopicDetector()
 
 _LOCAL_SESSION_STORE: Dict[str, Dict[str, Any]] = {}
+_OFFTOPIC_GATE_CACHE: Dict[str, Dict[str, Any]] = {}
+_OFFTOPIC_GATE_CACHE_TTL_SEC = 30 * 60
+
+
+def _offtopic_gate_cache_key(question: str, topic: Optional[str], document_ids: Optional[List[int]]) -> str:
+    raw = json.dumps(
+        {
+            "q": (question or "").strip().lower(),
+            "topic": (topic or "").strip().lower(),
+            "doc_ids": sorted({int(x) for x in (document_ids or []) if x is not None}),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _is_question_on_topic_llm(
+    db: Session,
+    question: str,
+    topic: Optional[str],
+    document_ids: Optional[List[int]],
+) -> tuple[bool, str, Optional[str]]:
+    cache_key = _offtopic_gate_cache_key(question, topic, document_ids)
+    now = time.time()
+    cached = _OFFTOPIC_GATE_CACHE.get(cache_key)
+    if cached and float(cached.get("expires_at", 0.0) or 0.0) > now:
+        return bool(cached.get("is_on_topic", True)), str(cached.get("reason") or "cached"), cached.get("matched_topic")
+
+    if not llm_available():
+        raise RuntimeError("llm_not_available")
+
+    ids = sorted({int(x) for x in (document_ids or []) if x is not None})
+    doc_titles = []
+    if ids:
+        doc_titles = [
+            str(title or "").strip()
+            for (title,) in db.query(Document.title).filter(Document.id.in_(ids)).all()
+            if str(title or "").strip()
+        ]
+
+    topic_rows = (
+        db.query(DocumentTopic.title, DocumentTopic.keywords, DocumentTopic.summary, DocumentTopic.extraction_confidence)
+        .filter(DocumentTopic.document_id.in_(ids))
+        .order_by(DocumentTopic.extraction_confidence.desc(), DocumentTopic.id.asc())
+        .limit(30)
+        .all()
+        if ids
+        else []
+    )
+
+    topic_hint = (topic or "").strip()
+    selected_topics: List[Dict[str, str]] = []
+    if topic_hint:
+        topic_lower = topic_hint.lower()
+        preferred = [r for r in topic_rows if topic_lower in str((r[0] or "")).lower()]
+        others = [r for r in topic_rows if r not in preferred]
+        ordered = preferred + others
+    else:
+        ordered = list(topic_rows)
+
+    for row in ordered[:5]:
+        title = str((row[0] or "")).strip()
+        keywords = row[1] or []
+        summary = str((row[2] or "")).strip()
+        kw = ", ".join([str(k).strip() for k in keywords if str(k).strip()][:8])
+        selected_topics.append({"title": title, "keywords": kw, "summary": summary[:280]})
+
+    payload = {
+        "question": (question or "").strip(),
+        "preferred_topic": topic_hint or None,
+        "document_titles": doc_titles[:10],
+        "document_topics": selected_topics,
+    }
+
+    resp = chat_json(
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Bạn là bộ lọc on-topic cho AI Tutor. "
+                    "Nhiệm vụ: phân loại câu hỏi có thuộc phạm vi kiến thức tài liệu hay không. "
+                    "Quy tắc: câu hỏi đời sống, giải trí, tin tức, cá nhân => off-topic. "
+                    "Câu hỏi xin ví dụ thực tế áp dụng kiến thức có trong tài liệu => on-topic. "
+                    "Trả về STRICT JSON duy nhất, không markdown, không text thừa, đúng schema: "
+                    '{"is_on_topic":true,"reason":"<30 từ>","matched_topic":"..."}. '
+                    "matched_topic có thể null nếu không xác định."
+                ),
+            },
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ],
+        temperature=0.0,
+        max_tokens=180,
+    )
+
+    if not isinstance(resp, dict):
+        raise RuntimeError("invalid_llm_response")
+
+    is_on_topic = bool(resp.get("is_on_topic", False))
+    reason = str(resp.get("reason") or "").strip() or "llm_gate"
+    matched_topic_raw = resp.get("matched_topic")
+    matched_topic = str(matched_topic_raw).strip() if matched_topic_raw is not None else None
+    if matched_topic == "":
+        matched_topic = None
+
+    _OFFTOPIC_GATE_CACHE[cache_key] = {
+        "is_on_topic": is_on_topic,
+        "reason": reason,
+        "matched_topic": matched_topic,
+        "expires_at": now + _OFFTOPIC_GATE_CACHE_TTL_SEC,
+    }
+    return is_on_topic, reason, matched_topic
 
 
 def _session_key(user_id: int) -> str:
@@ -572,6 +688,9 @@ def tutor_chat(
     q = (question or "").strip()
     if not q:
         raise HTTPException(status_code=422, detail="Missing question")
+    # Minimal tracking for tutor usage analytics.
+    db.add(UserSession(user_id=int(user_id), type="tutor_chat"))
+    db.commit()
 
     if allowed_topics and llm_available():
         topic_list = [str(t).strip() for t in allowed_topics if str(t).strip()][:10]
@@ -622,6 +741,44 @@ def tutor_chat(
 
     suggested_topics = _suggest_topics(db, document_ids=doc_ids, top_k=6)
     intent_suggestions = _intent_aware_topic_suggestions(db, question=q, topic=topic, document_ids=doc_ids, top_k=3)
+
+    llm_gate_result: Optional[Dict[str, Any]] = None
+    llm_gate_failed = False
+    try:
+        gate_on_topic, gate_reason, gate_matched_topic = _is_question_on_topic_llm(db, q, topic, doc_ids)
+        llm_gate_result = {
+            "is_on_topic": bool(gate_on_topic),
+            "reason": str(gate_reason or "llm_gate"),
+            "matched_topic": gate_matched_topic,
+        }
+        if not gate_on_topic:
+            topic_label = topic or gate_matched_topic or "chủ đề học hiện tại"
+            refusal = (
+                f"Xin lỗi bạn, câu hỏi này có vẻ chưa thuộc phạm vi tài liệu/chủ đề đang học ({topic_label}). "
+                "Mình có thể hỗ trợ rất tốt nếu bạn hỏi theo nội dung bài học nhé!"
+            )
+            _log_tutor_flagged_question(
+                db,
+                user_id=int(user_id),
+                question=q,
+                topic=topic,
+                reason=str(gate_reason or "llm_off_topic"),
+                suggested_topics=intent_suggestions,
+            )
+            return TutorChatData(
+                answer_md=refusal,
+                was_answered=False,
+                is_off_topic=True,
+                refusal_message=refusal,
+                off_topic_reason=str(gate_reason or "llm_off_topic"),
+                suggested_topics=intent_suggestions,
+                follow_up_questions=_suggest_on_topic_questions(topic or gate_matched_topic, q),
+                quick_check_mcq=[],
+                sources=[],
+                retrieval={"llm_topic_gate": llm_gate_result},
+            ).model_dump()
+    except Exception:
+        llm_gate_failed = True
 
     practice = session.get("practice") if isinstance(session.get("practice"), dict) else {}
     if _is_practice_request(q) and not (practice.get("awaiting_answer")):
@@ -685,7 +842,7 @@ def tutor_chat(
     rag = corrective_retrieve_and_log(db=db, query=query, top_k=int(max(3, min(20, top_k))), filters=filters, topic=topic)
 
     off_topic_check = _off_topic_detector.check(question=q, topic=topic or "", rag_results=rag)
-    if off_topic_check["is_off_topic"]:
+    if llm_gate_failed and off_topic_check["is_off_topic"]:
         topic_label = topic or "chủ đề học hiện tại"
         refusal = (
             f"Xin lỗi bạn, câu hỏi này nằm ngoài phạm vi tôi có thể giải đáp trong buổi học này. "
@@ -711,7 +868,7 @@ def tutor_chat(
             follow_up_questions=_suggest_on_topic_questions(topic, q),
             quick_check_mcq=[],
             sources=[],
-            retrieval={**(rag.get("corrective") or {}), "off_topic_check": off_topic_check},
+            retrieval={**(rag.get("corrective") or {}), "off_topic_check": off_topic_check, "llm_topic_gate": {"fallback": "lexical"}},
         ).model_dump()
 
     corr = rag.get("corrective") or {}
@@ -728,7 +885,7 @@ def tutor_chat(
     if (not chunks) or has_low_relevance:
         reason = "no_retrieved_chunks" if not chunks else f"low_relevance:{best_rel:.3f}"
         _log_tutor_flagged_question(db, user_id=int(user_id), question=q, topic=topic, reason=reason, suggested_topics=intent_suggestions)
-        return TutorChatData(answer_md="Tôi không tìm thấy thông tin này trong tài liệu học. Vui lòng hỏi giáo viên.", was_answered=False, is_off_topic=False, refusal_message=None, refusal_reason=reason, off_topic_reason=reason, suggested_topics=intent_suggestions, follow_up_questions=_normalize_follow_up_questions(topic, []), quick_check_mcq=[], sources=[], sources_used=[], confidence=0.35, retrieval={**corr, "note": "POSTCHECK_OFF_TOPIC"}).model_dump()
+        return TutorChatData(answer_md="Tôi không tìm thấy thông tin này trong tài liệu học. Vui lòng hỏi giáo viên.", was_answered=False, is_off_topic=False, refusal_message=None, refusal_reason=reason, off_topic_reason=reason, suggested_topics=intent_suggestions, follow_up_questions=_normalize_follow_up_questions(topic, []), quick_check_mcq=[], sources=[], sources_used=[], confidence=0.35, retrieval={**corr, "note": "POSTCHECK_OFF_TOPIC", "llm_topic_gate": llm_gate_result or {"fallback": "lexical"}}).model_dump()
 
     good, bad = filter_chunks_by_quality(chunks, min_score=float(settings.OCR_MIN_QUALITY_SCORE))
     bad_ratio = float(len(bad)) / float(max(1, len(chunks)))
@@ -766,7 +923,7 @@ def tutor_chat(
             sources=[],
             sources_used=[],
             confidence=float(gate.get("confidence", 0.0) or 0.0),
-            retrieval={**(rag.get("corrective") or {}), "llm_offtopic_gate": gate},
+            retrieval={**(rag.get("corrective") or {}), "llm_offtopic_gate": gate, "llm_topic_gate": llm_gate_result or {"fallback": "lexical"}},
         ).model_dump()
     if gate.get("status") == "uncertain":
         ask_message = (

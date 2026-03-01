@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import json
+import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.text_quality import quality_report, quality_score
@@ -10,7 +11,9 @@ from app.services.external_sources import fetch_external_snippets
 from app.core.config import settings
 from app.services.text_repair import repair_ocr_spacing_line, repair_ocr_spacing_text
 from app.services.vietnamese_font_fix import (
+    detect_vni_typing,
     detect_broken_vn_font,
+    convert_vni_typing_to_unicode,
     fix_mojibake_topic,
     fix_vietnamese_encoding,
     fix_vietnamese_font_encoding,
@@ -60,6 +63,9 @@ _GARBLED_TOPIC_PATTERNS = [
 def validate_topic_title(title: str) -> str:
     """Đảm bảo topic title không chứa ký tự lỗi font."""
     cleaned = str(title or "").strip()
+    if detect_vni_typing(cleaned):
+        cleaned = convert_vni_typing_to_unicode(cleaned).strip()
+
     for pattern in _GARBLED_TOPIC_PATTERNS:
         if pattern.search(cleaned):
             fixed = fix_vietnamese_encoding(cleaned).strip()
@@ -108,8 +114,15 @@ def post_process_generated_topics(raw_topics: List[Dict[str, Any]], all_chunks: 
     for topic in raw_topics:
         if not isinstance(topic, dict):
             continue
-        title = str(topic.get('title') or '').strip()
-        summary = str(topic.get('summary') or topic.get('body') or '').strip()
+        title = fix_mojibake_topic(str(topic.get('title') or '').strip())
+        if detect_broken_vn_font(title):
+            title = fix_vietnamese_font_encoding(title)
+        title = unicodedata.normalize("NFC", title)
+
+        summary = fix_mojibake_topic(str(topic.get('summary') or topic.get('body') or '').strip())
+        if detect_broken_vn_font(summary):
+            summary = fix_vietnamese_font_encoding(summary)
+        summary = unicodedata.normalize("NFC", summary)
         keywords_raw = topic.get('keywords') if isinstance(topic.get('keywords'), list) else []
         keywords = [str(x).strip().lower() for x in keywords_raw if str(x).strip()][:10]
         if not title or not keywords:
@@ -3221,7 +3234,81 @@ def extract_exercises_from_topic(topic_text: str, topic_title: str) -> list[dict
         return []
 
 
-def generate_study_guide_md(body: str, *, title: str) -> str:
+def _parse_exercises_json_block(markdown_text: str) -> list[dict[str, Any]]:
+    text = str(markdown_text or "")
+    m = re.search(r"```json\s*(\{.*?\})\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    if not m:
+        m = re.search(r"\{\s*\"exercises\"\s*:\s*\[.*?\]\s*\}", text, flags=re.DOTALL)
+    if not m:
+        return []
+    try:
+        obj = json.loads(m.group(1) if m.lastindex else m.group(0))
+    except Exception:
+        return []
+    if not isinstance(obj, dict):
+        return []
+    arr = obj.get("exercises")
+    return arr if isinstance(arr, list) else []
+
+
+def _normalize_grounded_exercises(exercises: list[dict[str, Any]], *, allowed_chunk_ids: set[int]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for ex in (exercises or []):
+        if not isinstance(ex, dict):
+            continue
+        q = str(ex.get("question") or "").strip()
+        if not q:
+            continue
+        difficulty = str(ex.get("difficulty") or "medium").strip().lower()
+        if difficulty not in {"easy", "medium", "hard"}:
+            difficulty = "medium"
+        source_chunks_raw = ex.get("source_chunks")
+        source_chunks: list[int] = []
+        if isinstance(source_chunks_raw, list):
+            for cid in source_chunks_raw:
+                try:
+                    i = int(cid)
+                except Exception:
+                    continue
+                if i in allowed_chunk_ids and i not in source_chunks:
+                    source_chunks.append(i)
+        if not source_chunks:
+            continue
+        out.append(
+            {
+                "question": q[:500],
+                "difficulty": difficulty,
+                "answer": str(ex.get("answer") or "").strip()[:400],
+                "explanation": str(ex.get("explanation") or "").strip()[:600],
+                "source_chunks": source_chunks,
+            }
+        )
+    return out
+
+
+def _fallback_grounded_exercises_from_chunks(chunks: list[tuple[int, str]], *, limit: int = 8) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    q_rx = re.compile(r"(?:^|\n)\s*(?:bài\s*tập|câu\s*hỏi|question)\s*[:\-]?\s*(.{12,260})", flags=re.IGNORECASE)
+    for cid, txt in chunks:
+        for m in q_rx.finditer(str(txt or "")):
+            q = _clean_line(m.group(1))
+            if not q:
+                continue
+            out.append(
+                {
+                    "question": q,
+                    "difficulty": "medium",
+                    "answer": "",
+                    "explanation": "Trích trực tiếp từ tài liệu gốc.",
+                    "source_chunks": [int(cid)],
+                }
+            )
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def generate_study_guide_md(body: str, *, title: str, chunk_context: Optional[list[tuple[int, str]]] = None) -> str:
     """Generate a Thea-like Markdown study guide from a topic body.
 
     This function is designed to:
@@ -3251,13 +3338,19 @@ def generate_study_guide_md(body: str, *, title: str) -> str:
         outline_hint = []
     outline_txt = "\n".join([f"- {x}" for x in outline_hint if str(x).strip()])
 
-    excerpt = "\n".join(text.split('\n')[:520]).strip()[:11000]
+    chunk_items = [(int(cid), str(ct or "").strip()) for cid, ct in (chunk_context or []) if str(ct or "").strip()]
+    if not chunk_items:
+        paras = [p.strip() for p in text.split("\n\n") if p.strip()][:24]
+        chunk_items = [(i + 1, p) for i, p in enumerate(paras)]
+
+    marked_context = "\n\n".join([f"[chunk:{cid}] {ct[:550]}" for cid, ct in chunk_items])[:12000]
+    allowed_chunk_ids = {int(cid) for cid, _ in chunk_items}
 
     system = (
         "Bạn là giáo viên THPT. Nhiệm vụ: Tạo TÀI LIỆU HỌC TẬP HOÀN CHỈNH cho 1 topic. "
         "Dựa CHỈ trên nội dung được cung cấp. Không bịa thêm kiến thức. "
         "Sửa lỗi OCR: 'thự chiện'→'thực hiện', 'lậptrình'→'lập trình'. "
-        "Xuất DUY NHẤT Markdown. KHÔNG JSON, KHÔNG giải thích ngoài lề. "
+        "Xuất DUY NHẤT Markdown. Không giải thích ngoài lề. "
         "CẤU TRÚC BẮT BUỘC (ĐỦ 5 PHẦN, KHÔNG THIẾU):\n\n"
         "# {title}\n"
         "_{tóm tắt 2-3 câu, nêu trọng tâm topic}_\n\n"
@@ -3288,25 +3381,90 @@ def generate_study_guide_md(body: str, *, title: str) -> str:
         "## ⚠️ Lỗi thường gặp\n"
         "- [Nhầm lẫn phổ biến 1]\n"
         "- [4-6 lỗi/nhầm lẫn hay gặp]\n"
+        "\nSAU PHẦN NỘI DUNG, bắt buộc thêm block JSON hợp lệ duy nhất với key exercises theo mẫu:\n"
+        "```json\n"
+        "{\"exercises\":[{\"question\":\"...\",\"difficulty\":\"easy|medium|hard\",\"answer\":\"...\",\"explanation\":\"...\",\"source_chunks\":[123]}]}\n"
+        "```\n"
+        "Mỗi exercise bắt buộc có source_chunks KHÔNG RỖNG và chỉ dùng chunk id xuất hiện trong context."
     )
     user = (
         f"TIÊU ĐỀ TOPIC: {title}\n\n"
         f"MỤC CON GỢI Ý (nếu có):\n{outline_txt}\n\n"
-        f"NỘI DUNG TOPIC (đã làm sạch, trích):\n{excerpt}"
+        f"NỘI DUNG TOPIC ĐÃ GẮN MARKER CHUNK:\n{marked_context}"
     )
 
-    txt = chat_text(
-        messages=[{'role': 'system', 'content': system}, {'role': 'user', 'content': user}],
-        temperature=0.2,
-        max_tokens=1500,
-    )
-    if not isinstance(txt, str):
+    txt = ""
+    for _ in range(2):
+        txt = chat_text(
+            messages=[{'role': 'system', 'content': system}, {'role': 'user', 'content': user}],
+            temperature=0.2,
+            max_tokens=1700,
+        )
+        if not isinstance(txt, str):
+            txt = ""
+        ex = _normalize_grounded_exercises(_parse_exercises_json_block(txt), allowed_chunk_ids=allowed_chunk_ids)
+        if ex:
+            break
+
+    if not txt.strip():
         return ""
+
+    normalized = _normalize_grounded_exercises(_parse_exercises_json_block(txt), allowed_chunk_ids=allowed_chunk_ids)
+    if not normalized:
+        normalized = _fallback_grounded_exercises_from_chunks(chunk_items, limit=8)
+
     t = txt.strip()
-    # strip accidental fences
-    t = re.sub(r"^```[a-zA-Z]*\n", "", t)
-    t = re.sub(r"\n```\s*$", "", t)
-    return t.strip()[:14000]
+    t = re.sub(r"\n```json\s*\{\s*\"exercises\".*?```\s*$", "", t, flags=re.DOTALL | re.IGNORECASE)
+    if normalized:
+        t = (
+            f"{t}\n\n## 🧩 Grounded Exercises JSON\n```json\n"
+            f"{json.dumps({'exercises': normalized}, ensure_ascii=False)}\n```"
+        )
+    return t.strip()[:16000]
+
+
+def generate_topic_homework_json(
+    *,
+    topic_id: int,
+    topic_title: str,
+    chunk_context: list[tuple[int, str]],
+    counts: Optional[dict[str, int]] = None,
+) -> dict[str, Any]:
+    counts = counts or {"easy": 3, "medium": 3, "hard": 2}
+    joined = "\n\n".join([str(t or "") for _, t in (chunk_context or [])])
+    q = quality_report(joined)
+    if float(q.get("score") or 0.0) < 0.6:
+        return {"status": "NEED_CLEAN_TEXT", "topic_id": int(topic_id), "exercises": []}
+
+    allowed_chunk_ids = {int(cid) for cid, _ in (chunk_context or [])}
+    marked = "\n\n".join([f"[chunk:{int(cid)}] {str(txt or '')[:650]}" for cid, txt in (chunk_context or [])])[:14000]
+    target_total = max(1, int(counts.get("easy", 0)) + int(counts.get("medium", 0)) + int(counts.get("hard", 0)))
+
+    exercises: list[dict[str, Any]] = []
+    if llm_available():
+        prompt = {
+            "topic_title": topic_title,
+            "counts": counts,
+            "instruction": "Sinh bài tập bám sát context. Mỗi bài phải có question, difficulty, answer, explanation, source_chunks (list chunk_id).",
+            "context": marked,
+        }
+        for _ in range(2):
+            try:
+                obj = chat_json(messages=[{"role": "user", "content": json.dumps(prompt, ensure_ascii=False)}], max_tokens=1400)
+            except Exception:
+                obj = None
+            arr = obj.get("exercises") if isinstance(obj, dict) else []
+            exercises = _normalize_grounded_exercises(arr if isinstance(arr, list) else [], allowed_chunk_ids=allowed_chunk_ids)
+            if exercises:
+                break
+
+    if not exercises:
+        exercises = _fallback_grounded_exercises_from_chunks(chunk_context, limit=target_total)
+
+    if not exercises:
+        return {"status": "NEED_CLEAN_TEXT", "topic_id": int(topic_id), "exercises": []}
+
+    return {"status": "OK", "topic_id": int(topic_id), "exercises": exercises[:target_total]}
 
 
 def parse_quick_check_quiz(study_guide_md: str) -> list[dict[str, Any]]:

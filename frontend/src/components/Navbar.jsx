@@ -26,6 +26,9 @@ export default function Navbar({ onNavigate }) {
         const res = await apiJson('/notifications/my');
         const payload = res?.data || res || {};
         setItems(Array.isArray(payload.items) ? payload.items : []);
+        const arr = Array.isArray(res) ? res : [];
+        setNotifications(arr);
+        setUnreadCount(arr.length);
       } catch {
         setItems([]);
       }
