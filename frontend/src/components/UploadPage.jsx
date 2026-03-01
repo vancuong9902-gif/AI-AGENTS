@@ -15,7 +15,7 @@ export default function LibraryPage() {
 
   const loadFiles = async () => {
     const data = await apiJson("/documents?limit=100&offset=0");
-    setDocs(data?.documents || []);
+    setDocs(Array.isArray(data?.items) ? data.items : data?.documents || []);
   };
 
   useEffect(() => {

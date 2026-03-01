@@ -37,9 +37,9 @@ export default function StudentAnalyticsDashboard() {
   const loadDocs = async () => {
     try {
       const docs = await apiJson("/documents?limit=100&offset=0");
-      const arr = Array.isArray(docs) ? docs : [];
+      const arr = Array.isArray(docs?.items) ? docs.items : Array.isArray(docs) ? docs : [];
       setDocuments(arr);
-      if (!documentId && arr.length) setDocumentId(Number(arr[0].id));
+      if (!documentId && arr.length) setDocumentId(Number(arr[0].document_id ?? arr[0].id));
     } catch {
       // ignore
     }
@@ -112,8 +112,8 @@ export default function StudentAnalyticsDashboard() {
   const docLabel = useMemo(() => {
     const did = documentId ? Number(documentId) : null;
     if (!did) return "(tất cả tài liệu)";
-    const d = (documents || []).find((x) => Number(x.id) === did);
-    return d ? `#${d.id} • ${d.title}` : `#${did}`;
+    const d = (documents || []).find((x) => Number(x.document_id ?? x.id) === did);
+    return d ? `#${d.document_id ?? d.id} • ${d.title}` : `#${did}`;
   }, [documents, documentId]);
 
   if (role !== "student") {
