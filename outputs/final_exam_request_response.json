@@ -1,0 +1,4 @@
+{
+  "status": "NEED_CLEAN_TEXT",
+  "reason": "Missing required INPUT fields: selected_topics, evidence_chunks, duration_seconds, avoid_stems, avoid_concepts"
+}
