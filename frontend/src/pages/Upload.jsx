@@ -64,7 +64,7 @@ export default function Upload() {
 
   useEffect(() => {
     if (statusData?.status === 'ready' && uploadedDoc?.doc_id && uploadStep !== 'confirm_topics') {
-      const timeout = setTimeout(() => navigate(`/topics/preview/${uploadedDoc.doc_id}`), 1000);
+      const timeout = setTimeout(() => navigate(`/documents/${uploadedDoc.doc_id}/topics/preview`), 1000);
       return () => clearTimeout(timeout);
     }
     if (statusData?.status === 'ready' && pollRef.current) {
@@ -209,7 +209,7 @@ export default function Upload() {
             <div>Progress: {statusData.progress_pct || 0}%</div>
             <div>Số topic: {statusData.topic_count || 0}</div>
             {statusData.status === 'ready' && uploadedDoc?.doc_id ? (
-              <Button variant='primary' onClick={() => navigate(`/topics/preview/${uploadedDoc.doc_id}`)}>
+              <Button variant='primary' onClick={() => navigate(`/documents/${uploadedDoc.doc_id}/topics/preview`)}>
                 Xem topic đã phân tích →
               </Button>
             ) : null}
@@ -247,7 +247,7 @@ export default function Upload() {
                     body: { topics: confirmedTopics.filter((t) => String(t || '').trim()) },
                   });
                   setUploadStep('done');
-                  if (uploadedDoc?.doc_id) navigate(`/topics/preview/${uploadedDoc.doc_id}`);
+                  if (uploadedDoc?.doc_id) navigate(`/documents/${uploadedDoc.doc_id}/topics/preview`);
                 } catch (e) {
                   setError(e?.message || 'Xác nhận topics thất bại.');
                 }
