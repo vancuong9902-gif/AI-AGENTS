@@ -26,6 +26,8 @@ export default function AssessmentTake() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [pathAssigned, setPathAssigned] = useState(false);
+  const [explanationsByQuestion, setExplanationsByQuestion] = useState({});
+  const [explanationsLoading, setExplanationsLoading] = useState(false);
 
   const autoSubmittedRef = useRef(false);
   const warningShownRef = useRef({ five: false, one: false });
@@ -241,6 +243,27 @@ export default function AssessmentTake() {
 
   const resolvedScore = Number(result?.total_score_percent ?? result?.score_percent ?? 0);
   const scoreTheme = levelTheme(resolvedScore);
+
+  useEffect(() => {
+    const loadExplanations = async () => {
+      if (!result?.attempt_id) return;
+      const rows = result?.answer_review || result?.breakdown || [];
+      const missingWrongExplanation = rows.some((b) => !b?.is_correct && !String(b?.explanation || "").trim());
+      if (!missingWrongExplanation) return;
+
+      setExplanationsLoading(true);
+      try {
+        const explanationMap = await apiJson(`/assessments/${assessmentId}/explanations?attempt_id=${Number(result.attempt_id)}`);
+        setExplanationsByQuestion(explanationMap || {});
+      } catch {
+        setExplanationsByQuestion({});
+      } finally {
+        setExplanationsLoading(false);
+      }
+    };
+
+    loadExplanations();
+  }, [assessmentId, result]);
 
   const load = async () => {
     setLoading(true);
@@ -1186,9 +1209,15 @@ export default function AssessmentTake() {
                           }}
                         >
                           <div style={{ fontWeight: 900 }}>{b.is_correct ? "✅ Chính xác" : "❌ Chưa đúng"}</div>
-                          <div style={{ marginTop: 6, whiteSpace: "pre-wrap", color: "#333" }}>
-                            <b>Giải thích:</b> {b.explanation || "(Chưa có giải thích)"}
-                          </div>
+                          {!b.is_correct && (
+                            <details style={{ marginTop: 8 }}>
+                              <summary style={{ cursor: "pointer", fontWeight: 700 }}>💡 Xem giải thích</summary>
+                              <div style={{ marginTop: 6, whiteSpace: "pre-wrap", color: "#333" }}>
+                                <b>Giải thích:</b>{" "}
+                                {b.explanation || explanationsByQuestion?.[String(b.question_id)] || (explanationsLoading ? "Đang tải..." : "(Chưa có giải thích)")}
+                              </div>
+                            </details>
+                          )}
                           {b.key_concept ? (
                             <div style={{ marginTop: 4, color: "#555" }}>
                               <b>Khái niệm chính:</b> {b.key_concept}
@@ -1201,6 +1230,16 @@ export default function AssessmentTake() {
                               Đáp án đúng: <b>{Number.isInteger(b.correct_answer_index) && b.correct_answer_index >= 0 ? String.fromCharCode(65 + Number(b.correct_answer_index)) : "?"}</b>
                             </div>
                           )}
+                          <button
+                            type="button"
+                            style={{ marginTop: 8, padding: "6px 10px", borderRadius: 8, border: "1px solid #d9d9d9", background: "#fff", cursor: "pointer" }}
+                            onClick={() => {
+                              const stem = q?.stem || b?.stem || "";
+                              navigate(`/tutor?question=${encodeURIComponent(stem)}`);
+                            }}
+                          >
+                            Hỏi Tutor
+                          </button>
                           {renderSources(b.sources)}
                         </div>
                       </div>
