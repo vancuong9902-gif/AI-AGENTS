@@ -1534,6 +1534,17 @@ def _topic_body_len(topic: DocumentTopic) -> int:
     return len(summary)
 
 
+def _topic_chunk_span(topic: DocumentTopic) -> int:
+    start = getattr(topic, "start_chunk_index", None)
+    end = getattr(topic, "end_chunk_index", None)
+    if start is None or end is None:
+        return 0
+    try:
+        return max(0, int(end) - int(start) + 1)
+    except Exception:
+        return 0
+
+
 def assign_learning_path(
     db: Session,
     *,
@@ -1555,9 +1566,16 @@ def assign_learning_path(
     query = db.query(DocumentTopic).filter(
         DocumentTopic.document_id.in_([int(doc_id) for doc_id in (document_ids or [])])
     )
-    if cfg["sort_by_len"]:
-        query = query.order_by(DocumentTopic.body_len.asc().nullslast())
     all_topics = query.all()
+    if cfg["sort_by_len"]:
+        all_topics = sorted(
+            all_topics,
+            key=lambda t: (
+                _topic_chunk_span(t) if _topic_chunk_span(t) > 0 else _topic_body_len(t),
+                int(getattr(t, "topic_index", 0) or 0),
+                int(getattr(t, "id", 0) or 0),
+            ),
+        )
     selected = all_topics[: int(cfg["max_topics"])]
 
     reasons = {
@@ -1604,7 +1622,7 @@ def assign_learning_path(
         user_id=int(user_id),
         classroom_id=int(classroom_id or 0),
         level=student_level,
-        plan_json={"assigned_tasks": assigned_tasks, "student_level": student_level},
+        plan_json={"assigned_tasks": assigned_tasks, "tasks": assigned_tasks, "student_level": student_level},
     )
     db.add(plan)
     db.commit()
