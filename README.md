@@ -129,6 +129,29 @@ Mở web:
 
 - http://localhost:5173
 
+
+### 3.3. Lint/Format/Test tối thiểu
+
+```bash
+# Frontend
+cd frontend
+npm ci
+npm run lint
+npm run format
+npm run build
+
+# Backend
+cd ../backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+make lint
+make format
+make test
+```
+
+CI dùng workflow `.github/workflows/ci.yml` để chạy đúng 2 luồng trên (frontend lint+build, backend lint+format-check+pytest).
+
 ## 4) Chạy local (không dùng Docker)
 
 - Cài Postgres local và tạo DB `ai_agent`
