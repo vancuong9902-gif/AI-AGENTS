@@ -560,7 +560,7 @@ export default function LearningPath() {
       const q = Number.isFinite(cid) && cid > 0 ? `?classroom_id=${cid}` : "";
       const data = await apiJson(`/lms/student/${userId}/topic-progress${q}`);
       const map = {};
-      (Array.isArray(data?.topics) ? data.topics : []).forEach((row) => {
+      (Array.isArray(data?.items) ? data.items : Array.isArray(data?.topics) ? data.topics : []).forEach((row) => {
         const key = String(row?.topic || "").toLowerCase();
         if (key) map[key] = row;
       });

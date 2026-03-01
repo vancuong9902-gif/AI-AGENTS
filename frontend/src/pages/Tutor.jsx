@@ -30,8 +30,7 @@ export default function Tutor() {
     (async () => {
       try {
         const data = await apiJson("/documents?limit=100&offset=0");
-        const data = await apiJson('/documents');
-        const arr = data?.documents || [];
+        const arr = Array.isArray(data?.items) ? data.items : data?.documents || [];
         setDocs(arr);
         if (!docId && arr.length > 0) {
           const saved = localStorage.getItem('active_document_id');

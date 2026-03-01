@@ -523,6 +523,25 @@ def get_document_chunk_detail(request: Request, document_id: int, chunk_id: int,
     }
 
 
+@router.get('/chunks/{chunk_id}')
+def get_chunk_detail(request: Request, chunk_id: int, db: Session = Depends(get_db)):
+    """Return full chunk text for on-demand detail view."""
+    chunk = db.query(DocumentChunk).filter(DocumentChunk.id == int(chunk_id)).first()
+    if not chunk:
+        raise HTTPException(status_code=404, detail='Chunk not found')
+    return {
+        'request_id': request.state.request_id,
+        'data': {
+            'document_id': chunk.document_id,
+            'chunk_id': chunk.id,
+            'chunk_index': chunk.chunk_index,
+            'text': chunk.text,
+            'meta': chunk.meta,
+        },
+        'error': None,
+    }
+
+
 @router.get('/documents/{document_id}/topics')
 def list_document_topics(
     request: Request,

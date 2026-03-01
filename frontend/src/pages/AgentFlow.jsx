@@ -92,7 +92,7 @@ export default function AgentFlow() {
     (async () => {
       try {
         const data = await apiJson("/documents?limit=100&offset=0");
-        const arr = data?.documents || [];
+        const arr = Array.isArray(data?.items) ? data.items : data?.documents || [];
         setDocs(arr);
         if (arr.length > 0) setSelectedDocId(String(arr[0].document_id));
       } catch {
@@ -106,7 +106,8 @@ export default function AgentFlow() {
       if (!selectedDocId) return;
       try {
         const data = await apiJson(`/agent/documents/${selectedDocId}/phase1`);
-        const t = (data?.topics || []).map((x) => x?.title).filter(Boolean);
+        const topicRows = Array.isArray(data?.items) ? data.items : data?.topics || [];
+        const t = topicRows.map((x) => x?.title).filter(Boolean);
         setTopics(t);
       } catch {
         setTopics([]);
