@@ -59,3 +59,27 @@ def test_rate_limit_heavy_endpoint():
     assert second.status_code == 429
     assert second.json()["error"]["code"] == "RATE_LIMITED"
     assert first.headers.get("X-Request-ID")
+
+
+def test_health_endpoint_available_without_api_prefix():
+    client = TestClient(app)
+    res = client.get('/health')
+    assert res.status_code == 200
+    assert res.json()['status'] == 'ok'
+
+
+def test_cors_uses_frontend_origin_setting():
+    from app.main import create_app
+
+    old_origin = settings.FRONTEND_ORIGIN
+    old_origins = list(settings.BACKEND_CORS_ORIGINS)
+    settings.FRONTEND_ORIGIN = 'https://frontend.example.com'
+    settings.BACKEND_CORS_ORIGINS = ['*', 'https://ignored.example.com']
+    try:
+        configured_app = create_app()
+    finally:
+        settings.FRONTEND_ORIGIN = old_origin
+        settings.BACKEND_CORS_ORIGINS = old_origins
+
+    cors = next(m for m in configured_app.user_middleware if m.cls.__name__ == 'CORSMiddleware')
+    assert cors.kwargs['allow_origins'] == ['https://frontend.example.com']
