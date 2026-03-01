@@ -386,12 +386,14 @@ def list_document_topics(
         )
 
     topics_q = db.query(DocumentTopic).filter(DocumentTopic.document_id == document_id)
-    if not is_teacher:
+    if user_role == 'student':
+        topics_q = topics_q.filter(DocumentTopic.status == 'published')
+    elif not is_teacher:
         topics_q = topics_q.filter(DocumentTopic.is_confirmed.is_(True), DocumentTopic.is_active.is_(True))
     if (filter or '').strip().lower() == 'needs_review':
         topics_q = topics_q.filter(DocumentTopic.needs_review.is_(True))
     status_norm = (status or '').strip().lower()
-    if status_norm in {'pending_review', 'approved', 'rejected', 'edited'}:
+    if status_norm in {'draft', 'published', 'rejected', 'pending_review', 'approved', 'edited'}:
         topics_q = topics_q.filter(DocumentTopic.status == status_norm)
     topics = topics_q.order_by(func.coalesce(DocumentTopic.page_start, 10**9).asc(), DocumentTopic.topic_index.asc()).all()
 
@@ -753,14 +755,160 @@ def preview_document_topics(
     if int(doc.user_id) != int(getattr(teacher, 'id')):
         raise HTTPException(status_code=403, detail='Not allowed')
 
-    try:
-        payload = build_topic_preview_for_teacher(int(document_id), db)
-    except ValueError:
-        raise HTTPException(status_code=404, detail='Document not found')
+    topics = (
+        db.query(DocumentTopic)
+        .filter(DocumentTopic.document_id == int(document_id))
+        .filter(DocumentTopic.status == 'draft')
+        .order_by(DocumentTopic.topic_index.asc(), DocumentTopic.id.asc())
+        .all()
+    )
+
+    topic_items: list[dict[str, Any]] = []
+    short_count = 0
+    duplicate_title_count = 0
+    font_issue_count = 0
+
+    title_seen: dict[str, int] = {}
+    for t in topics:
+        effective_title = str(getattr(t, 'edited_title', None) or getattr(t, 'teacher_edited_title', None) or t.title or '').strip()
+        normalized = effective_title.lower()
+        if normalized:
+            title_seen[normalized] = title_seen.get(normalized, 0) + 1
+
+    for t in topics:
+        meta = ((getattr(t, 'meta_json', None) or {}) if isinstance(getattr(t, 'meta_json', None), dict) else {})
+        if not meta:
+            legacy = getattr(t, 'metadata_json', None)
+            if isinstance(legacy, dict):
+                meta = legacy
+
+        warnings = list(meta.get('quality_warnings') or [])
+        effective_title = str(getattr(t, 'edited_title', None) or getattr(t, 'teacher_edited_title', None) or t.title or '').strip()
+        summary_preview = ' '.join(str(getattr(t, 'summary', '') or '').split())[:200]
+
+        if len(summary_preview) < 60:
+            short_count += 1
+        if title_seen.get(effective_title.lower(), 0) > 1:
+            duplicate_title_count += 1
+            if 'duplicate_title' not in warnings:
+                warnings.append('duplicate_title')
+        encoding_detected = str(meta.get('encoding_detected') or '')
+        if encoding_detected:
+            font_issue_count += 1
+
+        topic_items.append(
+            {
+                'id': int(t.id),
+                'topic_index': int(getattr(t, 'topic_index', 0) or 0),
+                'title': effective_title,
+                'summary_preview': summary_preview,
+                'start_chunk_index': getattr(t, 'start_chunk_index', None),
+                'end_chunk_index': getattr(t, 'end_chunk_index', None),
+                'quality_warnings': warnings,
+                'encoding_detected': encoding_detected or None,
+                'status': str(getattr(t, 'status', 'draft') or 'draft'),
+            }
+        )
+
+    chunk_count = int(db.query(func.count(DocumentChunk.id)).filter(DocumentChunk.document_id == int(document_id)).scalar() or 0)
+    estimated_pages = max(1, round(chunk_count / 4)) if chunk_count else 0
 
     return {
         'request_id': request.state.request_id,
-        'data': payload,
+        'data': {
+            'document_id': int(document_id),
+            'topics': topic_items,
+            'total_topics': len(topic_items),
+            'estimated_pages': estimated_pages,
+            'quality_summary': {
+                'too_short_topics': int(short_count),
+                'duplicate_titles': int(duplicate_title_count),
+                'encoding_issues': int(font_issue_count),
+            },
+        },
+        'error': None,
+    }
+
+
+@router.post('/documents/{document_id}/topics/publish')
+def publish_document_topics_v3(
+    request: Request,
+    document_id: int,
+    payload: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    doc = db.query(Document).filter(Document.id == int(document_id)).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail='Document not found')
+    if int(doc.user_id) != int(getattr(teacher, 'id')):
+        raise HTTPException(status_code=403, detail='Not allowed')
+
+    approved = payload.get('approved') or []
+    rejected_ids = payload.get('rejected_ids') or []
+    if not isinstance(approved, list):
+        raise HTTPException(status_code=422, detail='approved must be a list')
+    if not isinstance(rejected_ids, list):
+        raise HTTPException(status_code=422, detail='rejected_ids must be a list')
+
+    topics = db.query(DocumentTopic).filter(DocumentTopic.document_id == int(document_id)).all()
+    by_id = {int(t.id): t for t in topics}
+
+    approved_count = 0
+    rejected_count = 0
+    published_ids: list[int] = []
+
+    for item in approved:
+        if not isinstance(item, dict):
+            continue
+        try:
+            topic_id = int(item.get('id'))
+        except Exception:
+            continue
+        topic = by_id.get(topic_id)
+        if not topic:
+            continue
+
+        new_title = str(item.get('title') or '').strip()
+        if new_title:
+            cleaned, _warnings = validate_and_clean_topic_title(new_title)
+            cleaned_title = (cleaned or new_title)[:255]
+            topic.edited_title = cleaned_title
+            topic.teacher_edited_title = cleaned_title
+
+        topic.status = 'published'
+        topic.is_confirmed = True
+        topic.is_active = True
+        topic.reviewed_at = datetime.now(timezone.utc)
+        db.add(topic)
+        approved_count += 1
+        published_ids.append(topic_id)
+
+    for tid in rejected_ids:
+        try:
+            topic_id = int(tid)
+        except Exception:
+            continue
+        topic = by_id.get(topic_id)
+        if not topic:
+            continue
+        topic.status = 'rejected'
+        topic.is_confirmed = False
+        topic.is_active = False
+        topic.reviewed_at = datetime.now(timezone.utc)
+        db.add(topic)
+        rejected_count += 1
+
+    db.commit()
+
+    return {
+        'request_id': request.state.request_id,
+        'data': {
+            'document_id': int(document_id),
+            'published_count': int(approved_count),
+            'rejected_count': int(rejected_count),
+            'published_topic_ids': published_ids,
+        },
         'error': None,
     }
 
@@ -771,6 +919,7 @@ def get_document_topic_detail(
     document_id: int,
     topic_id: int,
     db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional),
     include_content: int = 1,
 ):
     t = (
@@ -780,6 +929,10 @@ def get_document_topic_detail(
         .first()
     )
     if not t:
+        raise HTTPException(status_code=404, detail='Topic not found')
+
+    user_role = str(getattr(current_user, 'role', '') or '').strip().lower()
+    if user_role == 'student' and str(getattr(t, 'status', '') or '').lower() != 'published':
         raise HTTPException(status_code=404, detail='Topic not found')
 
     # Hide appendix topics from the public UI unless explicitly enabled.
@@ -1545,6 +1698,8 @@ async def process_document_pipeline(
     title: str,
     tags: list[str],
     file_bytes: bytes,
+    teacher_role: str = '',
+    auto_publish: bool = False,
 ) -> None:
     db = SessionLocal()
     _set_doc_status(document_id, status='processing', progress_pct=10, topic_count=0)
@@ -1603,13 +1758,14 @@ async def process_document_pipeline(
                 else:
                     ranges = assign_topic_chunk_ranges(topics, chunk_lengths=[len(c.text or '') for c in chunk_models])
 
+                initial_status = 'draft' if str(teacher_role or '').strip().lower() == 'teacher' and not auto_publish else 'published'
+
                 for i, (t, (s_idx, e_idx)) in enumerate(zip(topics, ranges)):
                     cleaned_title, title_warnings = validate_and_clean_topic_title(str(t.get('title') or '').strip()[:255])
                     page_start, page_end = _infer_page_range_from_chunks(chunk_models, s_idx, e_idx)
                     topic_models.append(
                         DocumentTopic(
                             document_id=doc.id,
-                            is_confirmed=False,
                             topic_index=i,
                             title=(cleaned_title or str(t.get('title') or '').strip())[:255],
                             display_title=(cleaned_title or str(t.get('title') or '').strip())[:255],
@@ -1621,6 +1777,14 @@ async def process_document_pipeline(
                             end_chunk_index=e_idx,
                             page_start=page_start,
                             page_end=page_end,
+                            status=initial_status,
+                            edited_title=None,
+                            meta_json={
+                                'quality_warnings': list(title_warnings or []),
+                                'encoding_detected': 'broken_font' if detect_broken_vn_font(str(t.get('title') or '')) else None,
+                            },
+                            is_confirmed=(initial_status == 'published'),
+                            is_active=(initial_status == 'published'),
                         )
                     )
         except Exception:
@@ -1659,6 +1823,7 @@ async def upload_document(
     user_id: int = Form(1),
     title: Optional[str] = Form(None),
     tags: Optional[str] = Form(None),
+    auto_publish: int = 0,
 ):
     # Ignore user_id from form; use authenticated (demo header) teacher.
     user_id = int(getattr(teacher, 'id'))
@@ -1692,6 +1857,8 @@ async def upload_document(
         title=safe_title,
         tags=parsed_tags,
         file_bytes=data,
+        teacher_role=str(getattr(teacher, 'role', '') or ''),
+        auto_publish=bool(int(auto_publish or 0) == 1),
     )
 
     page_count = 0
