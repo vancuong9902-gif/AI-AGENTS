@@ -8,7 +8,7 @@ import tempfile
 import time
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -116,6 +116,31 @@ class StartAttemptIn(BaseModel):
 
 class SubmitAttemptByIdIn(BaseModel):
     answers: list[dict] = Field(default_factory=list)
+
+
+def _attempt_status_payload(*, started: UserSession, duration_seconds: int) -> dict:
+    now = datetime.now(timezone.utc)
+    started_at = started.started_at or now
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+
+    deadline = started_at
+    if int(duration_seconds or 0) > 0:
+        deadline = started_at + timedelta(seconds=int(duration_seconds))
+
+    remaining_seconds = max(0, int((deadline - now).total_seconds())) if int(duration_seconds or 0) > 0 else None
+
+    return {
+        "attempt_id": int(started.id),
+        "quiz_id": int(str(started.type).split(":", 1)[1]),
+        "student_id": int(started.user_id),
+        "start_time": started_at.isoformat(),
+        "duration_seconds": int(duration_seconds or 0),
+        "deadline": deadline.isoformat(),
+        "server_time": now.isoformat(),
+        "remaining_seconds": remaining_seconds,
+        "timed_out": bool(remaining_seconds is not None and remaining_seconds <= 0),
+    }
 
 
 def _normalize_synced_diagnostic(base: dict) -> dict:
@@ -782,13 +807,28 @@ def start_attempt(request: Request, payload: StartAttemptIn, db: Session = Depen
 
     return {
         "request_id": request.state.request_id,
-        "data": {
-            "attempt_id": int(session.id),
-            "quiz_id": quiz_id,
-            "student_id": student_id,
-            "start_time": session.started_at.isoformat() if session.started_at else datetime.now(timezone.utc).isoformat(),
-            "duration_seconds": int(duration_seconds or 0),
-        },
+        "data": _attempt_status_payload(started=session, duration_seconds=int(duration_seconds or 0)),
+        "error": None,
+    }
+
+
+
+@router.get("/attempts/{attempt_id}/status")
+def get_attempt_status(request: Request, attempt_id: int, db: Session = Depends(get_db)):
+    started = db.query(UserSession).filter(
+        UserSession.id == int(attempt_id)).first()
+    if not started or not str(started.type or "").startswith("quiz_attempt:"):
+        raise HTTPException(status_code=404, detail="Attempt not found")
+
+    quiz_id = int(str(started.type).split(":", 1)[1])
+    quiz = db.query(QuizSet).filter(QuizSet.id == quiz_id).first()
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    duration_seconds = _quiz_duration_map(quiz)
+    return {
+        "request_id": request.state.request_id,
+        "data": _attempt_status_payload(started=started, duration_seconds=int(duration_seconds or 0)),
         "error": None,
     }
 
