@@ -22,6 +22,7 @@ def create_notification(
     type: str,
     title: str,
     message: str,
+    payload_json: dict[str, Any] | None = None,
     data: dict[str, Any] | None = None,
 ) -> Notification:
     notif_type = NotificationType(type)
@@ -30,7 +31,7 @@ def create_notification(
         type=notif_type,
         title=str(title),
         message=str(message),
-        data=data or {},
+        payload_json=payload_json or data or {},
         is_read=False,
     )
     db.add(row)

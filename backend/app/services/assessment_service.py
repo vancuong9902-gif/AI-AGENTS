@@ -60,6 +60,7 @@ _TOPIC_IN_STEM_RE = re.compile(r"'([^']+)'|\"([^\"]+)\"|“([^”]+)”")
 _STEM_PUNCT_RE = re.compile(r"[^\w\sÀ-ỹ]", re.UNICODE)
 _TRAILING_PUNCT_RE = re.compile(r"[\s\?\!\.,;:]+$")
 _LOGGER = logging.getLogger(__name__)
+_EXCLUDED_EMBEDDINGS_CACHE: dict[tuple[int, ...], list[list[float]]] = {}
 
 
 def _coerce_document_ids(raw: Any) -> List[int]:
@@ -236,6 +237,47 @@ def _cosine_similarity(a: List[float], b: List[float]) -> float:
     if na <= 0 or nb <= 0:
         return 0.0
     return float(dot / (na * nb))
+
+
+def _build_semantic_exclusion_vectors(stems: list[str]) -> list[list[float]] | None:
+    """Build embeddings for excluded stems; return None when unavailable."""
+    texts = [str(x or "").strip() for x in (stems or []) if str(x or "").strip()]
+    if not texts:
+        return None
+    try:
+        vectors = embed_texts(texts)
+    except Exception:
+        return None
+    if not isinstance(vectors, list) or len(vectors) != len(texts):
+        return None
+    return [list(v or []) for v in vectors]
+
+
+def _is_semantic_dup(
+    stem: str,
+    excluded_vectors: list[list[float]] | None,
+    *,
+    threshold: float,
+) -> bool:
+    if not stem or not excluded_vectors:
+        return False
+    try:
+        vec = embed_texts([str(stem)])[0]
+    except Exception:
+        return False
+    for ex in excluded_vectors:
+        if _cosine_similarity(list(vec or []), list(ex or [])) > float(threshold):
+def _is_dup_semantic(stem: str, excluded_embeddings: list[list[float]] | None, threshold: float = 0.85) -> bool:
+    if not stem or not excluded_embeddings:
+        return False
+    try:
+        stem_embedding = embed_texts([stem])[0]
+    except Exception:
+        return False
+    for emb in excluded_embeddings:
+        if _cosine_similarity(stem_embedding, emb) >= float(threshold):
+            return True
+    return False
 
 
 def _cap_int(x: Any, *, default: int, lo: int, hi: int) -> int:
@@ -1942,10 +1984,34 @@ def generate_assessment(
         qrows = db.query(Question.stem).filter(Question.id.in_(list(_excluded_question_ids))).all()
         _excluded_stems.update({_normalize_stem_for_dedup(str(r[0] or "")) for r in qrows if r and r[0]})
 
+    excluded_embeddings: list[list[float]] = []
+    semantic_dedup_enabled = False
+    if exclude_quiz_ids:
+        cache_key = tuple(sorted({int(x) for x in (exclude_quiz_ids or []) if x is not None}))
+        if cache_key:
+            cached = _EXCLUDED_EMBEDDINGS_CACHE.get(cache_key)
+            if cached is not None:
+                excluded_embeddings = cached
+                semantic_dedup_enabled = bool(excluded_embeddings)
+            else:
+                excluded_stems_for_embedding = sorted([s for s in _excluded_stems if s])
+                if excluded_stems_for_embedding:
+                    try:
+                        excluded_embeddings = embed_texts(excluded_stems_for_embedding)
+                        _EXCLUDED_EMBEDDINGS_CACHE[cache_key] = excluded_embeddings
+                        semantic_dedup_enabled = bool(excluded_embeddings)
+                    except Exception:
+                        excluded_embeddings = []
+                        semantic_dedup_enabled = False
+
     final_exam_llm_system_hint = (
         "Đây là bài kiểm tra cuối kỳ tổng hợp. Câu hỏi phải đánh giá khả năng VẬN DỤNG và "
         "TỔNG HỢP kiến thức từ nhiều chủ đề, không phải chỉ ghi nhớ đơn thuần. Mức độ khó "
-        "phải cao hơn bài kiểm tra đầu vào."
+        "phải cao hơn bài kiểm tra đầu vào. Bắt buộc xây dựng scenario mới, mỗi câu nên tổng hợp "
+        "ít nhất 2 khái niệm, và ưu tiên Bloom apply/analyze/evaluate."
+        "Đây là bài kiểm tra cuối kỳ tổng hợp. Mỗi câu hỏi bắt buộc dùng scenario/tình huống MỚI, "
+        "không lặp hoặc diễn đạt lại ví dụ placement. Câu hỏi phải tổng hợp ít nhất 2 ý hoặc 2 khái niệm "
+        "trong cùng một ngữ cảnh và ưu tiên Bloom mức apply/analyze/evaluate (chỉ hạn chế nhớ lại đơn thuần)."
     )
     dedup_similarity_threshold = max(0.75, float(similarity_threshold)) if _is_final_diagnostic_kind(kind) else float(similarity_threshold)
 
@@ -2013,8 +2079,15 @@ def generate_assessment(
                         topic_seen.add(tt)
         dedup_topics_from_entry = sorted(topic_seen)
 
+    semantic_excluded_vectors = _build_semantic_exclusion_vectors(sorted(_excluded_stems))
+
     def _is_dup_local(stem: str) -> bool:
-        return _is_dup(stem, _excluded_stems, dedup_similarity_threshold)
+        if _is_dup(stem, _excluded_stems, dedup_similarity_threshold):
+            return True
+        return _is_semantic_dup(stem, semantic_excluded_vectors, threshold=0.85)
+        if semantic_dedup_enabled and _is_dup_semantic(stem, excluded_embeddings, threshold=0.85):
+            return True
+        return False
 
     # Auto-scope to teacher documents if UI did not pass document_ids
     doc_ids = list(document_ids or [])
@@ -2129,10 +2202,11 @@ def generate_assessment(
                     if _is_final_diagnostic_kind(kind) and (_excluded_question_ids or _excluded_stems):
                         final_rules = (
                             "QUAN TRỌNG: Đây là bài kiểm tra CUỐI KỲ. Câu hỏi phải: "
-                            "1) KHÔNG trùng bài đầu vào; "
-                            "2) ưu tiên Bloom apply/analyze/evaluate/create; "
-                            "3) tập trung ứng dụng thực tế, so sánh, phân tích; "
-                            "4) tối thiểu 40% câu dạng scenario-based."
+                            "1) scenario/tình huống MỚI, không lặp ví dụ placement; "
+                            "2) tổng hợp ít nhất 2 ý hoặc 2 khái niệm trong cùng câu; "
+                            "3) ưu tiên Bloom apply/analyze/evaluate/create; "
+                            "4) tập trung ứng dụng thực tế, so sánh, phân tích; "
+                            "5) tối thiểu 40% câu dạng scenario-based."
                         )
                         hint = (hint + "\n" + final_rules) if hint else final_rules
                     if _is_final_diagnostic_kind(kind):
@@ -2166,7 +2240,7 @@ def generate_assessment(
             random.shuffle(llm_mcqs)
             for i, q in enumerate(llm_mcqs):
                 stem = str((q or {}).get("stem") or (q or {}).get("question", ""))
-                if _is_dup(stem, excluded_stems, dedup_similarity_threshold):
+                if _is_dup_local(stem):
                     continue
                 out.append(_normalize_question_bloom(q, allowed, target_blooms, i))
                 if len(out) >= int(count):
@@ -2189,7 +2263,7 @@ def generate_assessment(
         random.shuffle(offline_mcqs)
         for i, q in enumerate(offline_mcqs):
             stem = str((q or {}).get("stem") or (q or {}).get("question", ""))
-            if _is_dup(stem, excluded_stems, dedup_similarity_threshold):
+            if _is_dup_local(stem):
                 continue
             out.append(_normalize_question_bloom(q, allowed, target_blooms, i))
             if len(out) >= int(count):
@@ -2214,7 +2288,7 @@ def generate_assessment(
                     source=correct["source"],
                 )
                 stem = str((q or {}).get("stem") or (q or {}).get("question", ""))
-                if _is_dup(stem, excluded_stems, dedup_similarity_threshold):
+                if _is_dup_local(stem):
                     continue
                 out.append(_normalize_question_bloom(q, allowed, target_blooms, i))
         return out[: int(count)]
@@ -2628,6 +2702,8 @@ def generate_assessment(
         elif bloom in {"apply", "analyze"}:
             difficulty_plan["medium"] += 1
 
+    duration_seconds = int(total_minutes * 60)
+
     return {
         "assessment_id": quiz_set.id,
         "title": quiz_set.topic,
@@ -2760,7 +2836,7 @@ def get_assessment(db: Session, *, assessment_id: int) -> Dict[str, Any]:
     )
 
     duration_seconds = resolve_duration_seconds(quiz_set)
-    total_minutes = max(0, int(duration_seconds // 60))
+    total_minutes = max(0, int(math.ceil(duration_seconds / 60.0))) if duration_seconds > 0 else 0
 
     # Backfill for older assessments that were created before we stored estimated_minutes.
     if total_minutes <= 0 and questions:
@@ -3007,9 +3083,20 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
     question_by_id: Dict[int, Question] = {int(q.id): q for q in questions}
     quiz_doc_ids = _coerce_document_ids(getattr(quiz_set, "document_ids_json", None))
 
+    def _difficulty_from_bloom(raw_bloom: Any) -> str:
+        bloom = str(raw_bloom or "").strip().lower()
+        if bloom in {"remember", "understand"}:
+            return "easy"
+        if bloom in {"apply", "analyze"}:
+            return "medium"
+        if bloom in {"evaluate", "create"}:
+            return "hard"
+        return "medium"
+
     for q in questions:
         a = answer_map.get(q.id, {})
         topic = _infer_topic_from_stem(q.stem, fallback=str(quiz_set.topic))
+        difficulty = _difficulty_from_bloom(getattr(q, "bloom_level", None))
 
         if q.type == "mcq":
             mcq_total += 1
@@ -3022,13 +3109,24 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
             is_correct = chosen_i == int(q.correct_index)
             score_points = 1 if is_correct else 0
             mcq_earned += score_points
+            options = list(getattr(q, "options", None) or [])
+            correct_index = int(getattr(q, "correct_index", -1) or -1)
+            correct_answer_text = options[correct_index] if 0 <= correct_index < len(options) else None
+            student_answer_text = options[chosen_i] if 0 <= chosen_i < len(options) else None
 
             breakdown.append({
                 "question_id": q.id,
+                "order_no": int(getattr(q, "order_no", 0) or 0),
                 "type": "mcq",
                 "topic": topic,
+                "bloom_level": getattr(q, "bloom_level", None),
+                "difficulty": difficulty,
+                "stem": q.stem,
+                "options": options,
                 "chosen": chosen_i,
-                "correct": int(q.correct_index),
+                "correct": correct_index,
+                "correct_answer_text": correct_answer_text,
+                "student_answer_text": student_answer_text,
                 "is_correct": bool(is_correct),
                 "score_points": int(score_points),
                 "max_points": 1,
@@ -3041,8 +3139,12 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
             txt = (a.get("answer_text") or "").strip()
             breakdown.append({
                 "question_id": q.id,
+                "order_no": int(getattr(q, "order_no", 0) or 0),
                 "type": "essay",
                 "topic": topic,
+                "bloom_level": getattr(q, "bloom_level", None),
+                "difficulty": difficulty,
+                "stem": q.stem,
                 "answer_text": txt,
                 "score_points": 0,
                 "max_points": int(q.max_points or 10),
@@ -3273,6 +3375,41 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
         except Exception:
             learning_plan_created = False
 
+    summary_topic: Dict[str, Dict[str, Any]] = {}
+    summary_difficulty: Dict[str, Dict[str, Any]] = {
+        "easy": {"earned": 0, "total": 0, "percent": 0},
+        "medium": {"earned": 0, "total": 0, "percent": 0},
+        "hard": {"earned": 0, "total": 0, "percent": 0},
+    }
+    for item in bd:
+        topic = str(item.get("topic") or "Chưa phân loại").strip() or "Chưa phân loại"
+        diff = str(item.get("difficulty") or "medium").strip().lower()
+        if diff not in summary_difficulty:
+            diff = "medium"
+
+        earned = float(item.get("score_points") or 0)
+        total = float(item.get("max_points") or 0)
+
+        if topic not in summary_topic:
+            summary_topic[topic] = {"earned": 0.0, "total": 0.0, "percent": 0}
+        summary_topic[topic]["earned"] += earned
+        summary_topic[topic]["total"] += total
+
+        summary_difficulty[diff]["earned"] += earned
+        summary_difficulty[diff]["total"] += total
+
+    for bucket in summary_topic.values():
+        total = float(bucket.get("total") or 0)
+        bucket["earned"] = int(round(float(bucket.get("earned") or 0)))
+        bucket["total"] = int(round(total))
+        bucket["percent"] = int(round((float(bucket["earned"]) / total) * 100)) if total > 0 else 0
+
+    for bucket in summary_difficulty.values():
+        total = float(bucket.get("total") or 0)
+        bucket["earned"] = int(round(float(bucket.get("earned") or 0)))
+        bucket["total"] = int(round(total))
+        bucket["percent"] = int(round((float(bucket["earned"]) / total) * 100)) if total > 0 else 0
+
     result = {
         "assessment_id": assessment_id,
         "assessment_kind": assessment_kind,
@@ -3291,6 +3428,10 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
         "max_points": total_points,
         "status": "submitted (essay pending)" if pending else "graded",
         "breakdown": bd,
+        "summary": {
+            "by_topic": summary_topic,
+            "by_difficulty": summary_difficulty,
+        },
         "answer_review": answer_review,
         "synced_diagnostic": synced_diagnostic,
         "learning_plan_created": bool(learning_plan_created),

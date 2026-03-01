@@ -79,6 +79,18 @@ _VPS_OVERRIDES.update(
 TCVN3_TO_UNICODE: Dict[int, str] = _build_256_map(_TCVN3_OVERRIDES)
 VNTIME_TO_UNICODE: Dict[int, str] = _build_256_map(_VNTIME_OVERRIDES)
 VPS_TO_UNICODE: Dict[int, str] = _build_256_map(_VPS_OVERRIDES)
+_VNI_TYPING_PATTERN = re.compile(r"(?i)(?:[aeiouyăâêôơư][1-5]|[aeou][678]|d9)")
+_VNI_BASE_MAP: dict[str, dict[str, str]] = {
+    "a": {"6": "â", "8": "ă"},
+    "A": {"6": "Â", "8": "Ă"},
+    "e": {"6": "ê"},
+    "E": {"6": "Ê"},
+    "o": {"6": "ô", "7": "ơ"},
+    "O": {"6": "Ô", "7": "Ơ"},
+    "u": {"7": "ư"},
+    "U": {"7": "Ư"},
+}
+_VNI_TONE_MAP = {"1": "\u0301", "2": "\u0300", "3": "\u0309", "4": "\u0303", "5": "\u0323"}
 
 
 def _is_valid_char(ch: str) -> bool:
@@ -238,6 +250,88 @@ def _map_with_table(text: str, table: dict[int, str]) -> str:
     return unicodedata.normalize("NFC", "".join(mapped_chars))
 
 
+def detect_vni_typing(text: str, *, min_matches: int = 3, window_size: int = 60) -> bool:
+    """Detect VNI numeric-typing artifacts (e.g., Toa1n, ho5c, d9)."""
+    source = str(text or "")
+    if not source:
+        return False
+
+    for start in range(0, len(source), max(1, window_size // 2)):
+        window = source[start: start + window_size]
+        if not window:
+            continue
+        if len(_VNI_TYPING_PATTERN.findall(window)) >= int(min_matches):
+            return True
+    return False
+
+
+def _convert_vni_token(token: str) -> str:
+    chars = list(token)
+    original_len = len(chars)
+    i = 0
+    while i < len(chars):
+        ch = chars[i]
+        nxt = chars[i + 1] if i + 1 < len(chars) else ""
+        if ch in ("d", "D") and nxt == "9":
+            chars[i] = "đ" if ch == "d" else "Đ"
+            del chars[i + 1]
+            continue
+        if nxt in _VNI_BASE_MAP.get(ch, {}):
+            chars[i] = _VNI_BASE_MAP[ch][nxt]
+            del chars[i + 1]
+            continue
+        if nxt in _VNI_TONE_MAP and ch.lower() in "aeiouyăâêôơư" and original_len > 2:
+            chars[i] = unicodedata.normalize("NFC", f"{ch}{_VNI_TONE_MAP[nxt]}")
+            del chars[i + 1]
+            continue
+        i += 1
+
+    converted = "".join(chars)
+    # Common heading typo after OCR/VNI mix: "lơp" -> "lớp".
+    converted = re.sub(r"\blơp\b", "lớp", converted)
+    converted = re.sub(r"\bLơp\b", "Lớp", converted)
+    return converted
+
+
+def convert_vni_typing_to_unicode(text: str) -> str:
+    """Convert common VNI number-typing Vietnamese sequences to Unicode NFC."""
+    source = str(text or "")
+    if not source:
+        return ""
+
+    converted = re.sub(r"[A-Za-zÀ-ỹà-ỹ0-9]+", lambda m: _convert_vni_token(m.group(0)), source)
+    return unicodedata.normalize("NFC", converted)
+
+
+def _llm_repair_short_vietnamese_title(text: str) -> str:
+    source = str(text or "").strip()
+    if not source or len(source) > 120:
+        return source
+    try:
+        from app.services.llm_service import chat_text, llm_available
+
+        if not llm_available():
+            return source
+        repaired = chat_text(
+            messages=[
+                {"role": "system", "content": "Bạn sửa lỗi encoding tiếng Việt chính xác, giữ nguyên ý nghĩa."},
+                {
+                    "role": "user",
+                    "content": "Sửa tiêu đề tiếng Việt bị lỗi encoding thành đúng, chỉ trả về title đã sửa.\n"
+                    f"Title: {source}",
+                },
+            ],
+            temperature=0.0,
+            max_tokens=120,
+        ).strip()
+    except Exception:
+        return source
+
+    if not repaired:
+        return source
+    return unicodedata.normalize("NFC", repaired.splitlines()[0].strip() or source)
+
+
 def _fallback_tesseract(text: str) -> str:
     """Fallback OCR attempt by rendering text to temporary PNG."""
     try:
@@ -293,6 +387,15 @@ def fix_vietnamese_font_encoding(text: str) -> str:
     result = _map_with_table(text, VPS_TO_UNICODE)
     if not detect_broken_vn_font(result):
         return unicodedata.normalize("NFC", result)
+
+    if detect_vni_typing(result):
+        result = convert_vni_typing_to_unicode(result)
+        if not detect_broken_vn_font(result):
+            return unicodedata.normalize("NFC", result)
+
+    llm_repaired = _llm_repair_short_vietnamese_title(result)
+    if llm_repaired and llm_repaired != result:
+        return unicodedata.normalize("NFC", llm_repaired)
 
     result = _fallback_tesseract(result)
     if detect_vni_typing(result):

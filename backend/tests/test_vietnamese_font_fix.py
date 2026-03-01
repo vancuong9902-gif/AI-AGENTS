@@ -84,3 +84,16 @@ def test_llm_repair_short_garbled_title(mock_llm_available, mock_chat_text):
     assert fixed == "Toán học cơ bản"
     mock_llm_available.assert_called_once()
     mock_chat_text.assert_called_once()
+def test_convert_vni_typing_title_to_unicode():
+    assert convert_vni_typing_to_unicode("Toa1n ho5c lo7p 10") == "Toán học lớp 10"
+
+
+def test_detect_vni_typing_for_title_like_text():
+    assert detect_vni_typing("Toa1n ho5c lo7p 10 va2 hi2nh ho5c") is True
+
+
+def test_detect_vni_typing_does_not_break_formula():
+    text = "x2 + y2 = z2"
+    assert detect_vni_typing(text) is False
+    assert convert_vni_typing_to_unicode(text) == text
+    assert fix_vietnamese_font_encoding(text) == text
