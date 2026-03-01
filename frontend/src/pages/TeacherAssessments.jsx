@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { apiJson } from "../lib/api";
+import BatchExamGenerator from "../components/BatchExamGenerator";
 
 const EXAM_TYPE_OPTIONS = [
   { value: "diagnostic_input", label: "Kiểm tra đầu vào", defaults: { easy: 6, medium: 3, hard: 1, durationMinutes: 30 } },
@@ -312,6 +313,12 @@ export default function TeacherAssessments() {
   return (
     <div style={{ maxWidth: 980, margin: "0 auto", padding: 16 }}>
       <h2>👩‍🏫 Quản lý bài kiểm tra theo topic</h2>
+
+      <BatchExamGenerator
+        classroomId={classroomId}
+        documentIds={effectiveDocIds}
+        topics={selectedTopics}
+      />
 
       <div style={{ marginTop: 12, background: "#fff", padding: 12, borderRadius: 12, border: "1px solid #e6f4ff" }}>
         <div style={{ fontWeight: 900, marginBottom: 10 }}>Tạo Bài Kiểm Tra Đầu Vào</div>

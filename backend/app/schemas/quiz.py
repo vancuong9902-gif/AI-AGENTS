@@ -65,3 +65,15 @@ class QuizSubmitData(BaseModel):
     total: int
     breakdown: List[BreakdownItem]
     mastery_updated: Optional[Dict[str, Any]] = None
+
+
+PracticeDifficulty = Literal["easy", "medium", "hard"]
+
+
+class PracticeGenerateRequest(BaseModel):
+    classroom_id: int
+    student_id: int
+    document_ids: List[int] = Field(default_factory=list)
+    topic: str
+    difficulty: PracticeDifficulty
+    count: int = Field(default=10, ge=1, le=30)

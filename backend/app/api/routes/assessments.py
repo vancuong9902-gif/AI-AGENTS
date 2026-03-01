@@ -15,6 +15,7 @@ from app.models.attempt import Attempt
 from app.models.class_report import ClassReport
 from app.models.quiz_set import QuizSet
 from app.models.notification import Notification
+from app.models.learning_plan import LearningPlan, LearningPlanTaskCompletion
 from app.models.user import User
 from app.infra.queue import enqueue
 from app.tasks.report_tasks import task_generate_class_final_report
@@ -37,8 +38,73 @@ from app.services.assessment_service import (
     leaderboard_for_assessment,
     grade_essays,
     get_latest_submission,
+    get_or_generate_attempt_explanations,
 )
 
+
+def _mark_assessment_completion_in_learning_plan(db: Session, *, user_id: int, assessment_id: int) -> None:
+    latest_plan = (
+        db.query(LearningPlan)
+        .filter(LearningPlan.user_id == int(user_id))
+        .order_by(LearningPlan.id.desc())
+        .first()
+    )
+    if not latest_plan:
+        return
+
+    plan_json = latest_plan.plan_json if isinstance(latest_plan.plan_json, dict) else {}
+    assigned_tasks = plan_json.get("assigned_tasks") if isinstance(plan_json.get("assigned_tasks"), list) else []
+    if not assigned_tasks:
+        return
+
+    matched_topic_ids = {
+        int(t.get("topic_id"))
+        for t in assigned_tasks
+        if str(t.get("quiz_id") or "").isdigit() and int(t.get("quiz_id")) == int(assessment_id) and str(t.get("topic_id") or "").isdigit()
+    }
+    if not matched_topic_ids:
+        return
+
+    days = plan_json.get("days") if isinstance(plan_json.get("days"), list) else []
+    changed = False
+    for day in days:
+        if not isinstance(day, dict):
+            continue
+        day_index = int(day.get("day_index") or 0)
+        if day_index <= 0:
+            continue
+        tasks = day.get("tasks") if isinstance(day.get("tasks"), list) else []
+        for task_index, task in enumerate(tasks):
+            if not isinstance(task, dict):
+                continue
+            topic_id = task.get("topic_id")
+            if not (str(topic_id).isdigit() and int(topic_id) in matched_topic_ids):
+                continue
+
+            row = (
+                db.query(LearningPlanTaskCompletion)
+                .filter(
+                    LearningPlanTaskCompletion.plan_id == int(latest_plan.id),
+                    LearningPlanTaskCompletion.day_index == int(day_index),
+                    LearningPlanTaskCompletion.task_index == int(task_index),
+                )
+                .first()
+            )
+            if row is None:
+                row = LearningPlanTaskCompletion(
+                    plan_id=int(latest_plan.id),
+                    day_index=int(day_index),
+                    task_index=int(task_index),
+                    completed=True,
+                )
+                db.add(row)
+                changed = True
+            elif not bool(row.completed):
+                row.completed = True
+                changed = True
+
+    if changed:
+        db.flush()
 
 router = APIRouter(tags=["assessments"])
 teacher_router = APIRouter(tags=["teacher"])
@@ -445,9 +511,35 @@ def assessments_submit(
         data = _build_detailed_result(data)
         _check_and_trigger_class_report(db, assessment_id=assessment_id, user_id=int(user.id))
         _notify_teacher_when_all_final_submitted(db, assessment_id=int(assessment_id))
+        _mark_assessment_completion_in_learning_plan(db, user_id=int(user.id), assessment_id=int(assessment_id))
+        db.commit()
         return {"request_id": request.state.request_id, "data": data, "error": None}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/assessments/{assessment_id}/explanations")
+def assessments_explanations(
+    request: Request,
+    assessment_id: int,
+    attempt_id: int | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    if (getattr(user, "role", "student") or "student") == "student":
+        if not _student_can_access_assessment(db, student_id=int(user.id), assessment_id=int(assessment_id)):
+            raise HTTPException(status_code=404, detail="Assessment not found")
+
+    try:
+        data = get_or_generate_attempt_explanations(
+            db,
+            assessment_id=int(assessment_id),
+            user_id=int(user.id),
+            attempt_id=int(attempt_id) if attempt_id is not None else None,
+        )
+        return {"request_id": request.state.request_id, "data": data, "error": None}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.post("/assessments/quiz-sets/{quiz_set_id}/start")
@@ -490,6 +582,8 @@ def assessments_submit_quiz_set(
         )
         _check_and_trigger_class_report(db, assessment_id=int(quiz_set_id), user_id=int(user.id))
         _notify_teacher_when_all_final_submitted(db, assessment_id=int(quiz_set_id))
+        _mark_assessment_completion_in_learning_plan(db, user_id=int(user.id), assessment_id=int(quiz_set_id))
+        db.commit()
         return {"request_id": request.state.request_id, "data": data, "error": None}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
