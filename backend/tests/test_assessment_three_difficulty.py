@@ -156,3 +156,16 @@ def test_placement_three_difficulty_and_response_plan(monkeypatch):
     plan = _calc_difficulty_plan(result["questions"])
     assert plan == {"easy": 4, "medium": 4, "hard": 4}
     assert result["difficulty_plan"] == plan
+
+
+def test_normalize_difficulty_distribution_keeps_three_buckets():
+    out = assessment_service._normalize_difficulty_distribution({"easy": 1, "hard": 5}, total=12)
+    assert sum(out.values()) == 12
+    assert set(out.keys()) == {"easy", "medium", "hard"}
+    assert all(v >= 1 for v in out.values())
+
+
+def test_normalize_difficulty_distribution_handles_empty_config():
+    out = assessment_service._normalize_difficulty_distribution({}, total=15)
+    assert sum(out.values()) == 15
+    assert out["medium"] >= out["easy"]

@@ -10,6 +10,9 @@ _ETH_FIX = {
     "ð": "đ",
 }
 
+_REPLACEMENT_CHAR = "\ufffd"
+_OCR_ARTIFACT_RE = re.compile(r"(?:\uFFFD|�|\s{2,}[\.,;:])")
+
 
 def fix_eth_d(text: str) -> str:
     if not text:
@@ -18,6 +21,33 @@ def fix_eth_d(text: str) -> str:
         if a in text:
             text = text.replace(a, b)
     return text
+
+
+def has_ocr_artifacts(text: str) -> bool:
+    if not text:
+        return False
+    if _REPLACEMENT_CHAR in text:
+        return True
+    return bool(_OCR_ARTIFACT_RE.search(text))
+
+
+def clean_ocr_artifacts(text: str) -> str:
+    """Best-effort cleanup for low-quality OCR artifacts.
+
+    - Remove replacement chars (�) that break downstream tokenization.
+    - Normalize split punctuation/diacritics spacing.
+    - Keep line structure stable for chunking.
+    """
+    if not text:
+        return ""
+    out = str(text)
+    out = out.replace(_REPLACEMENT_CHAR, " ")
+    out = re.sub(r"\s+([,;:\.!\?\)\]\}])", r"\1", out)
+    out = re.sub(r"([\(\[\{])\s+", r"\1", out)
+    out = re.sub(r"([A-Za-zÀ-ỹà-ỹ])\s+([\u0300-\u036f])", r"\1\2", out)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()
 
 
 _VOWEL_BASE = set("aeiouyAEIOUY")
@@ -373,8 +403,8 @@ def repair_ocr_spacing_line(line: str) -> str:
 def repair_ocr_spacing_text(text: str) -> str:
     if not text:
         return ""
-    text = fix_eth_d(text)
+    text = clean_ocr_artifacts(fix_eth_d(text))
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     lines = text.split("\n")
     out = [repair_ocr_spacing_line(ln) for ln in lines]
-    return "\n".join(out)
+    return clean_ocr_artifacts("\n".join(out))

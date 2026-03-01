@@ -9,7 +9,13 @@ from typing import Any, Dict, List, Tuple, Optional
 from fastapi import UploadFile
 
 from app.core.config import settings
-from app.services.text_repair import repair_ocr_spacing_line, repair_ocr_spacing_text, fix_eth_d
+from app.services.text_repair import (
+    repair_ocr_spacing_line,
+    repair_ocr_spacing_text,
+    fix_eth_d,
+    clean_ocr_artifacts,
+    has_ocr_artifacts,
+)
 from app.services.text_quality import quality_score
 from app.services.vietnamese_font_fix import fix_vietnamese_encoding
 
@@ -36,8 +42,10 @@ def _normalize_pipeline_text(text: str) -> str:
         return ""
     text = _sanitize_text(text)
     text = unicodedata.normalize("NFKC", text)
-    text = fix_eth_d(text)
+    text = clean_ocr_artifacts(fix_eth_d(text))
     text = repair_ocr_spacing_text(text)
+    if has_ocr_artifacts(text):
+        text = clean_ocr_artifacts(text)
     return _sanitize_text(text)
 
 
