@@ -20,9 +20,12 @@ class Settings(BaseSettings):
 
     APP_NAME: str = "AI Learning Agent"
     ENV: str = "dev"
+    FRONTEND_ORIGIN: str | None = None
     # Có thể set 1 origin hoặc nhiều origin, ngăn cách bằng dấu phẩy
     # Ví dụ: "http://localhost:5173,https://example.com"
     BACKEND_CORS_ORIGINS: list[str] = ["http://localhost:5173"]
+    MAX_UPLOAD_MB: int = 20
+    RATE_LIMIT_REQUESTS_PER_MINUTE: int = 60
 
     DATABASE_URL: str
 
@@ -319,6 +322,15 @@ class Settings(BaseSettings):
             return [item.strip() for item in s.split(",") if item.strip()]
 
         return v
+
+    @model_validator(mode="after")
+    def _apply_frontend_origin(self):
+        origin = (self.FRONTEND_ORIGIN or "").strip()
+        if origin:
+            self.BACKEND_CORS_ORIGINS = [origin]
+        # production hardening: never allow wildcard origin
+        self.BACKEND_CORS_ORIGINS = [o for o in self.BACKEND_CORS_ORIGINS if o != "*"]
+        return self
 
 
 # QUAN TRỌNG: main.py đang import "settings"

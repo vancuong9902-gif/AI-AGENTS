@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import logging
+import time
 import uuid
 from typing import Any, Dict, Optional
 
@@ -36,8 +39,40 @@ from app.models.user import User
 from app.services import vector_store
 
 
+logger = logging.getLogger("app.request")
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO)
+
+
 def envelope(request_id: str, data: Any = None, error: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     return {"request_id": request_id, "data": data, "error": error}
+
+
+class InMemoryTokenBucket:
+    def __init__(self, rate_per_minute: int):
+        self.rate = max(1, int(rate_per_minute))
+        self._buckets: dict[str, dict[str, float]] = {}
+
+    def allow(self, key: str, rate_per_minute: int | None = None) -> bool:
+        if rate_per_minute is not None:
+            self.rate = max(1, int(rate_per_minute))
+        now = time.monotonic()
+        bucket = self._buckets.get(key)
+        if bucket is None:
+            self._buckets[key] = {"tokens": float(self.rate - 1), "ts": now}
+            return True
+
+        refill_per_sec = self.rate / 60.0
+        elapsed = max(0.0, now - bucket["ts"])
+        bucket["tokens"] = min(float(self.rate), bucket["tokens"] + elapsed * refill_per_sec)
+        bucket["ts"] = now
+        if bucket["tokens"] < 1.0:
+            return False
+        bucket["tokens"] -= 1.0
+        return True
+
+
+rate_limiter = InMemoryTokenBucket(settings.RATE_LIMIT_REQUESTS_PER_MINUTE)
 
 
 app = FastAPI(
@@ -58,8 +93,61 @@ app.add_middleware(
 async def request_id_middleware(request: Request, call_next):
     req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     request.state.request_id = req_id
+    start = time.perf_counter()
+
+    max_upload_bytes = int(settings.MAX_UPLOAD_MB) * 1024 * 1024
+    content_type = (request.headers.get("content-type") or "").lower()
+    content_length = request.headers.get("content-length")
+    if content_type.startswith("multipart/form-data") and content_length:
+        try:
+            if int(content_length) > max_upload_bytes:
+                return JSONResponse(
+                    status_code=413,
+                    content=envelope(
+                        request_id=req_id,
+                        data=None,
+                        error={
+                            "code": "PAYLOAD_TOO_LARGE",
+                            "message": f"Upload exceeds {settings.MAX_UPLOAD_MB}MB limit",
+                        },
+                    ),
+                )
+        except ValueError:
+            pass
+
+    heavy_paths = {"/api/tutor/chat", "/api/v1/tutor/chat", "/api/rag/search", "/api/rag/corrective_search"}
+    if request.url.path in heavy_paths:
+        client_key = request.client.host if request.client else "unknown"
+        bucket_key = f"{request.url.path}:{client_key}"
+        if not rate_limiter.allow(bucket_key, settings.RATE_LIMIT_REQUESTS_PER_MINUTE):
+            return JSONResponse(
+                status_code=429,
+                content=envelope(
+                    request_id=req_id,
+                    data=None,
+                    error={
+                        "code": "RATE_LIMITED",
+                        "message": "Too many requests, please retry later.",
+                    },
+                ),
+            )
+
     response = await call_next(request)
+    latency_ms = round((time.perf_counter() - start) * 1000, 2)
     response.headers["X-Request-ID"] = req_id
+    logger.info(
+        json.dumps(
+            {
+                "event": "request",
+                "request_id": req_id,
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": response.status_code,
+                "latency_ms": latency_ms,
+            },
+            ensure_ascii=False,
+        )
+    )
     return response
 
 
@@ -106,12 +194,26 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     req_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    logger.exception(
+        json.dumps(
+            {
+                "event": "unhandled_exception",
+                "request_id": req_id,
+                "path": request.url.path,
+                "method": request.method,
+            },
+            ensure_ascii=False,
+        )
+    )
+    message = "Internal server error"
+    if settings.ENV.lower() not in {"prod", "production"}:
+        message = str(exc)
     return JSONResponse(
         status_code=500,
         content=envelope(
             request_id=req_id,
             data=None,
-            error={"code": "INTERNAL_ERROR", "message": str(exc)},
+            error={"code": "INTERNAL_ERROR", "message": message},
         ),
     )
 
