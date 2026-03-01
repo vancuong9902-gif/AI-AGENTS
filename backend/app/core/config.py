@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     BACKEND_CORS_ORIGINS: list[str] = ["http://localhost:5173"]
     MAX_UPLOAD_MB: int = 20
     RATE_LIMIT_REQUESTS_PER_MINUTE: int = 60
+    LOG_LEVEL: str = "INFO"
+
+    # ===== Observability =====
+    OTEL_ENABLED: bool = False
+    OTEL_SERVICE_NAME: str = "ai-learning-agent-api"
+    OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://localhost:4318/v1/traces"
 
     DATABASE_URL: str
 

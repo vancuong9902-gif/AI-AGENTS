@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 
@@ -10,8 +10,11 @@ from app.api.deps import require_teacher
 from app.db.session import get_db
 from app.models.classroom import Classroom
 from app.models.user import User
-from app.schemas.tutor import TutorChatRequest, TutorGenerateQuestionsRequest
-from app.services.tutor_service import get_classroom_tutor_logs, tutor_chat, tutor_generate_questions
+from app.schemas.tutor import TutorChatEnqueueResponse, TutorChatRequest, TutorGenerateQuestionsRequest
+from app.services.ai_tutor_service import run_tutor_chat
+from app.services.tutor_service import get_classroom_tutor_logs, tutor_generate_questions
+from app.infra.queue import enqueue
+from app.tasks.ai_tasks import task_tutor_chat
 
 router = APIRouter(tags=["tutor"])
 
@@ -80,22 +83,14 @@ def _format_tutor_contract(data: Dict[str, Any], payload: TutorChatRequest) -> D
     }
 
 
-@router.post("/v1/tutor/chat")
+@router.post(
+    "/v1/tutor/chat",
+    summary="Tutor chat (sync response with Redis cache)",
+    responses={200: {"description": "Successful tutor response"}},
+)
 @router.post("/tutor/chat")
-def chat(request: Request, payload: TutorChatRequest, db: Session = Depends(get_db)):
-    data = tutor_chat(
-        db=db,
-        user_id=payload.user_id,
-        question=payload.question,
-        topic=payload.topic,
-        top_k=payload.top_k,
-        document_ids=payload.document_ids,
-        allowed_topics=payload.allowed_topics,
-        assessment_id=payload.assessment_id,
-        attempt_id=payload.attempt_id,
-        exam_mode=payload.exam_mode,
-        timed_test=payload.timed_test,
-    )
+async def chat(request: Request, payload: TutorChatRequest, db: Session = Depends(get_db)):
+    data = run_tutor_chat(db, payload)
 
     # Safety: ensure response is JSON-serializable.
     # Some DB meta fields (or upstream libs) may contain `bytes`, which breaks JSON encoding.
@@ -110,6 +105,17 @@ def chat(request: Request, payload: TutorChatRequest, db: Session = Depends(get_
         },
     )
     return {"request_id": request.state.request_id, "data": safe, "error": None}
+
+
+@router.post(
+    "/v1/tutor/chat/async",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=TutorChatEnqueueResponse,
+    summary="Enqueue tutor chat for asynchronous processing",
+)
+async def chat_async(payload: TutorChatRequest) -> TutorChatEnqueueResponse:
+    job = enqueue(task_tutor_chat, payload.model_dump(mode="json"), queue_name="ai")
+    return TutorChatEnqueueResponse(**job)
 
 
 @router.post("/tutor/generate-questions")
