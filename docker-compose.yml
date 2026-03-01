@@ -36,7 +36,10 @@ services:
     environment:
       APP_NAME: AI Learning Agent
       ENV: dev
+      FRONTEND_ORIGIN: http://localhost:5173
       BACKEND_CORS_ORIGINS: '["http://localhost:5173","http://127.0.0.1:5173"]'
+      MAX_UPLOAD_MB: "20"
+      RATE_LIMIT_REQUESTS_PER_MINUTE: "60"
       DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/ai_agent
       ASYNC_QUEUE_ENABLED: "true"
       REDIS_URL: redis://redis:6379/0
@@ -75,6 +78,11 @@ services:
       redis:
         condition: service_started
     command: ["bash","/app/worker_start.sh"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from app.infra.queue import get_redis_conn; get_redis_conn().ping()\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     volumes:
       - ./backend:/app
     networks:
