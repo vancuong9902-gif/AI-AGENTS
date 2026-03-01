@@ -457,7 +457,7 @@ export default function LearningPath() {
 
   useEffect(() => {
     apiJson(`/lms/student/${userId}/my-path`)
-      .then((d) => setMyPath(d || null))
+      .then((myPathData) => setMyPath(myPathData || null))
       .catch((e) => {
         setMyPath(null);
         setError(formatApiError(e, "Không thể tải My Path."));
