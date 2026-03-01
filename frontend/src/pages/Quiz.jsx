@@ -6,7 +6,11 @@ import Banner from '../ui/Banner';
 import Button from '../ui/Button';
 import Card from '../ui/Card';
 import Modal from '../ui/Modal';
-import PageHeader from '../ui/PageHeader';
+import PageContainer from '../ui/PageContainer';
+import SectionHeader from '../ui/SectionHeader';
+import Spinner from '../ui/Spinner';
+import EmptyState from '../ui/EmptyState';
+import './unified-pages.css';
 
 const DEFAULT_DIFFICULTY_SETTINGS = { easy: 4, medium: 4, hard: 2 };
 const DEFAULT_DURATION_SECONDS = 1800;
@@ -315,12 +319,11 @@ export default function Quiz() {
   };
 
   return (
-    <div className='container grid-12'>
+    <PageContainer className='grid-12'>
       <Card className='span-12'>
-        <PageHeader
+        <SectionHeader
           title='Placement Test'
           subtitle='Làm bài kiểm tra đầu vào theo topic tài liệu để hệ thống phân loại năng lực.'
-          breadcrumbs={['Học sinh', 'Placement Test']}
         />
       </Card>
 
@@ -333,7 +336,7 @@ export default function Quiz() {
 
       {activeClassroomId && bootLoading ? (
         <Card className='span-12'>
-          <Banner tone='info'>Đang tải lớp học, tài liệu và topic...</Banner>
+          <Banner tone='info'><span className='row'><Spinner />Đang tải lớp học, tài liệu và topic...</span></Banner>
         </Card>
       ) : null}
 
@@ -347,7 +350,7 @@ export default function Quiz() {
         <Card className='span-12 stack-md'>
           <div>
             <strong>Tài liệu</strong>
-            <div className='row' style={{ marginTop: 8, gap: 8, flexWrap: 'wrap' }}>
+            <div className='row quiz-doc-list'>
               {documents.map((doc) => {
                 const docId = toNumber(doc?.id, 0);
                 return (
@@ -366,9 +369,9 @@ export default function Quiz() {
           <div>
             <strong>Chọn topic</strong>
             {!topics.length ? (
-              <Banner tone='warning'>Tài liệu chưa có topic để tạo Placement Test.</Banner>
+              <EmptyState title='Chưa có topic' description='Tài liệu chưa có topic để tạo Placement Test.' icon='🧭' />
             ) : (
-              <div className='stack-sm' style={{ marginTop: 8 }}>
+              <div className='stack-sm quiz-topic-list'>
                 {topics.map((topic) => {
                   const id = toNumber(topic?.id, 0);
                   return (
@@ -403,10 +406,10 @@ export default function Quiz() {
           {questions.map((question, index) => (
             <div key={question.id} className='ui-card stack-sm'>
               <strong>Câu {index + 1}</strong>
-              <p style={{ margin: 0 }}>{question.stem}</p>
+              <p>{question.stem}</p>
 
               {question.type === 'essay' ? (
-                <textarea
+                <textarea className='ui-textarea'
                   rows={5}
                   value={typeof answers[question.id] === 'string' ? answers[question.id] : ''}
                   onChange={(event) => setAnswers((prev) => ({ ...prev, [question.id]: event.target.value }))}
@@ -455,6 +458,6 @@ export default function Quiz() {
       >
         <p>Bạn đã trả lời {answeredCount}/{questions.length} câu. Bạn chắc chắn muốn nộp bài?</p>
       </Modal>
-    </div>
+    </PageContainer>
   );
 }

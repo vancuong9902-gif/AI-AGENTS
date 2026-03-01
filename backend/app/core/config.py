@@ -35,7 +35,8 @@ class Settings(BaseSettings):
     # ===== Optional Auth (Mode A default: disabled) =====
     # When AUTH_ENABLED=false, the frontend can still authenticate via demo headers:
     #   X-User-Id, X-User-Role
-    # JWT endpoints remain available and can be enabled later by flipping AUTH_ENABLED=true.
+    # /api/auth/* routes are NOT mounted when disabled.
+    # Flip AUTH_ENABLED=true to expose email/password + JWT auth endpoints.
     AUTH_ENABLED: bool = False
     JWT_SECRET_KEY: str = "dev-secret-change-me"
     JWT_ALGORITHM: str = "HS256"

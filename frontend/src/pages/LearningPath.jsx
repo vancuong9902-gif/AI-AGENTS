@@ -2,8 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiJson } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
-import StudentLevelBadge from "../components/StudentLevelBadge";
 import ProgressComparison from "../components/ProgressComparison";
+import PageContainer from "../ui/PageContainer";
+import SectionHeader from "../ui/SectionHeader";
+import "./unified-pages.css";
 
 function MarkdownLite({ text }) {
   const blocks = useMemo(() => {
@@ -258,6 +260,14 @@ function formatVNDate(dateLike) {
   return d.toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
+function formatApiError(error, fallback = "Đã xảy ra lỗi. Vui lòng thử lại.") {
+  const status = Number(error?.status);
+  if (status === 400 || status === 422) {
+    return error?.message || "Dữ liệu gửi lên chưa hợp lệ. Vui lòng kiểm tra lại thông tin và thử lại.";
+  }
+  return String(error?.message || fallback);
+}
+
 export default function LearningPath() {
   const { userId } = useAuth();
   const nav = useNavigate();
@@ -447,8 +457,11 @@ export default function LearningPath() {
 
   useEffect(() => {
     apiJson(`/lms/student/${userId}/my-path`)
-      .then((d) => setMyPath(d?.data || null))
-      .catch(() => {});
+      .then((d) => setMyPath(d || null))
+      .catch((e) => {
+        setMyPath(null);
+        setError(formatApiError(e, "Không thể tải My Path."));
+      });
   }, [userId]);
 
   useEffect(() => {
@@ -471,7 +484,7 @@ export default function LearningPath() {
     if (!Number.isFinite(cid) || cid <= 0) return;
     apiJson(`/classrooms/${cid}/assessments?kind=final_exam`)
       .then((d) => {
-        const first = Array.isArray(d) ? d[0] : d?.items?.[0] || d?.data?.[0] || null;
+        const first = Array.isArray(d) ? d[0] : d?.items?.[0] || null;
         setFinalExam(first);
       })
       .catch(() => setFinalExam(null));
@@ -484,11 +497,11 @@ export default function LearningPath() {
     try {
       await apiJson(`/learning-plans/${planId}/tasks/complete`, {
         method: "POST",
-        body: JSON.stringify({ user_id: userId, day_index: dayIndex, task_index: taskIndex, completed: !!completed }),
+        body: { user_id: userId, day_index: dayIndex, task_index: taskIndex, completed: !!completed },
       });
       loadTopicProgress();
     } catch (e) {
-      setError(String(e?.message || e));
+      setError(formatApiError(e, "Không thể cập nhật trạng thái nhiệm vụ."));
     }
   }
 
@@ -523,7 +536,7 @@ export default function LearningPath() {
     try {
       const data = await apiJson(`/learning-plans/${planId}/homework/grade`, {
         method: "POST",
-        body: JSON.stringify({ user_id: userId, day_index: dayIndex, answer_text: draft.essay || "", mcq_answers: draft.mcq || {} }),
+        body: { user_id: userId, day_index: dayIndex, answer_text: draft.essay || "", mcq_answers: draft.mcq || {} },
       });
       setHomeworkGrades((g) => ({ ...g, [dayIndex]: data || null }));
 
@@ -532,7 +545,7 @@ export default function LearningPath() {
       if (hwTaskIndex >= 0) await toggleTask(dayIndex, hwTaskIndex, true);
       else loadTopicProgress();
     } catch (e) {
-      setError(String(e?.message || e));
+      setError(formatApiError(e, "Không thể chấm bài tập."));
     } finally {
       setLoading(false);
     }
@@ -566,11 +579,10 @@ export default function LearningPath() {
   const weakTopics = new Set((myPath?.weak_topics || myPath?.plan?.weak_topics || []).map((t) => String(t || "").toLowerCase()));
   const progress = myPath?.progress || { completed_tasks: 0, total_tasks: assignedTasks.length, percent: 0 };
   const levelDisplay = myPath?.level || { key: activeLevel?.label, label: activeLevel?.label || "Khá", color: activeLevel?.color || "blue" };
-  const pageWrap = { maxWidth: 1020, margin: "0 auto", padding: 16 };
-  const card = { border: "1px solid #eee", borderRadius: 14, padding: 16, background: "#fff" };
 
   return (
-    <div style={pageWrap}>
+    <PageContainer className="stack-md">
+      <SectionHeader title="🎯 Lộ trình học tập cá nhân" subtitle="Lộ trình được cá nhân hóa theo kết quả đánh giá." />
       <style>{`
         .timeline-item { transition: all .35s ease; }
         .timeline-item.done { transform: translateX(16px); background: #f6ffed; }
@@ -585,7 +597,7 @@ export default function LearningPath() {
         </div>
       ) : null}
 
-      <div style={{ ...card, marginBottom: 12, position: "relative", overflow: "hidden" }}>
+      <div className="ui-card" style={{ marginBottom: 12, position: "relative", overflow: "hidden" }}>
         {allDone && (
           <div className="confetti-wrap">
             {Array.from({ length: 24 }).map((_, i) => (
@@ -876,6 +888,6 @@ export default function LearningPath() {
           )}
         </>
       )}
-    </div>
+    </PageContainer>
   );
 }
