@@ -30,7 +30,7 @@ export default function TeacherCreateEntryTest() {
     (async () => {
       try {
         const data = await apiJson("/documents?limit=100&offset=0");
-        setDocs(data?.documents || []);
+        setDocs(Array.isArray(data?.items) ? data.items : data?.documents || []);
       } catch (e) {
         setError(e?.message || "Không tải được tài liệu");
       }
@@ -44,7 +44,7 @@ export default function TeacherCreateEntryTest() {
       const entries = await Promise.all(
         missing.map(async (did) => {
           const data = await apiJson(`/documents/${did}/topics?limit=100&offset=0`);
-          return [did, data?.topics || []];
+          return [did, Array.isArray(data?.items) ? data.items : data?.topics || []];
         })
       );
       setTopicsByDoc((prev) => {
