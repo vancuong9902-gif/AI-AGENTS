@@ -26,8 +26,9 @@ export default function AssessmentTake() {
 
   const autoSubmittedRef = useRef(false);
   const warningShownRef = useRef({ five: false, one: false });
-  const learningPathBannerRef = useRef(null);
+  const diagnosticBannerRef = useRef(null);
 
+  const learningPathBannerRef = useRef(null);
   const answeredCount = useMemo(() => Object.keys(answers).length, [answers]);
 
   const qMap = useMemo(() => {
@@ -83,6 +84,24 @@ export default function AssessmentTake() {
     return { color: "#722ed1", bg: "#f9f0ff", border: "#d3adf7" };
   };
 
+
+  const diagnosticLevelTheme = (levelValue) => {
+    const raw = String(levelValue || "").toLowerCase();
+    if (["yeu", "yếu", "beginner"].some((x) => raw.includes(x))) {
+      return { label: "Yếu", color: "#cf1322", bg: "#fff1f0", border: "#ffccc7" };
+    }
+    if (["trung", "tb", "intermediate"].some((x) => raw.includes(x))) {
+      return { label: "Trung bình", color: "#ad6800", bg: "#fffbe6", border: "#ffe58f" };
+    }
+    if (["kha", "khá"].some((x) => raw.includes(x))) {
+      return { label: "Khá", color: "#096dd9", bg: "#e6f4ff", border: "#91caff" };
+    }
+    if (["gioi", "giỏi", "advanced"].some((x) => raw.includes(x))) {
+      return { label: "Giỏi", color: "#531dab", bg: "#f9f0ff", border: "#d3adf7" };
+    }
+    return { label: String(levelValue || "Chưa rõ"), color: "#595959", bg: "#fafafa", border: "#d9d9d9" };
+  };
+
   const formatDuration = (sec) => {
     const s = Math.max(0, Math.floor(Number(sec || 0)));
     const hh = Math.floor(s / 3600);
@@ -91,6 +110,12 @@ export default function AssessmentTake() {
     if (hh > 0) return `${hh}h ${String(mm).padStart(2, "0")}m ${String(ss).padStart(2, "0")}s`;
     return `${mm}m ${String(ss).padStart(2, "0")}s`;
   };
+
+  useEffect(() => {
+    if (result?.synced_diagnostic?.stage === "pre" && result?.synced_diagnostic?.plan_id) {
+      diagnosticBannerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [result]);
 
   const difficultyStats = useMemo(() => {
     const buckets = {
@@ -750,16 +775,19 @@ export default function AssessmentTake() {
 
             {result?.synced_diagnostic?.stage === "pre" && (
               <div
+                ref={diagnosticBannerRef}
                 ref={learningPathBannerRef}
                 style={{
                   marginTop: 10,
                   background: "#fff",
-                  border: "1px solid #e6f4ff",
+                  border: "1px solid #b7eb8f",
                   borderRadius: 12,
                   padding: 12,
                 }}
               >
                 <div style={{ fontWeight: 800 }}>🎯 Placement test đã cập nhật trình độ</div>
+                <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ color: "#333" }}>Level:</span>
                 <div style={{ marginTop: 6, color: "#333", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <span>Level mới:</span>
                   <span
@@ -768,6 +796,14 @@ export default function AssessmentTake() {
                       alignItems: "center",
                       padding: "2px 10px",
                       borderRadius: 999,
+                      fontSize: 12,
+                      fontWeight: 700,
+                      color: diagnosticLevelTheme(result?.synced_diagnostic?.level).color,
+                      background: diagnosticLevelTheme(result?.synced_diagnostic?.level).bg,
+                      border: `1px solid ${diagnosticLevelTheme(result?.synced_diagnostic?.level).border}`,
+                    }}
+                  >
+                    {diagnosticLevelTheme(result?.synced_diagnostic?.level).label}
                       fontWeight: 700,
                       fontSize: 13,
                       border: `1px solid ${levelBadgeTheme(result.synced_diagnostic.level).border}`,
@@ -785,6 +821,9 @@ export default function AssessmentTake() {
                 ) : null}
                 {result.synced_diagnostic.plan_id ? (
                   <div style={{ marginTop: 8 }}>
+                    <div style={{ fontWeight: 700, color: "#237804" }}>✅ AI đã tạo lộ trình 7 ngày phù hợp với bạn</div>
+                    <div style={{ marginTop: 8 }}>
+                      <button style={{ padding: "8px 12px", cursor: "pointer" }} onClick={() => navigate("/learning-path")}>
                     <div style={{ fontWeight: 700, color: "#166534" }}>✅ AI đã tạo lộ trình 7 ngày phù hợp với bạn</div>
                     <div style={{ marginTop: 8 }}>
                       <button style={{ padding: "8px 12px" }} onClick={() => navigate('/learning-path')}>
