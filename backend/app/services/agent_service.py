@@ -251,22 +251,24 @@ def generate_diagnostic_pre_payload(
     for _ in range(3):
         prompts_blocked = sorted(list(blocked | {q["fingerprint"] for q in collected}))[:150]
         sys = (
-            "Bạn là giáo viên ra đề. CHỈ dùng evidence_chunks. "
-            "Sinh đề theo 3 độ khó: easy (remember/understand), medium (apply/analyze), "
-            "hard (evaluate/create). "
-            "Phải phủ đều topics giáo viên chọn; mỗi câu có sources (chunk_id). "
-            "Không trùng ý/câu chữ với excluded_questions. "
-            "Trả về JSON hợp lệ duy nhất, có đáp án và giải thích ngắn; essay phải có rubric chấm. "
-            "Nếu evidence không đủ thì giảm số câu hoặc trả lỗi có hướng dẫn, tuyệt đối không bịa."
+            "Bạn là Placement Test Composer Agent. "
+            "CHỈ dùng kiến thức trong evidence_chunks; tuyệt đối không dùng kiến thức ngoài. "
+            "Phân bố độ khó bắt buộc: easy=remember/understand; medium=apply/analyze; hard=evaluate/create. "
+            "Câu hard ưu tiên tự luận có rubric. "
+            "Mỗi câu phải có sources chứa chunk_id hợp lệ. "
+            "Không hỏi kiểu nhắc đến tài liệu/trang/hình/bảng. "
+            "Nếu evidence không đủ để tạo đề đúng ràng buộc, trả về status=NEED_CLEAN_TEXT. "
+            "Chỉ trả về một JSON hợp lệ."
         )
         user = {
             "selected_topics": topics,
             "evidence_chunks": evidence_chunks,
             "excluded_questions": prompts_blocked,
-            "config": {
+            "settings": {
                 "easy_count": easy_count,
                 "medium_count": medium_count,
                 "hard_count": hard_count,
+                "duration_seconds": int(duration_seconds),
             },
             "time_policy": time_policy,
             "duration_seconds": int(duration_seconds),
@@ -280,23 +282,32 @@ def generate_diagnostic_pre_payload(
                 "sources: ít nhất 1 chunk_id có trong evidence_chunks.",
                 "difficulty mapping bắt buộc: easy→remember/understand; medium→apply/analyze; hard→evaluate/create.",
                 "Với mcq: options + correct_index; với essay: expected_answer + rubric.",
+                "Không đặt câu hỏi chứa các cụm: 'theo tài liệu', 'trang', 'hình', 'bảng'.",
                 "Nếu evidence không đủ thì có thể trả JSON lỗi kèm reason + suggestion; không bịa.",
             ],
             "output_format": {
-                "questions": [
-                    {
-                        "type": "mcq",
-                        "stem": "...",
-                        "options": ["A", "B", "C", "D"],
-                        "correct_index": 0,
-                        "explanation": "...",
-                        "bloom_level": "remember",
-                        "difficulty": "easy",
-                        "topic": topics[0],
-                        "sources": [{"chunk_id": int(next(iter(valid_chunk_ids)))}],
-                        "estimated_minutes": 2,
-                    }
-                ]
+                "status": "OK",
+                "assessment": {
+                    "title": f"Placement Test - {', '.join(topics)}",
+                    "duration_seconds": int(duration_seconds),
+                    "questions": [
+                        {
+                            "id": "Q1",
+                            "type": "mcq",
+                            "difficulty": "easy",
+                            "bloom_level": "remember",
+                            "topic": topics[0],
+                            "stem": "...",
+                            "options": ["A", "B", "C", "D"],
+                            "correct_index": 0,
+                            "explanation": "...",
+                            "max_points": 1,
+                            "rubric": [{"criteria": "đúng ý", "points": 1}],
+                            "sources": [{"chunk_id": int(next(iter(valid_chunk_ids)))}],
+                            "estimated_minutes": 2,
+                        }
+                    ],
+                },
             },
             "language": lang,
         }
@@ -309,10 +320,27 @@ def generate_diagnostic_pre_payload(
             temperature=0.2,
             max_tokens=2600,
         )
-        if isinstance(obj, dict) and str(obj.get("status") or "").upper() in {"ERROR", "NEED_MORE_EVIDENCE", "NEED_CLEAN_TEXT"}:
-            continue
+        if isinstance(obj, dict):
+            status = str(obj.get("status") or "").upper()
+            if status == "NEED_CLEAN_TEXT":
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "NEED_CLEAN_TEXT",
+                        "message": "Evidence chưa đủ sạch/đủ rõ để sinh placement test an toàn.",
+                        "suggestion": "Bổ sung/chỉnh lại nội dung gốc (ưu tiên văn bản sạch OCR) rồi thử lại.",
+                    },
+                )
+            if status in {"ERROR", "NEED_MORE_EVIDENCE"}:
+                continue
 
-        raw = obj.get("questions") if isinstance(obj, dict) else None
+        raw = None
+        if isinstance(obj, dict):
+            assessment = obj.get("assessment")
+            if isinstance(assessment, dict) and isinstance(assessment.get("questions"), list):
+                raw = assessment.get("questions")
+            elif isinstance(obj.get("questions"), list):
+                raw = obj.get("questions")
         if not isinstance(raw, list):
             continue
 
