@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiJson } from "../lib/api";
-import { useAuth } from "../context/AuthContext";
+import { useAuth } from "../context/useAuth";
 
 function tone(level) {
   if (level === "ALERT") return "bg-red-50 border-red-200 text-red-800";

@@ -4,7 +4,7 @@ import { FiLogOut, FiMenu, FiX } from 'react-icons/fi';
 import Navbar from './components/Navbar';
 import AppRoutes from './routes/AppRoutes';
 import NotificationBell from './components/NotificationBell';
-import { useAuth } from './context/AuthContext';
+import { useAuth } from './context/useAuth';
 import './App.css';
 
 const PAGE_META = [
@@ -25,9 +25,6 @@ function App() {
   const location = useLocation();
   const navigate = useNavigate();
 
-  useEffect(() => {
-    setOpen(false);
-  }, [location.pathname]);
 
   useEffect(() => {
     if (!open) return undefined;

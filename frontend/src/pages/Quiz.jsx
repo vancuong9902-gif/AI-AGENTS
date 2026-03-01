@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/useAuth';
 import { apiJson } from '../lib/api';
 import Banner from '../ui/Banner';
 import Button from '../ui/Button';
@@ -238,9 +238,9 @@ export default function Quiz() {
         })),
       };
 
-      const response = await apiJson(`/attempts/${encodeURIComponent(attemptId)}/submit`, {
+      await apiJson(`/attempts/${encodeURIComponent(attemptId)}/submit`, {
         method: 'POST',
-        body: payload,
+        body: { ...payload, force: Boolean(auto) },
       });
 
       navigate(`/result/${encodeURIComponent(attemptId)}`);

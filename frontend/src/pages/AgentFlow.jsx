@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { apiJson } from "../lib/api";
-import { useAuth } from "../context/AuthContext";
+import { useAuth } from "../context/useAuth";
 
 const stepTitle = {
   1: "Bước 1 — Entry Test",
@@ -86,7 +86,6 @@ export default function AgentFlow() {
   }, [learningPlan]);
 
   const completedCount = Object.values(topicProgress || {}).filter((x) => !!x?.completed).length;
-  const completionRate = planTopics.length > 0 ? completedCount / planTopics.length : 0;
 
   useEffect(() => {
     (async () => {

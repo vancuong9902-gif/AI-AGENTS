@@ -12,8 +12,10 @@ def test_quiz_duration_map_uses_duration_seconds():
 
 
 class _Q:
-    def __init__(self, entity):
+    def __init__(self, db, entity):
+        self.db = db
         self.entity = entity
+        self.criteria = ()
 
     def join(self, *_args, **_kwargs):
         return self
@@ -26,7 +28,6 @@ class _Q:
         return self
 
     def all(self):
-        if self.entity is ClassroomAssessment.assessment_id:
         text = " ".join(str(c) for c in self.criteria)
         if self.entity is ClassroomAssessment.assessment_id:
             self.db.captured_filter_text = text
@@ -35,11 +36,13 @@ class _Q:
 
 
 class _DB:
+    def __init__(self):
+        self.captured_filter_text = ""
+
     def query(self, entity):
-        return _Q(entity)
+        return _Q(self, entity)
 
 
-def test_lms_generate_final_uses_classroom_assessment_ids(monkeypatch):
 def test_lms_generate_final_excludes_assigned_classroom_assessments(monkeypatch):
     db = _DB()
     payload = lms.GenerateLmsQuizIn(teacher_id=1, classroom_id=9)
@@ -61,23 +64,39 @@ def test_submit_attempt_by_id_publishes_entry_event(monkeypatch):
         def __init__(self, entity):
             self.entity = entity
 
+        def join(self, *_args, **_kwargs):
+            return self
+
         def filter(self, *_args, **_kwargs):
             return self
 
         def first(self):
             if self.entity.__name__ == "Session":
-                return SimpleNamespace(id=1, user_id=5, type="quiz_attempt:99", started_at=None)
-            return SimpleNamespace(id=99, kind="diagnostic_pre", topic="A", duration_seconds=1800, classroom_id=2)
+                return SimpleNamespace(id=1, user_id=5, type="quiz_attempt:99", started_at=None, locked_at=None, answers_snapshot_json=[])
+            if self.entity.__name__ == "Attempt":
+                return (1,)
+            return SimpleNamespace(id=99, kind="diagnostic_pre", topic="A", duration_seconds=1800, classroom_id=2, level="intermediate")
 
     class _DB2:
         def query(self, entity):
             return _Query2(entity)
 
-    monkeypatch.setattr(lms, "submit_assessment", lambda *args, **kwargs: {"breakdown": []})
+        def add(self, *_args, **_kwargs):
+            return None
+
+        def commit(self):
+            return None
+
+        def refresh(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(lms, "submit_assessment", lambda *args, **kwargs: {"breakdown": [], "score_percent": 80, "assessment_kind": "diagnostic_pre", "attempt_id": 10})
     monkeypatch.setattr(lms, "score_breakdown", lambda _x: {"overall": {"percent": 80.0}, "weak_topics": []})
-    monkeypatch.setattr(lms, "classify_student_level", lambda _x: "kha")
+    monkeypatch.setattr(lms, "classify_student_level", lambda _x: {"level_key": "kha", "label": "Khá"})
     monkeypatch.setattr(lms, "classify_student_multidim", lambda **kwargs: {})
     monkeypatch.setattr(lms, "build_recommendations", lambda **kwargs: [])
+    monkeypatch.setattr(lms, "assign_learning_path", lambda *args, **kwargs: {"plan_id": 1})
+    monkeypatch.setattr(lms, "_normalize_submit_synced_diagnostic", lambda base, **_: base)
 
     captured = {}
     monkeypatch.setattr(lms, "_publish_mas_event_non_blocking", lambda *_args, **kwargs: captured.setdefault("event", kwargs.get("event")))

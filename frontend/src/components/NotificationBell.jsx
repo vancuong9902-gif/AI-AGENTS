@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiJson } from '../lib/api';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/useAuth';
 
 export default function NotificationBell() {
   const { role, userId } = useAuth();
@@ -12,21 +12,29 @@ export default function NotificationBell() {
 
   const unreadCount = useMemo(() => items.filter((n) => !n.is_read).length, [items]);
 
-  const loadNotifications = async () => {
-    if (role !== 'student' || !userId) return;
-    try {
-      const data = await apiJson('/notifications/my');
-      setItems(Array.isArray(data) ? data : []);
-    } catch {
-      setItems([]);
-    }
-  };
+  const loadNotifications = useCallback(async () => {
+    if (role !== 'student' || !userId) return [];
+    const data = await apiJson('/notifications/my');
+    return Array.isArray(data) ? data : [];
+  }, [role, userId]);
 
   useEffect(() => {
-    loadNotifications();
-    const timer = setInterval(loadNotifications, 30000);
-    return () => clearInterval(timer);
-  }, [role, userId]);
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const nextItems = await loadNotifications();
+        if (!cancelled) setItems(nextItems);
+      } catch {
+        if (!cancelled) setItems([]);
+      }
+    };
+    tick();
+    const timer = setInterval(tick, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [loadNotifications]);
 
   useEffect(() => {
     const onClickOutside = (e) => {

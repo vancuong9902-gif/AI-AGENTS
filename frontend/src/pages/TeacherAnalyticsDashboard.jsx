@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid } from '../lib/rechartsCompat';
 import { apiJson, API_BASE, buildAuthHeaders } from '../lib/api';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/useAuth';
 import Card from '../ui/Card';
 import Button from '../ui/Button';
 import PageHeader from '../ui/PageHeader';

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiJson } from "../lib/api";
-import { useAuth } from "../context/AuthContext";
+import { useAuth } from "../context/useAuth";
 import ProgressComparison from "../components/ProgressComparison";
 import PageContainer from "../ui/PageContainer";
 import SectionHeader from "../ui/SectionHeader";
@@ -537,6 +537,7 @@ export default function LearningPath() {
       ? myPath.assigned_tasks
       : [];
   const weakTopics = new Set((myPath?.weak_topics || myPath?.plan?.weak_topics || []).map((t) => String(t || "").toLowerCase()));
+  const card = { background: "#fff", border: "1px solid #eee", borderRadius: 14, padding: 14 };
   const progress = myPath?.progress || { completed_tasks: 0, total_tasks: assignedTasks.length, percent: 0 };
   const levelDisplay = myPath?.level || { key: activeLevel?.label, label: activeLevel?.label || "Khá", color: activeLevel?.color || "blue" };
 

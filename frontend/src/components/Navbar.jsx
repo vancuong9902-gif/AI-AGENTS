@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router-dom';
 import { FiActivity, FiBarChart2, FiBookOpen, FiClipboard, FiFolder, FiHome, FiLayers, FiUploadCloud, FiUsers } from 'react-icons/fi';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/useAuth';
 
 const student = [
   { to: '/classrooms', label: 'Lớp học', icon: FiUsers },

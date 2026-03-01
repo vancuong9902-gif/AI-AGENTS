@@ -14,7 +14,14 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+from importlib.util import find_spec
+
+if find_spec("jinja2") is not None:
+    from jinja2 import Environment, FileSystemLoader, select_autoescape
+else:
+    Environment = lambda *args, **kwargs: None
+    FileSystemLoader = lambda *args, **kwargs: None
+    select_autoescape = lambda *args, **kwargs: None
 from pydantic import BaseModel, Field
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfbase import pdfmetrics
@@ -1119,16 +1126,6 @@ def heartbeat_attempt(request: Request, attempt_id: int, payload: HeartbeatAttem
     }
 
 
-@router.post("/attempts/{attempt_id}/submit")
-def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttemptByIdIn, db: Session = Depends(get_db)):
-            "attempt_id": int(started.id),
-            "server_now": now.isoformat(),
-            "duration_seconds": int(duration_seconds),
-            "elapsed_seconds": int(elapsed_seconds),
-            "time_left_seconds": int(time_left_seconds),
-            "locked": bool(locked),
-        },
-
 @router.get("/attempts/{attempt_id}/status")
 def get_attempt_status(request: Request, attempt_id: int, db: Session = Depends(get_db)):
     started = db.query(UserSession).filter(
@@ -1353,8 +1350,6 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
         db,
         assessment_id=quiz_id,
         user_id=int(started.user_id),
-        duration_sec=spent,
-        answers=submit_answers,
         duration_sec=min(spent, duration_seconds) if duration_seconds > 0 else spent,
         answers=answers_for_scoring,
     )
@@ -1435,7 +1430,6 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
     recommendations = build_recommendations(
         breakdown=breakdown, document_topics=topics, multidim_profile=multidim_profile)
 
-    if is_late:
     if timed_out or is_late:
         base["is_late_submission"] = True
         base["late_by_seconds"] = int(late_by_seconds)

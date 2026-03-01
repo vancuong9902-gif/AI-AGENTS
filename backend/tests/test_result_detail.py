@@ -24,11 +24,10 @@ from app.services import assessment_service
 
 
 class _FakeQuery:
-    def __init__(self, data):
-        self._data = list(data)
-    def __init__(self, first_value=None, all_value=None):
+    def __init__(self, data=None, first_value=None, all_value=None):
+        self._data = list(data) if data is not None else None
         self._first_value = first_value
-        self._all_value = all_value if all_value is not None else []
+        self._all_value = all_value
 
     def filter(self, *args, **kwargs):
         return self
@@ -40,28 +39,35 @@ class _FakeQuery:
         return self
 
     def first(self):
-        return self._data[0] if self._data else None
+        if self._data is not None:
+            return self._data[0] if self._data else None
+        return self._first_value
 
     def all(self):
-        return list(self._data)
+        if self._data is not None:
+            return list(self._data)
+        return list(self._all_value or [])
 
 
-class _FakeDB:
+class _MappedDB:
     def __init__(self, mapping):
         self.mapping = mapping
         self.added = []
 
     def query(self, entity, *_args, **_kwargs):
-        return _FakeQuery(self.mapping.get(entity, []))
+        return _FakeQuery(data=self.mapping.get(entity, []))
 
     def add(self, obj):
-        return self._first_value
+        self.added.append(obj)
 
-    def all(self):
-        return self._all_value
+    def commit(self):
+        return None
+
+    def refresh(self, _obj):
+        return None
 
 
-class _FakeDB:
+class _SubmitDB:
     def __init__(self, quiz_set, questions, session):
         self.quiz_set = quiz_set
         self.questions = questions
@@ -139,7 +145,7 @@ def test_submit_assessment_breakdown_contains_bloom_level(monkeypatch):
         ),
     ]
 
-    db = _FakeDB(
+    db = _MappedDB(
         {
             QuizSet: [quiz],
             Question: questions,
@@ -214,7 +220,7 @@ def test_get_attempt_result_includes_difficulty_and_summary_keys():
         )
     ]
 
-    db = _FakeDB(
+    db = _MappedDB(
         {
             UserSession: [session],
             QuizSet: [quiz],
@@ -229,7 +235,6 @@ def test_get_attempt_result_includes_difficulty_and_summary_keys():
 
     assert detail["questions_detail"][0]["difficulty"]
     assert set(detail["summary"]["by_difficulty"].keys()) >= {"easy", "medium", "hard"}
-        return None
 
 
 def test_submit_assessment_includes_detail_fields_and_summary(monkeypatch):
@@ -263,7 +268,7 @@ def test_submit_assessment_includes_detail_fields_and_summary(monkeypatch):
         time_limit_seconds=900,
         submitted_at=None,
     )
-    db = _FakeDB(quiz_set=quiz_set, questions=[question], session=session)
+    db = _SubmitDB(quiz_set=quiz_set, questions=[question], session=session)
 
     monkeypatch.setattr(assessment_service, "ensure_user_exists", lambda *args, **kwargs: None)
 
