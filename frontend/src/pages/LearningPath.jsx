@@ -267,6 +267,9 @@ export default function LearningPath() {
     [planDays]
   );
 
+  const studentLevelKey = String(levelDetails?.level_key || myPath?.student_level?.level_key || myPath?.student_level || "kha").toLowerCase();
+  const maxTopics = TOPIC_LIMIT_BY_LEVEL[studentLevelKey] ?? 5;
+  const filteredTimelineTasks = useMemo(() => (Number.isFinite(maxTopics) ? timelineTasks.slice(0, maxTopics) : timelineTasks), [timelineTasks, maxTopics]);
   const completedCount = useMemo(
     () => filteredTimelineTasks.filter((t) => taskCompletion[`${t.dayIndex}-${t.taskIndex}`]).length,
     [filteredTimelineTasks, taskCompletion]
@@ -289,9 +292,6 @@ export default function LearningPath() {
     return Object.entries(map).sort((a, b) => Number(a[0]) - Number(b[0]));
   }, [adaptiveItems]);
   const activeLevel = levelDetails || levelFromRaw(myPath?.student_level || plan?.student_level || "Khá");
-  const studentLevelKey = String(levelDetails?.level_key || myPath?.student_level?.level_key || myPath?.student_level || "kha").toLowerCase();
-  const maxTopics = TOPIC_LIMIT_BY_LEVEL[studentLevelKey] ?? 5;
-  const filteredTimelineTasks = useMemo(() => (Number.isFinite(maxTopics) ? timelineTasks.slice(0, maxTopics) : timelineTasks), [timelineTasks, maxTopics]);
   const studyMaterials = myPath?.study_materials || currentPlan?.study_materials || null;
   useEffect(() => {
     if (!userId) return;

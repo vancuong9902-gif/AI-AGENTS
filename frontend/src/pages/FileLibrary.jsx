@@ -45,7 +45,7 @@ export default function FileLibrary() {
     });
 
     try {
-      const data = await apiJson(`/documents/${doc.document_id}/topics`);
+      const data = await apiJson(`/documents/${doc.document_id}/topics?limit=100&offset=0`);
       const rawTopics = Array.isArray(data) ? data : data?.topics || data?.items || [];
       const normalizedTopics = rawTopics.map((topic, idx) => ({
         id: topic?.topic_id || topic?.id || `${doc.document_id}-${idx}`,
@@ -164,8 +164,6 @@ export default function FileLibrary() {
                 <div><strong>{topic.title}</strong></div>
                 <div className='filelibrary-topic-meta'>Số chunks/notes: {topic.chunkCount}</div>
                 {topic.summary ? <div>{topic.summary}</div> : <div className='filelibrary-topic-meta'>Chưa có mô tả ngắn.</div>}
-                <div className='text-muted'>Số chunks/notes: {topic.chunkCount}</div>
-                {topic.summary ? <div>{topic.summary}</div> : <div className='text-muted'>Chưa có mô tả ngắn.</div>}
                 <div>
                   <Link to={`/documents/${topicsModal.documentId}/topics/${topic.id}`}><Button variant='ghost'>Mở/Chi tiết</Button></Link>
                 </div>
