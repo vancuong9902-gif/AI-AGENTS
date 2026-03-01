@@ -14,6 +14,7 @@ from app.models.classroom_assessment import ClassroomAssessment
 from app.models.attempt import Attempt
 from app.models.class_report import ClassReport
 from app.models.quiz_set import QuizSet
+from app.models.notification import Notification
 from app.models.user import User
 from app.infra.queue import enqueue
 from app.tasks.report_tasks import task_generate_class_final_report
@@ -232,6 +233,45 @@ def _check_and_trigger_class_report(db: Session, *, assessment_id: int, user_id:
     )
 
 
+
+
+def _notify_teacher_when_all_final_submitted(db: Session, *, assessment_id: int) -> None:
+    mapping = (
+        db.query(ClassroomAssessment, QuizSet, Classroom)
+        .join(QuizSet, QuizSet.id == ClassroomAssessment.assessment_id)
+        .join(Classroom, Classroom.id == ClassroomAssessment.classroom_id)
+        .filter(ClassroomAssessment.assessment_id == int(assessment_id))
+        .first()
+    )
+    if not mapping:
+        return
+    classroom_assessment, quiz_set, classroom = mapping
+    if str(getattr(quiz_set, "kind", "") or "") not in {"diagnostic_post", "final_exam"}:
+        return
+
+    members = [int(uid) for uid, in db.query(ClassroomMember.user_id).filter(ClassroomMember.classroom_id == int(classroom_assessment.classroom_id), ClassroomMember.user_id != int(classroom.teacher_id)).all()]
+    if not members:
+        return
+    submitted = {int(uid) for uid, in db.query(Attempt.user_id).filter(Attempt.quiz_set_id == int(assessment_id), Attempt.user_id.in_(members)).distinct().all()}
+    if not set(members).issubset(submitted):
+        return
+
+    exists = db.query(Notification.id).filter(Notification.user_id == int(classroom.teacher_id), Notification.type == "class_final_ready", Notification.quiz_id == int(assessment_id)).first()
+    if exists:
+        return
+
+    db.add(Notification(
+        user_id=int(classroom.teacher_id),
+        teacher_id=int(classroom.teacher_id),
+        quiz_id=int(assessment_id),
+        type="class_final_ready",
+        title="Báo cáo lớp sẵn sàng",
+        message="Tất cả học sinh đã nộp final. Báo cáo sẵn sàng.",
+        payload_json={"classroom_id": int(classroom_assessment.classroom_id), "quiz_id": int(assessment_id)},
+        is_read=False,
+    ))
+    db.commit()
+
 def _student_can_access_assessment(db: Session, *, student_id: int, assessment_id: int) -> bool:
     # student must be member of a classroom that has this assessment assigned
     q = (
@@ -404,6 +444,7 @@ def assessments_submit(
         )
         data = _build_detailed_result(data)
         _check_and_trigger_class_report(db, assessment_id=assessment_id, user_id=int(user.id))
+        _notify_teacher_when_all_final_submitted(db, assessment_id=int(assessment_id))
         return {"request_id": request.state.request_id, "data": data, "error": None}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -448,6 +489,7 @@ def assessments_submit_quiz_set(
             duration_sec=payload.duration_sec,
         )
         _check_and_trigger_class_report(db, assessment_id=int(quiz_set_id), user_id=int(user.id))
+        _notify_teacher_when_all_final_submitted(db, assessment_id=int(quiz_set_id))
         return {"request_id": request.state.request_id, "data": data, "error": None}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

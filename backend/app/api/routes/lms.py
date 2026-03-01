@@ -19,6 +19,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.models.attempt import Attempt
+from app.models.classroom import Classroom, ClassroomMember
 from app.models.classroom import ClassroomMember
 from app.models.classroom_assessment import ClassroomAssessment
 from app.mas.base import AgentContext
@@ -40,6 +42,7 @@ from app.models.notification import Notification
 from app.models.user import User
 from app.services.assessment_service import generate_assessment, submit_assessment
 from app.services.notification_service import notify_teacher_student_finished
+from app.services.llm_service import chat_text, llm_available
 from app.services.lms_service import (
     per_student_bloom_analysis,
     analyze_topic_weak_points,
@@ -1181,6 +1184,10 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
         duration_sec=min(spent, duration_seconds) if duration_seconds > 0 else spent,
         answers=answers_for_scoring,
     )
+    if str(getattr(quiz, "kind", "") or "") == "diagnostic_post":
+        ca_row = db.query(ClassroomAssessment).filter(ClassroomAssessment.assessment_id == int(quiz_id)).first()
+        if ca_row:
+            _ensure_class_final_notification(db, classroom_id=int(ca_row.classroom_id), final_quiz_id=int(quiz_id))
 
     attempt_id_created = int(base.get("attempt_id") or 0)
     if attempt_id_created > 0:
@@ -1661,20 +1668,212 @@ def get_multidim_profile(request: Request, user_id: int, db: Session = Depends(g
         "error": None,
     }
 
+
+
+def _quiz_kind_map_for_classroom(db: Session, classroom_id: int) -> dict[str, int]:
+    rows = (
+        db.query(QuizSet.id, QuizSet.kind)
+        .join(ClassroomAssessment, ClassroomAssessment.assessment_id == QuizSet.id)
+        .filter(ClassroomAssessment.classroom_id == int(classroom_id))
+        .all()
+    )
+    out: dict[str, int] = {}
+    for quiz_id, kind in rows:
+        if kind and str(kind) not in out:
+            out[str(kind)] = int(quiz_id)
+    return out
+
+
+def _ensure_class_final_notification(db: Session, *, classroom_id: int, final_quiz_id: int) -> None:
+    classroom = db.query(Classroom).filter(Classroom.id == int(classroom_id)).first()
+    if not classroom:
+        return
+
+    student_ids = [
+        int(uid)
+        for uid, in db.query(ClassroomMember.user_id).filter(
+            ClassroomMember.classroom_id == int(classroom_id),
+            ClassroomMember.user_id != int(classroom.teacher_id),
+        ).all()
+    ]
+    if not student_ids:
+        return
+
+    submitted_ids = {
+        int(uid)
+        for uid, in db.query(Attempt.user_id)
+        .filter(Attempt.quiz_set_id == int(final_quiz_id), Attempt.user_id.in_(student_ids))
+        .distinct()
+        .all()
+    }
+    if not set(student_ids).issubset(submitted_ids):
+        return
+
+    exists = db.query(Notification.id).filter(
+        Notification.user_id == int(classroom.teacher_id),
+        Notification.type == "class_final_ready",
+        Notification.quiz_id == int(final_quiz_id),
+    ).first()
+    if exists:
+        return
+
+    db.add(
+        Notification(
+            user_id=int(classroom.teacher_id),
+            teacher_id=int(classroom.teacher_id),
+            quiz_id=int(final_quiz_id),
+            type="class_final_ready",
+            title="Báo cáo lớp sẵn sàng",
+            message="Tất cả học sinh đã nộp final. Báo cáo sẵn sàng.",
+            payload_json={"classroom_id": int(classroom_id), "quiz_id": int(final_quiz_id)},
+            is_read=False,
+        )
+    )
+    db.commit()
+
+
+def _build_enhanced_teacher_report(*, classroom_id: int, db: Session) -> dict:
+    quiz_kind_map = _quiz_kind_map_for_classroom(db, classroom_id)
+    pre_quiz_id = quiz_kind_map.get("diagnostic_pre")
+    final_quiz_id = quiz_kind_map.get("diagnostic_post")
+
+    classroom = db.query(Classroom).filter(Classroom.id == int(classroom_id)).first()
+    teacher_id = int(classroom.teacher_id) if classroom else None
+    members = db.query(ClassroomMember).filter(ClassroomMember.classroom_id == int(classroom_id)).all()
+
+    per_student: list[dict] = []
+    topic_heatmap_acc: dict[str, dict[str, float]] = {}
+
+    for member in members:
+        uid = int(member.user_id)
+        if teacher_id and uid == teacher_id:
+            continue
+
+        pre_attempt = None
+        if pre_quiz_id:
+            pre_attempt = (
+                db.query(Attempt)
+                .filter(Attempt.user_id == uid, Attempt.quiz_set_id == int(pre_quiz_id))
+                .order_by(Attempt.created_at.desc())
+                .first()
+            )
+        final_attempt = None
+        if final_quiz_id:
+            final_attempt = (
+                db.query(Attempt)
+                .filter(Attempt.user_id == uid, Attempt.quiz_set_id == int(final_quiz_id))
+                .order_by(Attempt.created_at.desc())
+                .first()
+            )
+
+        placement_score = float(pre_attempt.score_percent) if pre_attempt else None
+        final_score = float(final_attempt.score_percent) if final_attempt else None
+        improvement = round(final_score - placement_score, 2) if placement_score is not None and final_score is not None else None
+
+        breakdown_candidates = [x.breakdown_json or [] for x in [pre_attempt, final_attempt] if x]
+        weak_topics = analyze_topic_weak_points(breakdown_candidates) if breakdown_candidates else []
+        final_breakdown = score_breakdown((final_attempt.breakdown_json if final_attempt else []) or [])
+        by_topic = final_breakdown.get("by_topic") or {}
+        strong_topics = [topic for topic, stat in by_topic.items() if float((stat or {}).get("percent") or 0.0) >= 75.0]
+
+        latest_plan = (
+            db.query(LearningPlan)
+            .filter(LearningPlan.user_id == uid, LearningPlan.classroom_id == int(classroom_id))
+            .order_by(LearningPlan.created_at.desc())
+            .first()
+        )
+        homework_completion_rate = 0.0
+        if latest_plan:
+            total_days = max(1, int(latest_plan.days_total or 0))
+            task_done = db.query(LearningPlanTaskCompletion).filter(
+                LearningPlanTaskCompletion.plan_id == int(latest_plan.id),
+                LearningPlanTaskCompletion.completed.is_(True),
+            ).count()
+            hw_done = db.query(LearningPlanHomeworkSubmission).filter(
+                LearningPlanHomeworkSubmission.plan_id == int(latest_plan.id),
+                LearningPlanHomeworkSubmission.user_id == uid,
+            ).count()
+            homework_completion_rate = round(min(1.0, (float(task_done + hw_done) / float(total_days * 2))) * 100, 2)
+
+        tutor_sessions_count = db.query(UserSession).filter(UserSession.user_id == uid, UserSession.type == "tutor_chat").count()
+
+        weak_topic_names = [str(x.get("topic") or "") for x in weak_topics if isinstance(x, dict) and x.get("topic")]
+        if llm_available():
+            ai_comment = chat_text(
+                f"Nhận xét 1-2 câu cho học sinh với placement={placement_score}, final={final_score}, improvement={improvement}, weak_topics={weak_topic_names}",
+                max_tokens=100,
+            )
+        else:
+            if improvement is not None and improvement < 0:
+                ai_comment = "Điểm cuối kỳ giảm, cần can thiệp theo các chủ đề yếu và tăng hỗ trợ cá nhân."
+            elif weak_topic_names:
+                ai_comment = f"Cần củng cố các chủ đề: {', '.join(weak_topic_names[:3])}."
+            else:
+                ai_comment = "Tiến độ ổn định, tiếp tục duy trì lộ trình học."
+
+        per_student.append(
+            {
+                "student_id": uid,
+                "student_name": resolve_student_name(db, uid),
+                "placement_score": placement_score,
+                "final_score": final_score,
+                "improvement": improvement,
+                "weak_topics": weak_topics,
+                "strong_topics": strong_topics,
+                "homework_completion_rate": homework_completion_rate,
+                "tutor_sessions_count": int(tutor_sessions_count),
+                "needs_support": bool((improvement is not None and improvement < 0) or (final_score is not None and final_score < 50)),
+                "ai_comment": ai_comment,
+            }
+        )
+
+        for topic, stat in by_topic.items():
+            bucket = topic_heatmap_acc.setdefault(str(topic), {"sum": 0.0, "count": 0.0})
+            bucket["sum"] += float((stat or {}).get("percent") or 0.0)
+            bucket["count"] += 1
+
+    final_scores = [float(s["final_score"]) for s in per_student if s.get("final_score") is not None]
+    improvements = [float(s["improvement"]) for s in per_student if s.get("improvement") is not None]
+    class_summary = {
+        "total_students": len(per_student),
+        "students_with_final": len(final_scores),
+        "average_final_score": round(sum(final_scores) / max(1, len(final_scores)), 2) if final_scores else 0.0,
+        "average_improvement": round(sum(improvements) / max(1, len(improvements)), 2) if improvements else 0.0,
+    }
+    topic_heatmap = {
+        topic: {"avg_score": round(acc["sum"] / max(1.0, acc["count"]), 2), "students_count": int(acc["count"])}
+        for topic, acc in topic_heatmap_acc.items()
+    }
+
+    if llm_available():
+        ai_class_narrative = generate_class_narrative(per_student)
+    else:
+        ai_class_narrative = "Lớp có sự phân hóa kết quả, cần hỗ trợ nhóm học sinh điểm thấp và củng cố theo topic yếu."
+
+    return {
+        "classroom_id": int(classroom_id),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "class_summary": class_summary,
+        "per_student": per_student,
+        "topic_heatmap": topic_heatmap,
+        "ai_class_narrative": ai_class_narrative,
+        "recommendations_for_teacher": [
+            "Theo dõi nhóm học sinh có improvement âm hoặc final dưới 50.",
+            "Ưu tiên ôn tập theo các topic có điểm heatmap thấp.",
+            "Khuyến khích dùng tutor AI đều đặn cho học sinh có ít tutor sessions.",
+        ],
+    }
+
 @router.get("/lms/teacher/report/{classroom_id}")
 def teacher_report(request: Request, classroom_id: int, db: Session = Depends(get_db)):
     classroom_id = int(classroom_id)
     if classroom_id in _report_cache and time.time() - _report_cache_time.get(classroom_id, 0) < 1800:
         report = _report_cache[classroom_id]
     else:
-        report = generate_full_teacher_report(classroom_id=classroom_id, db=db)
+        report = _build_enhanced_teacher_report(classroom_id=classroom_id, db=db)
         _report_cache[classroom_id] = report
         _report_cache_time[classroom_id] = time.time()
-    return {
-        "request_id": request.state.request_id,
-        "data": report,
-        "error": None,
-    }
+    return {"request_id": request.state.request_id, "data": report, "error": None}
 
 
 def _render_teacher_report_html(report: dict[str, object]) -> str:

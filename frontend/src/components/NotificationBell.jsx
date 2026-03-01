@@ -15,7 +15,7 @@ export default function NotificationBell() {
   const loadNotifications = async () => {
     if (role !== 'student' || !userId) return;
     try {
-      const data = await apiJson(`/notifications?user_id=${userId}`);
+      const data = await apiJson('/notifications/my');
       setItems(Array.isArray(data) ? data : []);
     } catch {
       setItems([]);
@@ -42,13 +42,13 @@ export default function NotificationBell() {
 
   const onNotificationClick = async (n) => {
     try {
-      await apiJson(`/notifications/${n.id}/read`, { method: 'PATCH', body: { is_read: true } });
+      await apiJson(`/notifications/${n.id}/mark-read`, { method: 'POST' });
       setItems((prev) => prev.filter((x) => x.id !== n.id));
     } catch {
       // no-op
     }
 
-    const topic = n?.data?.topic;
+    const topic = n?.payload_json?.topic;
     if (topic) navigate(`/learning-path?topic=${encodeURIComponent(topic)}`);
     else navigate('/learning-path');
     setOpen(false);

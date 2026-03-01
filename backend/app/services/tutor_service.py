@@ -19,6 +19,7 @@ from app.models.classroom import ClassroomMember
 from app.models.document import Document
 from app.models.document_topic import DocumentTopic
 from app.models.learning_plan import LearningPlan
+from app.models.session import Session as UserSession
 from app.schemas.tutor import TutorChatData, TutorGenerateQuestionsData
 from app.services.embedding_service import embed_texts
 from app.services.user_service import ensure_user_exists
@@ -687,6 +688,9 @@ def tutor_chat(
     q = (question or "").strip()
     if not q:
         raise HTTPException(status_code=422, detail="Missing question")
+    # Minimal tracking for tutor usage analytics.
+    db.add(UserSession(user_id=int(user_id), type="tutor_chat"))
+    db.commit()
 
     if allowed_topics and llm_available():
         topic_list = [str(t).strip() for t in allowed_topics if str(t).strip()][:10]
