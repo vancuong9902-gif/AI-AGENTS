@@ -37,6 +37,8 @@ from app.services.topic_service import (
     extract_exercises_from_topic,
     parse_quick_check_quiz,
     build_topic_preview_for_teacher,
+    generate_topic_homework_json,
+    generate_study_guide_md,
 )
 from app.services import vector_store
 from app.infra.queue import is_async_enabled, enqueue
@@ -509,6 +511,12 @@ def list_document_topics(
                         llm_view_used += 1
                 except Exception:
                     pass
+            try:
+                if item.get("study_guide_md"):
+                    chunk_context = [(int(c.id), clean_topic_text_for_display(c.text or "")) for c in chs if str(c.text or "").strip()]
+                    item["study_guide_md"] = generate_study_guide_md(study_view, title=t.title, chunk_context=chunk_context)
+            except Exception:
+                pass
             item["content_preview"] = " ".join(study_view.split())[:1600]
             item["content_len"] = len(" ".join(study_view.split()))
             item["has_more_content"] = item["content_len"] > 1600
@@ -828,6 +836,12 @@ def get_document_topic_detail(
     study_view = study_view or body_view
 
     item.update(build_topic_details(study_view, title=t.title))
+    try:
+        if included_chunk_ids:
+            chunk_context = list(zip(included_chunk_ids, [clean_topic_text_for_display(c.text or "") for c in chs]))
+            item["study_guide_md"] = generate_study_guide_md(study_view, title=t.title, chunk_context=chunk_context)
+    except Exception:
+        pass
     item["content_preview"] = " ".join(study_view.split())[:1600]
     item["content_len"] = len(" ".join(study_view.split()))
     item["has_more_content"] = item["content_len"] > 1600
@@ -842,6 +856,63 @@ def get_document_topic_detail(
             item["practice"] = practice_view
 
     return {"request_id": request.state.request_id, "data": item, "error": None}
+
+
+@router.post('/documents/{document_id}/topics/{topic_id}/homework')
+def generate_topic_homework(
+    request: Request,
+    document_id: int,
+    topic_id: int,
+    payload: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    doc = db.query(Document).filter(Document.id == int(document_id)).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail='Document not found')
+    if int(doc.user_id) != int(getattr(teacher, 'id')):
+        raise HTTPException(status_code=403, detail='Not allowed')
+
+    t = (
+        db.query(DocumentTopic)
+        .filter(DocumentTopic.document_id == int(document_id))
+        .filter(DocumentTopic.id == int(topic_id))
+        .first()
+    )
+    if not t:
+        raise HTTPException(status_code=404, detail='Topic not found')
+
+    counts_raw = payload.get("counts") if isinstance(payload, dict) else {}
+    counts = {
+        "easy": max(0, int((counts_raw or {}).get("easy", 3))),
+        "medium": max(0, int((counts_raw or {}).get("medium", 3))),
+        "hard": max(0, int((counts_raw or {}).get("hard", 2))),
+    }
+
+    if t.start_chunk_index is None or t.end_chunk_index is None:
+        return {
+            "request_id": request.state.request_id,
+            "data": {"status": "NEED_CLEAN_TEXT", "topic_id": int(topic_id), "exercises": []},
+            "error": None,
+        }
+
+    chs = (
+        db.query(DocumentChunk)
+        .filter(DocumentChunk.document_id == int(document_id))
+        .filter(DocumentChunk.chunk_index >= int(t.start_chunk_index))
+        .filter(DocumentChunk.chunk_index <= int(t.end_chunk_index))
+        .order_by(DocumentChunk.chunk_index.asc())
+        .all()
+    )
+    chunk_context = [(int(c.id), clean_topic_text_for_display(c.text or "")) for c in chs if str(c.text or "").strip()]
+
+    out = generate_topic_homework_json(
+        topic_id=int(topic_id),
+        topic_title=str(t.title or ""),
+        chunk_context=chunk_context,
+        counts=counts,
+    )
+    return {"request_id": request.state.request_id, "data": out, "error": None}
 
 
 @router.patch('/documents/{document_id}/topics/{topic_id}')
