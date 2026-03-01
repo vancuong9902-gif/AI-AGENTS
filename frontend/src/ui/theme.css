@@ -88,6 +88,42 @@
 .empty-state p { margin: 0; color: var(--muted); }
 .empty-icon { width: 44px; height: 44px; border-radius: 12px; background: var(--primary-soft); display: grid; place-items: center; }
 
+.loading-state,
+.error-state {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  padding: 18px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.loading-state p,
+.error-state p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.loading-state-compact {
+  padding: 12px;
+  border-style: dashed;
+}
+
+.error-state {
+  border-color: color-mix(in srgb, var(--danger) 30%, var(--border));
+  background: color-mix(in srgb, var(--danger) 10%, var(--surface-2));
+}
+
+.error-state-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+}
+
 .toast-stack { position: fixed; right: 16px; bottom: 16px; z-index: 70; display: grid; gap: 8px; max-width: min(360px, 92vw); }
 .toast { background: var(--surface); border: 1px solid var(--border); border-left-width: 4px; border-radius: 14px; box-shadow: var(--shadow-md); padding: 10px 12px; display: grid; grid-template-columns: 18px 1fr auto; align-items: start; gap: 10px; }
 .toast span { font-size: var(--text-sm); color: var(--muted); }
@@ -104,6 +140,13 @@
   width: min(1100px, calc(100vw - 32px));
   margin-inline: auto;
   padding-block: var(--space-4);
+}
+
+@media (max-width: 768px) {
+  .page-container {
+    width: calc(100vw - 20px);
+    padding-block: var(--space-3);
+  }
 }
 
 .section-header {

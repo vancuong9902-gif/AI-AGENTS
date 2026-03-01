@@ -7,6 +7,9 @@ import Input from '../ui/Input';
 import Spinner from '../ui/Spinner';
 import Banner from '../ui/Banner';
 import PageHeader from '../ui/PageHeader';
+import LoadingState from '../ui/LoadingState';
+import ErrorState from '../ui/ErrorState';
+import './unified-pages.css';
 import Skeleton from '../ui/Skeleton';
 import EmptyState from '../ui/EmptyState';
 import Modal from '../ui/Modal';
@@ -56,10 +59,22 @@ export default function FileLibrary() {
     }
   };
 
+  const retryTopicsModal = async () => {
+    if (!topicsModal.documentId) return;
+    await openTopicsModal({
+      document_id: topicsModal.documentId,
+      title: topicsModal.documentTitle,
+      filename: topicsModal.documentTitle,
+    });
+  };
+
   const refresh = async () => {
     setLoading(true);
     try {
-      setDocs((await apiJson('/documents?limit=100&offset=0'))?.documents || []);
+      {
+      const docsResp = await apiJson('/documents?limit=100&offset=0');
+      setDocs(Array.isArray(docsResp?.items) ? docsResp.items : docsResp?.documents || []);
+      }
       setError('');
     } catch (e) {
       setError(e?.message || 'Lỗi tải tài liệu');
@@ -126,8 +141,15 @@ export default function FileLibrary() {
         onClose={closeTopicsModal}
         actions={<Button onClick={closeTopicsModal}>Đóng</Button>}
       >
+        {topicsModal.loading ? <LoadingState title='Đang tải topics...' compact /> : null}
+        {!topicsModal.loading && topicsModal.error ? <ErrorState title='Không tải được danh sách chủ đề' description={topicsModal.error} /> : null}
         {topicsModal.loading ? <Spinner /> : null}
-        {!topicsModal.loading && topicsModal.error ? <Banner tone='error'>{topicsModal.error}</Banner> : null}
+        {!topicsModal.loading && topicsModal.error ? (
+          <div className='stack-sm'>
+            <Banner tone='error'>{topicsModal.error}</Banner>
+            <Button onClick={retryTopicsModal}>Thử lại</Button>
+          </div>
+        ) : null}
         {!topicsModal.loading && !topicsModal.error && topicsModal.topics.length === 0 ? (
           <EmptyState
             icon='🧩'
@@ -138,10 +160,12 @@ export default function FileLibrary() {
         {!topicsModal.loading && !topicsModal.error && topicsModal.topics.length > 0 ? (
           <div className='stack-sm'>
             {topicsModal.topics.map((topic) => (
-              <Card key={topic.id} className='stack-xs'>
+              <Card key={topic.id} className='filelibrary-topic-card'>
                 <div><strong>{topic.title}</strong></div>
-                <div style={{ color: 'var(--text-muted)' }}>Số chunks/notes: {topic.chunkCount}</div>
-                {topic.summary ? <div>{topic.summary}</div> : <div style={{ color: 'var(--text-muted)' }}>Chưa có mô tả ngắn.</div>}
+                <div className='filelibrary-topic-meta'>Số chunks/notes: {topic.chunkCount}</div>
+                {topic.summary ? <div>{topic.summary}</div> : <div className='filelibrary-topic-meta'>Chưa có mô tả ngắn.</div>}
+                <div className='text-muted'>Số chunks/notes: {topic.chunkCount}</div>
+                {topic.summary ? <div>{topic.summary}</div> : <div className='text-muted'>Chưa có mô tả ngắn.</div>}
                 <div>
                   <Link to={`/documents/${topicsModal.documentId}/topics/${topic.id}`}><Button variant='ghost'>Mở/Chi tiết</Button></Link>
                 </div>

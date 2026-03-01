@@ -125,3 +125,34 @@ def test_list_document_topics_pagination_total(monkeypatch):
     assert data["limit"] == 2
     assert data["offset"] == 2
     assert len(data["items"]) == 2
+
+
+def test_list_document_chunks_preview_caps_length():
+    long_text = "B" * (documents.CHUNK_PREVIEW_CHARS + 123)
+
+    class DB:
+        def query(self, model):
+            assert model.__name__ == "DocumentChunk"
+            return FakeQuery([SimpleNamespace(id=1, document_id=9, chunk_index=0, text=long_text, meta={})])
+
+    out = documents.list_document_chunks(_req(), document_id=9, db=DB(), limit=10, offset=0)
+    item = out["data"]["items"][0]
+
+    assert len(item["text_preview"]) == documents.CHUNK_PREVIEW_CHARS
+    assert item["text_len"] == len(long_text)
+
+
+def test_get_chunk_detail_returns_full_text():
+    payload = SimpleNamespace(id=31, document_id=12, chunk_index=4, text="full chunk text", meta={"page": 3})
+
+    class DB:
+        def query(self, model):
+            assert model.__name__ == "DocumentChunk"
+            return FakeQuery([payload])
+
+    out = documents.get_chunk_detail(_req(), chunk_id=31, db=DB())
+    data = out["data"]
+
+    assert data["chunk_id"] == 31
+    assert data["document_id"] == 12
+    assert data["text"] == "full chunk text"

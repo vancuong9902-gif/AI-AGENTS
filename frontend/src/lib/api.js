@@ -54,7 +54,10 @@ export async function apiJson(path, options = {}) {
 
   // Avoid stale GETs after mutations (teacher grading, leaderboards...).
   // Also makes debugging easier when the browser caches aggressively.
-  const headers = buildAuthHeaders(options.headers || {});
+  const incomingHeaders = options.headers instanceof Headers
+    ? Object.fromEntries(options.headers.entries())
+    : (options.headers || {});
+  const headers = buildAuthHeaders(incomingHeaders);
   const hasContentType = Object.keys(headers).some((k) => k.toLowerCase() === "content-type");
 
   // Auto-JSON encode plain objects when caller didn't stringify.

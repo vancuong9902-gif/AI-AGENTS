@@ -5,6 +5,10 @@ import { useAuth } from "../context/AuthContext";
 import ProgressComparison from "../components/ProgressComparison";
 import PageContainer from "../ui/PageContainer";
 import SectionHeader from "../ui/SectionHeader";
+import Button from "../ui/Button";
+import EmptyState from "../ui/EmptyState";
+import ErrorState from "../ui/ErrorState";
+import LoadingState from "../ui/LoadingState";
 import "./unified-pages.css";
 
 function MarkdownLite({ text }) {
@@ -87,34 +91,14 @@ function MarkdownLite({ text }) {
   if (!text || !String(text).trim()) return null;
 
   return (
-    <div style={{ lineHeight: 1.65, fontSize: 15 }}>
+    <div className="markdown-lite">
       {blocks.map((b, idx) => {
-        if (b.type === "h1") return <h2 key={idx} style={{ margin: "10px 0" }}>{b.text}</h2>;
-        if (b.type === "h2") return <h3 key={idx} style={{ margin: "10px 0" }}>{b.text}</h3>;
-        if (b.type === "h3") return <h4 key={idx} style={{ margin: "10px 0" }}>{b.text}</h4>;
-        if (b.type === "ul") {
-          return (
-            <ul key={idx} style={{ margin: "8px 0 8px 20px" }}>
-              {(b.items || []).map((it, j) => (
-                <li key={j} style={{ margin: "4px 0" }}>{it}</li>
-              ))}
-            </ul>
-          );
-        }
-        if (b.type === "ol") {
-          return (
-            <ol key={idx} style={{ margin: "8px 0 8px 20px" }}>
-              {(b.items || []).map((it, j) => (
-                <li key={j} style={{ margin: "4px 0" }}>{it}</li>
-              ))}
-            </ol>
-          );
-        }
-        return (
-          <p key={idx} style={{ margin: "8px 0", whiteSpace: "pre-wrap" }}>
-            {b.text}
-          </p>
-        );
+        if (b.type === "h1") return <h2 key={idx}>{b.text}</h2>;
+        if (b.type === "h2") return <h3 key={idx}>{b.text}</h3>;
+        if (b.type === "h3") return <h4 key={idx}>{b.text}</h4>;
+        if (b.type === "ul") return <ul key={idx}>{(b.items || []).map((it, j) => <li key={j}>{it}</li>)}</ul>;
+        if (b.type === "ol") return <ol key={idx}>{(b.items || []).map((it, j) => <li key={j}>{it}</li>)}</ol>;
+        return <p key={idx}>{b.text}</p>;
       })}
     </div>
   );
@@ -126,22 +110,11 @@ function ScorePill({ score, max }) {
   const pct = m > 0 ? Math.round((s / m) * 100) : 0;
 
   return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "6px 10px",
-        borderRadius: 999,
-        border: "1px solid #ddd",
-        background: "#fafafa",
-        fontSize: 13,
-      }}
-    >
+    <span className="score-pill">
       <strong>
         {s}/{m}đ
       </strong>
-      <span style={{ color: "#666" }}>({pct}%)</span>
+      <span className="score-pill-muted">({pct}%)</span>
     </span>
   );
 }
@@ -159,16 +132,7 @@ function levelFromRaw(levelRaw) {
 function StudentLevelBadge({ level }) {
   const meta = levelFromRaw(level?.label || level);
   return (
-    <span
-      style={{
-        padding: "4px 10px",
-        borderRadius: 999,
-        color: meta.color,
-        background: meta.bg,
-        fontWeight: 700,
-        border: `1px solid ${meta.color}22`,
-      }}
-    >
+    <span className="student-level-badge" style={{ color: meta.color, background: meta.bg, borderColor: `${meta.color}22` }}>
       {meta.label}
     </span>
   );
@@ -221,33 +185,29 @@ function TopicPracticePreview({ topicId, userId, nav }) {
   }, [activeLevel, itemsByLevel, loadingByLevel, topicId, userId]);
 
   return (
-    <div style={{ marginTop: 10, borderTop: "1px dashed #eee", paddingTop: 10 }}>
-      <div style={{ fontWeight: 700, marginBottom: 8 }}>Bài tập luyện tập</div>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+    <div className="topic-practice-preview">
+      <div className="topic-practice-header">Bài tập luyện tập</div>
+      <div className="topic-practice-levels">
         {PRACTICE_LEVELS.map((lv) => (
-          <button key={lv.key} type="button" onClick={() => setActiveLevel(lv.key)} style={{ border: "1px solid #dbeafe", borderRadius: 999, background: activeLevel === lv.key ? "#1d4ed8" : "#eff6ff", color: activeLevel === lv.key ? "#fff" : "#1e3a8a", padding: "4px 10px", fontSize: 13 }}>
+          <button key={lv.key} type="button" onClick={() => setActiveLevel(lv.key)} className={`topic-practice-level-btn ${activeLevel === lv.key ? "active" : ""}`.trim()}>
             {lv.label}
           </button>
         ))}
       </div>
 
-      <div style={{ marginTop: 6, color: "#666", fontSize: 12 }}>
-        Bloom: {PRACTICE_LEVELS.find((x) => x.key === activeLevel)?.bloom}
-      </div>
+      <div className="topic-practice-bloom">Bloom: {PRACTICE_LEVELS.find((x) => x.key === activeLevel)?.bloom}</div>
 
-      {loadingByLevel[activeLevel] && <div style={{ color: "#666", marginTop: 6 }}>Đang tải bài tập...</div>}
-      {errorByLevel[activeLevel] && <div style={{ color: "#cf1322", marginTop: 6 }}>{errorByLevel[activeLevel]}</div>}
+      {loadingByLevel[activeLevel] && <LoadingState title="Đang tải bài tập..." compact />}
+      {errorByLevel[activeLevel] && <ErrorState title="Không tải được bài tập" description={errorByLevel[activeLevel]} />}
 
-      <ol style={{ margin: "8px 0 0 18px", padding: 0 }}>
-        {(itemsByLevel[activeLevel] || []).slice(0, 5).map((q, idx) => (
-          <li key={q?.question_id || idx} style={{ margin: "4px 0", color: "#334155" }}>{q?.stem}</li>
-        ))}
+      <ol className="topic-practice-list">
+        {(itemsByLevel[activeLevel] || []).slice(0, 5).map((q, idx) => (<li key={q?.question_id || idx}>{q?.stem}</li>))}
       </ol>
 
-      <div style={{ marginTop: 8 }}>
-        <button onClick={() => nav(`/practice/${topicId}?level=${activeLevel}`)}>
+      <div>
+        <Button onClick={() => nav(`/practice/${topicId}?level=${activeLevel}`)}>
           ✏️ Làm từng bài ({PRACTICE_LEVELS.find((x) => x.key === activeLevel)?.label})
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -457,7 +417,7 @@ export default function LearningPath() {
 
   useEffect(() => {
     apiJson(`/lms/student/${userId}/my-path`)
-      .then((d) => setMyPath(d || null))
+      .then((myPathData) => setMyPath(myPathData || null))
       .catch((e) => {
         setMyPath(null);
         setError(formatApiError(e, "Không thể tải My Path."));
@@ -560,7 +520,7 @@ export default function LearningPath() {
       const q = Number.isFinite(cid) && cid > 0 ? `?classroom_id=${cid}` : "";
       const data = await apiJson(`/lms/student/${userId}/topic-progress${q}`);
       const map = {};
-      (Array.isArray(data?.topics) ? data.topics : []).forEach((row) => {
+      (Array.isArray(data?.items) ? data.items : Array.isArray(data?.topics) ? data.topics : []).forEach((row) => {
         const key = String(row?.topic || "").toLowerCase();
         if (key) map[key] = row;
       });
@@ -777,11 +737,11 @@ export default function LearningPath() {
           </div>
         </div>
       )}
-      {error && <div style={{ marginBottom: 12, padding: 10, border: "1px solid #ffa39e", background: "#fff1f0", borderRadius: 10 }}>{error}</div>}
-      {loading && <div style={{ color: "#666", marginBottom: 12 }}>Đang tải…</div>}
+      {error && <ErrorState title="Learning path gặp lỗi" description={error} />}
+      {loading && <LoadingState title="Đang tải learning path..." compact />}
 
       {!planDays?.length ? (
-        <div style={{ ...card, color: "#666" }}>Chưa có learning plan. Bấm <strong>Tạo mới & lưu plan</strong> để tạo lộ trình theo tài liệu.</div>
+        <EmptyState title="Chưa có learning plan" description="Bấm Tạo mới & lưu plan để tạo lộ trình theo tài liệu." icon="🗺️" />
       ) : (
         <>
           <div style={{ ...card, marginBottom: 12 }}>

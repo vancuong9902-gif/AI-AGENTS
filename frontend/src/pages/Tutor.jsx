@@ -4,11 +4,11 @@ import { useAuth } from '../context/AuthContext';
 import PageContainer from '../ui/PageContainer';
 import SectionHeader from '../ui/SectionHeader';
 import Card from '../ui/Card';
-import Banner from '../ui/Banner';
 import Input from '../ui/Input';
 import Button from '../ui/Button';
 import EmptyState from '../ui/EmptyState';
-import Spinner from '../ui/Spinner';
+import LoadingState from '../ui/LoadingState';
+import ErrorState from '../ui/ErrorState';
 import './unified-pages.css';
 
 export default function Tutor() {
@@ -20,6 +20,7 @@ export default function Tutor() {
   const [messages, setMessages] = useState([]);
   const [rightSuggestions, setRightSuggestions] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [docsLoading, setDocsLoading] = useState(true);
   const [error, setError] = useState('');
   const [learningPlan, setLearningPlan] = useState(null);
   const questionInputRef = useRef(null);
@@ -28,10 +29,12 @@ export default function Tutor() {
 
   useEffect(() => {
     (async () => {
+      setDocsLoading(true);
       try {
+        const data = await apiJson('/documents?limit=100&offset=0');
+        const arr = data?.documents || data || [];
         const data = await apiJson("/documents?limit=100&offset=0");
-        const data = await apiJson('/documents');
-        const arr = data?.documents || [];
+        const arr = Array.isArray(data?.items) ? data.items : data?.documents || [];
         setDocs(arr);
         if (!docId && arr.length > 0) {
           const saved = localStorage.getItem('active_document_id');
@@ -39,6 +42,8 @@ export default function Tutor() {
         }
       } catch {
         // ignore
+      } finally {
+        setDocsLoading(false);
       }
     })();
   }, [docId]);
@@ -176,7 +181,7 @@ export default function Tutor() {
             ))}
           </div>
 
-          {error ? <Banner tone='error'>{error}</Banner> : null}
+          {error ? <ErrorState title='Tutor đang gặp lỗi' description={error} /> : null}
 
           <div className='tutor-input-row'>
             <Input
@@ -192,7 +197,7 @@ export default function Tutor() {
               placeholder='Nhập câu hỏi...'
             />
             <Button onClick={() => ask()} disabled={loading} variant='primary'>
-              {loading ? <><Spinner /> Đang hỏi…</> : 'Gửi'}
+              {loading ? 'Đang hỏi…' : 'Gửi'}
             </Button>
           </div>
         </Card>
@@ -202,7 +207,8 @@ export default function Tutor() {
           <div className='text-muted'>Topic hiện tại</div>
           <strong>{(topic || '').trim() || '(đang theo tài liệu đã chọn)'}</strong>
           <div className='text-muted'>Suggested questions</div>
-          {(rightSuggestions || []).length === 0 ? <EmptyState title='Chưa có gợi ý' description='Gửi một câu hỏi để nhận gợi ý tiếp theo.' icon='✨' /> : null}
+          {docsLoading ? <LoadingState title='Đang tải tài liệu...' compact /> : null}
+          {!docsLoading && (rightSuggestions || []).length === 0 ? <EmptyState title='Chưa có gợi ý' description='Gửi một câu hỏi để nhận gợi ý tiếp theo.' icon='✨' /> : null}
           {(rightSuggestions || []).map((sq, i) => (
             <Button key={i} type='button' variant='secondary' onClick={() => ask(sq)} className='text-left'>{sq}</Button>
           ))}

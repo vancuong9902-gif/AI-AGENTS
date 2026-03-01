@@ -73,6 +73,10 @@ docker compose up --build -d worker
 - Mặc định Compose đã set:
   - `BACKEND_CORS_ORIGINS=["http://localhost:5173","http://127.0.0.1:5173"]`
 - Nếu frontend chạy port/domain khác: sửa `BACKEND_CORS_ORIGINS` trong `docker-compose.yml`, rồi rebuild backend:
+  - `FRONTEND_ORIGIN=http://localhost:5173`
+  - `BACKEND_CORS_ORIGINS=["http://localhost:5173","http://127.0.0.1:5173"]` (fallback khi chưa set FRONTEND_ORIGIN)
+- Production: luôn set `FRONTEND_ORIGIN` cụ thể, không dùng wildcard `*`.
+- Nếu bạn chạy frontend ở port/domain khác, cập nhật `FRONTEND_ORIGIN` (hoặc `BACKEND_CORS_ORIGINS`) trong `docker-compose.yml`, rồi restart backend:
 
 ```bash
 docker compose up -d --build backend
@@ -93,6 +97,16 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 ### Frontend
+Mở Swagger:
+
+- http://localhost:8000/docs
+
+Health check:
+
+- http://localhost:8000/health
+- http://localhost:8000/api/health
+
+### 5.2 Chạy Frontend
 
 ```bash
 cd frontend

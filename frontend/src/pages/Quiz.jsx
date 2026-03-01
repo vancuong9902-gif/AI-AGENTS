@@ -8,8 +8,9 @@ import Card from '../ui/Card';
 import Modal from '../ui/Modal';
 import PageContainer from '../ui/PageContainer';
 import SectionHeader from '../ui/SectionHeader';
-import Spinner from '../ui/Spinner';
 import EmptyState from '../ui/EmptyState';
+import LoadingState from '../ui/LoadingState';
+import ErrorState from '../ui/ErrorState';
 import './unified-pages.css';
 
 const DEFAULT_DIFFICULTY_SETTINGS = { easy: 4, medium: 4, hard: 2 };
@@ -335,15 +336,20 @@ export default function Quiz() {
       ) : null}
 
       {activeClassroomId && bootLoading ? (
-        <Card className='span-12'>
-          <Banner tone='info'><span className='row'><Spinner />Đang tải lớp học, tài liệu và topic...</span></Banner>
-        </Card>
+        <div className='span-12'>
+          <LoadingState title='Đang tải lớp học, tài liệu và topic...' compact />
+        </div>
       ) : null}
 
       {activeClassroomId && !bootLoading && bootError ? (
-        <Card className='span-12'>
-          <Banner tone='error'>{bootError}</Banner>
-        </Card>
+        <div className='span-12'>
+          <ErrorState
+            title='Không tải được dữ liệu khởi tạo'
+            description={bootError}
+            actionLabel='Tải lại'
+            onAction={() => loadBootData()}
+          />
+        </div>
       ) : null}
 
       {activeClassroomId && !bootLoading && !bootError && !quizActive ? (
@@ -389,7 +395,7 @@ export default function Quiz() {
             )}
           </div>
 
-          {submitError ? <Banner tone='error'>{submitError}</Banner> : null}
+          {submitError ? <ErrorState title='Không thể bắt đầu Placement Test' description={submitError} /> : null}
 
           <Button variant='primary' onClick={handleStart} disabled={!selectedTopicIds.length || starting || !topics.length}>
             {starting ? 'Đang tạo bài...' : 'Bắt đầu'}
@@ -435,7 +441,7 @@ export default function Quiz() {
             </div>
           ))}
 
-          {submitError ? <Banner tone='error'>{submitError}</Banner> : null}
+          {submitError ? <ErrorState title='Nộp bài thất bại' description={submitError} /> : null}
 
           <Button variant='primary' onClick={() => setConfirmOpen(true)} disabled={submitting}>
             {submitting ? 'Đang nộp...' : 'Nộp bài'}
