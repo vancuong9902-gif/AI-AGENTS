@@ -635,22 +635,8 @@ def build_classroom_final_exclude_quiz_ids(
     current_quiz_id: int | None = None,
 ) -> list[int]:
     cid = int(classroom_id)
-    placement_ids = {
-        int(r[0])
-        for r in (
-            db.query(ClassroomAssessment.assessment_id)
-            .join(QuizSet, QuizSet.id == ClassroomAssessment.assessment_id)
-            .filter(
-                ClassroomAssessment.classroom_id == cid,
-                QuizSet.kind == "diagnostic_pre",
-            )
-            .distinct()
-            .all()
-        )
-        if r and r[0] is not None
-    }
 
-    extra_exclude_ids = {
+    excluded: set[int] = {
         int(r[0])
         for r in (
             db.query(ClassroomAssessment.assessment_id)
@@ -661,19 +647,34 @@ def build_classroom_final_exclude_quiz_ids(
         if r and r[0] is not None
     }
 
-    if current_quiz_id is not None:
-        extra_exclude_ids.discard(int(current_quiz_id))
-
-    return sorted(placement_ids | extra_exclude_ids)
-    excluded: set[int] = set(_placement_quiz_ids_by_classroom(db, classroom_id=cid))
-
-    assigned_ids = (
-        db.query(ClassroomAssessment.assessment_id)
-        .filter(ClassroomAssessment.classroom_id == cid)
-        .distinct()
+    plan_rows = (
+        db.query(LearningPlan.plan_json)
+        .filter(LearningPlan.classroom_id == cid)
         .all()
     )
-    excluded.update(int(r[0]) for r in assigned_ids if r and r[0] is not None)
+    for row in plan_rows:
+        excluded.update(_collect_quiz_ids_from_learning_plan_json(row[0] if row else None))
+
+    diagnostic_attempt_ids = {
+        int(r[0])
+        for r in (
+            db.query(Attempt.quiz_set_id)
+            .join(QuizSet, QuizSet.id == Attempt.quiz_set_id)
+            .join(ClassroomMember, ClassroomMember.user_id == Attempt.user_id)
+            .filter(
+                ClassroomMember.classroom_id == cid,
+                QuizSet.kind == "diagnostic_pre",
+            )
+            .distinct()
+            .all()
+        )
+        if r and r[0] is not None
+    }
+    excluded.update(diagnostic_attempt_ids)
+
+    if current_quiz_id is not None:
+        excluded.discard(int(current_quiz_id))
+
     return sorted(excluded)
 
 

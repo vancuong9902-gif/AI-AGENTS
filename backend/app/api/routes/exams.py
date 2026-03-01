@@ -8,7 +8,6 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user_optional, get_db
-from app.schemas.assessment import AssessmentGenerateRequest
 from app.schemas.exam import (
     BatchExamGenerateRequest,
     ExamAnalyzeOut,
@@ -119,21 +118,22 @@ def generate_from_template(
         raise HTTPException(status_code=404, detail="Template not found")
 
     counts = template_to_assessment_counts(template)
-    req = AssessmentGenerateRequest(
-        teacher_id=payload.teacher_id,
-        classroom_id=payload.classroom_id,
-        title=payload.title or template.name,
-        level=payload.level,
-        kind=template.kind,
-        easy_count=counts["easy_count"],
-        medium_count=counts.get("medium_count", 0),
-        hard_count=counts["hard_count"],
-        document_ids=payload.document_ids,
-        topics=payload.topics,
-    )
 
     try:
-        assessment = assessment_service.generate_assessment(db, req.model_dump())
+        assessment = assessment_service.generate_assessment(
+            db,
+            teacher_id=int(payload.teacher_id),
+            classroom_id=int(payload.classroom_id),
+            title=payload.title or template.name,
+            level=payload.level,
+            kind=template.kind,
+            easy_count=int(counts["easy_count"]),
+            medium_count=int(counts["medium_count"]),
+            hard_mcq_count=int(counts["hard_mcq_count"]),
+            hard_count=int(counts["hard_count"]),
+            document_ids=[int(x) for x in (payload.document_ids or [])],
+            topics=[str(x) for x in (payload.topics or [])],
+        )
         return {"status": "ok", "data": assessment}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -189,6 +189,7 @@ def generate_variants(payload: ExamGenerateVariantsRequest, db: Session = Depend
     easy_count = int(payload.easy_count)
     medium_count = int(payload.medium_count)
     hard_count = int(payload.hard_count)
+    hard_mcq_count = 0
 
     if payload.template_id:
         template = get_template(payload.template_id)
@@ -197,6 +198,7 @@ def generate_variants(payload: ExamGenerateVariantsRequest, db: Session = Depend
         counts = template_to_assessment_counts(template)
         easy_count = int(counts.get("easy_count", 0))
         medium_count = int(counts.get("medium_count", 0))
+        hard_mcq_count = int(counts.get("hard_mcq_count", 0))
         hard_count = int(counts.get("hard_count", 0))
 
     batch = generate_variants_batch(
@@ -209,6 +211,7 @@ def generate_variants(payload: ExamGenerateVariantsRequest, db: Session = Depend
         n_variants=int(payload.n_variants),
         easy_count=easy_count,
         medium_count=medium_count,
+        hard_mcq_count=hard_mcq_count,
         hard_count=hard_count,
         document_ids=[int(x) for x in (payload.document_ids or [])],
         topics=[str(x) for x in (payload.topics or [])],

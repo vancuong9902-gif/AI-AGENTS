@@ -374,6 +374,8 @@ def assessments_generate(
             title=payload.title,
             level=payload.level,
             easy_count=payload.easy_count,
+            medium_count=payload.medium_count,
+            hard_mcq_count=payload.hard_mcq_count,
             hard_count=payload.hard_count,
             document_ids=payload.document_ids,
             topics=payload.topics,
