@@ -486,6 +486,33 @@ def get_class_report_detail(
     request: Request,
     classroom_id: int,
     report_id: int,
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    c = db.query(Classroom).filter(Classroom.id == int(classroom_id)).first()
+    if not c or int(c.teacher_id) != int(teacher.id):
+        raise HTTPException(status_code=404, detail="Classroom not found")
+
+    row = (
+        db.query(ClassReport)
+        .filter(ClassReport.id == int(report_id), ClassReport.classroom_id == int(classroom_id))
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    payload = {
+        "id": int(row.id),
+        "classroom_id": int(row.classroom_id),
+        "assessment_id": int(row.assessment_id),
+        "narrative": row.narrative or "",
+        "stats": row.stats_json or {},
+        "improvement": row.improvement_json or {},
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+    return {"request_id": request.state.request_id, "data": payload, "error": None}
+
+
 @router.get("/classrooms/{classroom_id}/reports/latest/export")
 def export_latest_classroom_report(
     classroom_id: int,

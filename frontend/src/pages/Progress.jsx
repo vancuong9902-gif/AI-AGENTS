@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiJson } from "../lib/api";
-import { useAuth } from "../context/AuthContext";
+import { useAuth } from "../context/useAuth";
 import { GroupedBarChart, HorizontalBarList } from "../components/Charts";
 import { useNavigate, useParams } from "react-router-dom";
 

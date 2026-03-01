@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { apiJson } from "../lib/api";
-import { useAuth } from "../context/AuthContext";
+import { useAuth } from "../context/useAuth";
 
 const kindLabelMap = {
   diagnostic_pre: "Đầu vào",
@@ -39,7 +39,6 @@ export default function AssessmentTake() {
   const diagnosticBannerRef = useRef(null);
 
   const learningPathBannerRef = useRef(null);
-  const answeredCount = useMemo(() => Object.keys(answers).length, [answers]);
 
   const qMap = useMemo(() => {
     const m = {};

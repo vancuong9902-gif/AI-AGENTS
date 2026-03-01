@@ -1,11 +1,5 @@
 import { useMemo } from "react";
 
-export function pct(x, digits = 0) {
-  const n = Number(x);
-  if (!Number.isFinite(n)) return null;
-  return Math.round(n * 100 * Math.pow(10, digits)) / Math.pow(10, digits);
-}
-
 function clamp01(x) {
   const n = Number(x);
   if (!Number.isFinite(n)) return 0;
@@ -78,7 +72,7 @@ export function DonutGauge({ value01, size = 120, label }) {
 
 export function Sparkline({ points = [], height = 54 }) {
   // points: [{ts, value}] with value in [0,1]
-  const { path, minV, maxV } = useMemo(() => {
+  useMemo(() => {
     const vals = (points || []).map((p) => Number(p.value)).filter((x) => Number.isFinite(x));
     if (!vals.length) return { path: "", minV: 0, maxV: 1 };
     const mn = Math.min(...vals);

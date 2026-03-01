@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { apiJson } from "../lib/api";
 
 const stepStyle = {
@@ -13,14 +13,22 @@ export default function LibraryPage() {
   const [docs, setDocs] = useState([]);
   const [status, setStatus] = useState(null);
 
-  const loadFiles = async () => {
+  const loadFiles = useCallback(async () => {
     const data = await apiJson("/documents?limit=100&offset=0");
-    setDocs(Array.isArray(data?.items) ? data.items : data?.documents || []);
-  };
+    return Array.isArray(data?.items) ? data.items : data?.documents || [];
+  }, []);
 
   useEffect(() => {
-    loadFiles();
-  }, []);
+    let cancelled = false;
+    const tick = async () => {
+      const next = await loadFiles();
+      if (!cancelled) setDocs(next);
+    };
+    tick();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadFiles]);
 
   const uploadFile = async () => {
     if (!file) return;
@@ -34,7 +42,8 @@ export default function LibraryPage() {
     }
 
     setFile(null);
-    loadFiles();
+    const next = await loadFiles();
+    setDocs(next);
   };
 
   return (

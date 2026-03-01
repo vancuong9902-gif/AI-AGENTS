@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { apiJson } from "../lib/api";
 
@@ -11,7 +11,7 @@ export default function TeacherTopicReview() {
   const [error, setError] = useState("");
   const [pagination, setPagination] = useState({ total: 0, limit: 20, offset: 0 });
 
-  const loadTopics = async () => {
+  const loadTopics = useCallback(async () => {
     if (!docId) return;
     setLoading(true);
     setError("");
@@ -35,11 +35,11 @@ export default function TeacherTopicReview() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [docId]);
 
   useEffect(() => {
     loadTopics();
-  }, [docId]);
+  }, [loadTopics]);
 
   const loadMore = async () => {
     if (!docId) return;

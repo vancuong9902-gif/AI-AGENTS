@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { apiJson } from "../lib/api";
-import { useAuth } from "../context/AuthContext";
-import { DonutGauge, MetricCard, ProgressBar, Sparkline, pct } from "../components/AnalyticsWidgets";
+import { useAuth } from "../context/useAuth";
+import { DonutGauge, MetricCard, ProgressBar, Sparkline } from "../components/AnalyticsWidgets";
+import { pct } from "../components/analytics.utils";
 import StudentLevelBadge from "../components/StudentLevelBadge";
 import ProgressComparison from "../components/ProgressComparison";
 function num(v, d = 0) {

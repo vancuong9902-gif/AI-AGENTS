@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiJson } from "../lib/api";
 import { FaChalkboardTeacher, FaPlus, FaSyncAlt, FaUsers } from "react-icons/fa";
@@ -49,7 +49,7 @@ export default function TeacherClassrooms() {
   const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     setError(null);
     setLoading(true);
     try {
@@ -60,12 +60,11 @@ export default function TeacherClassrooms() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [refresh]);
 
   const totals = useMemo(() => {
     const classrooms = rows.length;

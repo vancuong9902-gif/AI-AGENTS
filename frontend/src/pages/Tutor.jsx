@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiJson } from '../lib/api';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/useAuth';
 import PageContainer from '../ui/PageContainer';
 import SectionHeader from '../ui/SectionHeader';
 import Card from '../ui/Card';
@@ -31,8 +31,6 @@ export default function Tutor() {
     (async () => {
       setDocsLoading(true);
       try {
-        const data = await apiJson('/documents?limit=100&offset=0');
-        const arr = data?.documents || data || [];
         const data = await apiJson("/documents?limit=100&offset=0");
         const arr = Array.isArray(data?.items) ? data.items : data?.documents || [];
         setDocs(arr);
