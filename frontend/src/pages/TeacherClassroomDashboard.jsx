@@ -88,24 +88,59 @@ export default function TeacherClassroomDashboard() {
     return ["gioi", "kha", "trung_binh", "yeu"].map((key) => ({ name: LEVEL_LABEL[key], key, value: Number(dist[key]) || 0 }));
   }, [report]);
 
+  const downloadFile = async (url, filename) => {
+    const headers = { "Cache-Control": "no-cache" };
+    const uid = localStorage.getItem("user_id");
+    const role = localStorage.getItem("role");
+    if (uid) headers["X-User-Id"] = uid;
+    if (role) headers["X-User-Role"] = role;
+    const res = await fetch(url, { headers });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+
   const exportPdf = async () => {
     try {
-      const headers = { "Cache-Control": "no-cache" };
-      const uid = localStorage.getItem("user_id");
-      const role = localStorage.getItem("role");
-      if (uid) headers["X-User-Id"] = uid;
-      if (role) headers["X-User-Role"] = role;
-      const res = await fetch(`${API_BASE}/lms/teacher/report/${classroomId}/export`, { headers });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `teacher-report-class-${classroomId}.pdf`;
-      a.click();
-      URL.revokeObjectURL(url);
+      await downloadFile(`${API_BASE}/lms/teacher/report/${classroomId}/export?format=pdf`, `teacher-report-class-${classroomId}.pdf`);
     } catch (e) {
       setErr(`Xuất PDF thất bại: ${e?.message || e}`);
+    }
+  };
+
+
+  const exportXlsx = async () => {
+    try {
+      await downloadFile(`${API_BASE}/lms/teacher/report/${classroomId}/export?format=xlsx`, `teacher-report-class-${classroomId}.xlsx`);
+    } catch (e) {
+      setErr(`Xuất Excel thất bại: ${e?.message || e}`);
+    }
+  };
+
+  const generateVariants = async () => {
+    try {
+      const payload = {
+        teacher_id: Number(localStorage.getItem("user_id") || 1),
+        classroom_id: classroomId,
+        title_prefix: "Mã đề",
+        n_variants: 3,
+        easy_count: 5,
+        medium_count: 5,
+        hard_count: 2,
+        topics: [],
+        document_ids: [],
+      };
+      const data = await apiJson(`/exams/generate-variants`, { method: "POST", body: JSON.stringify(payload) });
+      const exportUrl = data?.data?.export_url;
+      if (exportUrl) {
+        await downloadFile(`${API_BASE}${exportUrl}`, `variants_class_${classroomId}.zip`);
+      }
+    } catch (e) {
+      setErr(`Sinh mã đề thất bại: ${e?.message || e}`);
     }
   };
 
@@ -116,9 +151,11 @@ export default function TeacherClassroomDashboard() {
     <div style={{ padding: 20, display: "grid", gap: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h2 style={{ margin: 0 }}>Báo cáo giáo viên - Lớp #{classroomId}</h2>
-        <button onClick={exportPdf} style={{ border: "1px solid #ddd", borderRadius: 8, padding: "10px 14px", background: "#111", color: "#fff", fontWeight: 700 }}>
-          Xuất báo cáo PDF
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={generateVariants} style={{ border: "1px solid #ddd", borderRadius: 8, padding: "10px 14px", background: "#f3f4f6", color: "#111", fontWeight: 700 }}>Sinh N mã đề</button>
+          <button onClick={exportXlsx} style={{ border: "1px solid #ddd", borderRadius: 8, padding: "10px 14px", background: "#0f766e", color: "#fff", fontWeight: 700 }}>Xuất Excel</button>
+          <button onClick={exportPdf} style={{ border: "1px solid #ddd", borderRadius: 8, padding: "10px 14px", background: "#111", color: "#fff", fontWeight: 700 }}>Xuất báo cáo PDF</button>
+        </div>
       </div>
 
       {loading ? <Card>Đang tải báo cáo...</Card> : null}

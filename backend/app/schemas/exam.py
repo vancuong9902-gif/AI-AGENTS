@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 Level = Literal["beginner", "intermediate", "advanced"]
 AssessmentKind = Literal["diagnostic_pre", "midterm", "diagnostic_post"]
 ExportFormat = Literal["pdf", "docx"]
+ReportExportFormat = Literal["pdf", "xlsx"]
 
 
 class ExamTemplateSection(BaseModel):
@@ -37,10 +38,28 @@ class ExamTemplateOut(BaseModel):
 class ExamGenerateFromTemplateRequest(BaseModel):
     template_id: str
     teacher_id: int = 1
+    classroom_id: int = 1
     title: Optional[str] = None
     level: Level = "beginner"
     document_ids: List[int] = Field(default_factory=list)
     topics: List[str] = Field(default_factory=list)
+
+
+class ExamGenerateVariantsRequest(BaseModel):
+    teacher_id: int = 1
+    classroom_id: int = 1
+    title_prefix: str = "Variant"
+    level: Level = "intermediate"
+    kind: AssessmentKind = "midterm"
+    template_id: Optional[str] = None
+    n_variants: int = Field(default=2, ge=1, le=20)
+    easy_count: int = Field(default=5, ge=0, le=50)
+    medium_count: int = Field(default=5, ge=0, le=50)
+    hard_count: int = Field(default=2, ge=0, le=20)
+    document_ids: List[int] = Field(default_factory=list)
+    topics: List[str] = Field(default_factory=list)
+    exclude_assessment_ids: List[int] = Field(default_factory=list)
+    similarity_threshold: float = Field(default=0.72, ge=0.3, le=0.95)
 
 
 class ExamAnalyzeOut(BaseModel):

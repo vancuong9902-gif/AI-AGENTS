@@ -267,6 +267,10 @@ def _is_semantic_dup(
         return False
     for ex in excluded_vectors:
         if _cosine_similarity(list(vec or []), list(ex or [])) > float(threshold):
+            return True
+    return False
+
+
 def _is_dup_semantic(stem: str, excluded_embeddings: list[list[float]] | None, threshold: float = 0.85) -> bool:
     if not stem or not excluded_embeddings:
         return False

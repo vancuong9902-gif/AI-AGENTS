@@ -823,6 +823,9 @@ def tutor_chat(
     top_k: int = 6,
     document_ids: Optional[List[int]] = None,
     allowed_topics: Optional[List[str]] = None,
+    assessment_id: Optional[int] = None,
+    attempt_id: Optional[int] = None,
+    exam_mode: bool = False,
     exam_mode: bool = False,
     timed_test: bool = False,
 ) -> Dict[str, Any]:
@@ -833,6 +836,34 @@ def tutor_chat(
     q = (question or "").strip()
     if not q:
         raise HTTPException(status_code=422, detail="Missing question")
+
+    active_exam = bool(exam_mode)
+    if attempt_id is not None:
+        attempt_row = db.query(UserSession).filter(UserSession.id == int(attempt_id), UserSession.user_id == int(user_id)).first()
+        if attempt_row and str(attempt_row.type or "").startswith("quiz_attempt:") and attempt_row.ended_at is None and attempt_row.locked_at is None:
+            active_exam = True
+    elif assessment_id is not None:
+        ar = db.query(UserSession).filter(
+            UserSession.user_id == int(user_id),
+            UserSession.type == f"quiz_attempt:{int(assessment_id)}",
+            UserSession.ended_at.is_(None),
+            UserSession.locked_at.is_(None),
+        ).order_by(UserSession.id.desc()).first()
+        active_exam = bool(ar)
+
+    if active_exam:
+        hint = "Mình đang ở chế độ hỗ trợ khi làm bài có giới hạn thời gian nên chỉ đưa gợi ý, không cung cấp đáp án trực tiếp.\n\nGợi ý: tóm tắt đề, xác định từ khóa/chủ điểm liên quan trong tài liệu, rồi thử tự lập dàn ý 2-3 bước trước khi chọn đáp án."
+        return TutorChatData(
+            answer_md=hint,
+            was_answered=True,
+            is_off_topic=False,
+            refusal_reason="exam_mode_hint_only",
+            follow_up_questions=["Bạn muốn mình gợi ý cách phân tích đề cho câu này?", "Bạn muốn kiểm tra lại các khái niệm liên quan trong tài liệu không?"],
+            suggested_topics=[topic] if topic else [],
+            quick_check_mcq=[],
+            sources=[],
+            retrieval={"exam_mode": True, "assessment_id": assessment_id, "attempt_id": attempt_id},
+        ).model_dump()
     exam_active = bool(exam_mode or timed_test)
 
     # Minimal tracking for tutor usage analytics.
