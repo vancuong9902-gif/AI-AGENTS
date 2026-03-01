@@ -18,6 +18,9 @@ class _FakeQuery:
     def order_by(self, *args: Any, **kwargs: Any):
         return self
 
+    def distinct(self):
+        return self
+
     def all(self):
         return self._rows
 
@@ -32,7 +35,11 @@ class _FakeDB:
     def query(self, _entity: Any):
         self.calls += 1
         if self.calls == 1:
-            return _FakeQuery([(10,), (11,)])  # diagnostic_pre ids
+            return _FakeQuery([(10,), (11,)])  # attempted diagnostic_pre ids
+        if self.calls == 2:
+            return _FakeQuery([(12,)])  # assigned classroom diagnostic_pre ids
+        if self.calls == 3:
+            return _FakeQuery([(13,)])  # attempted entry_test ids
         return _FakeQuery([("Topic A",), ("Topic B",)])
 
 
@@ -55,7 +62,9 @@ def test_generate_final_exam_uses_required_structure(monkeypatch):
     )
 
     assert captured["kind"] == "final_exam"
-    assert captured["exclude_quiz_ids"] == [10, 11]
+    assert captured["exclude_quiz_ids"] == [10, 11, 12, 13]
+    assert captured["dedup_user_id"] == 7
+    assert captured["attempt_user_id"] == 7
     assert captured["easy_count"] == 4
     assert captured["medium_count"] == 8
     assert captured["hard_count"] == 8

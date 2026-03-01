@@ -464,6 +464,8 @@ def final_exam_generate_job(
         kind="diagnostic_post",
         exclude_quiz_ids=exclude_ids,
         similarity_threshold=0.75,
+        dedup_user_id=int(userId),
+        attempt_user_id=int(userId),
     )
     data = response.get("data") or {}
     data["excluded_from_count"] = len(exclude_ids)
@@ -706,6 +708,8 @@ def _generate_assessment_lms(
     kind: str,
     exclude_quiz_ids: list[int] | None = None,
     similarity_threshold: float = 0.75,
+    dedup_user_id: int | None = None,
+    attempt_user_id: int | None = None,
 ):
     data = generate_assessment(
         db,
@@ -721,6 +725,8 @@ def _generate_assessment_lms(
         topics=payload.topics,
         exclude_quiz_ids=exclude_quiz_ids,
         similarity_threshold=float(similarity_threshold),
+        dedup_user_id=dedup_user_id,
+        attempt_user_id=attempt_user_id,
     )
     quiz_id = int(data.get("quiz_id") or data.get("assessment_id") or 0)
     if quiz_id > 0:
@@ -952,6 +958,8 @@ def create_final_quiz(request: Request, payload: PlacementQuizIn, db: Session = 
         kind="diagnostic_post",
         exclude_quiz_ids=exclude_ids,
         similarity_threshold=0.75,
+        dedup_user_id=int(userId),
+        attempt_user_id=int(userId),
     )
     quiz_id = int((response.get("data") or {}).get("assessment_id") or 0)
     if quiz_id > 0:
