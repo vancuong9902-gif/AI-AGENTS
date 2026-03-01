@@ -7,6 +7,9 @@ import Input from '../ui/Input';
 import Spinner from '../ui/Spinner';
 import Banner from '../ui/Banner';
 import PageHeader from '../ui/PageHeader';
+import LoadingState from '../ui/LoadingState';
+import ErrorState from '../ui/ErrorState';
+import './unified-pages.css';
 import Skeleton from '../ui/Skeleton';
 import EmptyState from '../ui/EmptyState';
 import Modal from '../ui/Modal';
@@ -138,6 +141,8 @@ export default function FileLibrary() {
         onClose={closeTopicsModal}
         actions={<Button onClick={closeTopicsModal}>Đóng</Button>}
       >
+        {topicsModal.loading ? <LoadingState title='Đang tải topics...' compact /> : null}
+        {!topicsModal.loading && topicsModal.error ? <ErrorState title='Không tải được danh sách chủ đề' description={topicsModal.error} /> : null}
         {topicsModal.loading ? <Spinner /> : null}
         {!topicsModal.loading && topicsModal.error ? (
           <div className='stack-sm'>
@@ -155,8 +160,10 @@ export default function FileLibrary() {
         {!topicsModal.loading && !topicsModal.error && topicsModal.topics.length > 0 ? (
           <div className='stack-sm'>
             {topicsModal.topics.map((topic) => (
-              <Card key={topic.id} className='stack-xs'>
+              <Card key={topic.id} className='filelibrary-topic-card'>
                 <div><strong>{topic.title}</strong></div>
+                <div className='filelibrary-topic-meta'>Số chunks/notes: {topic.chunkCount}</div>
+                {topic.summary ? <div>{topic.summary}</div> : <div className='filelibrary-topic-meta'>Chưa có mô tả ngắn.</div>}
                 <div className='text-muted'>Số chunks/notes: {topic.chunkCount}</div>
                 {topic.summary ? <div>{topic.summary}</div> : <div className='text-muted'>Chưa có mô tả ngắn.</div>}
                 <div>
