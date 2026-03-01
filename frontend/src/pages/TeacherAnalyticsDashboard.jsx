@@ -1,139 +1,113 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { apiJson, API_BASE } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 
-function levelBadge(level) {
-  const label = level?.label || "N/A";
-  const tone = label === "Giỏi" ? "#dcfce7" : label === "Khá" ? "#dbeafe" : label === "Trung bình" ? "#fef3c7" : "#fee2e2";
-  return <span style={{ padding: "4px 8px", borderRadius: 999, background: tone }}>{label}</span>;
-}
-
 export default function TeacherAnalyticsDashboard() {
   const { role } = useAuth();
-  const [classroomId, setClassroomId] = useState(localStorage.getItem("teacher_report_classroom_id") || "1");
+  const queryCid = new URLSearchParams(window.location.search).get("classroomId");
+  const [classroomId, setClassroomId] = useState(queryCid || localStorage.getItem("teacher_report_classroom_id") || "1");
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [expandedId, setExpandedId] = useState(null);
+  const [tab, setTab] = useState("overview");
+  const [keyword, setKeyword] = useState("");
+  const [sortBy, setSortBy] = useState("improvement");
+  const [selected, setSelected] = useState(null);
 
   const loadReport = async () => {
     const cid = Number(classroomId);
     if (!Number.isFinite(cid) || cid <= 0) return;
     setLoading(true);
-    setError("");
     try {
       localStorage.setItem("teacher_report_classroom_id", String(cid));
-      const data = await apiJson(`/v1/lms/teacher/report/${cid}`);
-      setReport(data);
-    } catch (e) {
-      setError(e?.message || "Không thể tải báo cáo lớp.");
-      setReport(null);
+      const res = await apiJson(`/v1/lms/teacher/report/${cid}`);
+      setReport(res?.data || res);
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    if (role === "teacher") loadReport();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [role]);
+  useEffect(() => { if (role === "teacher") loadReport(); }, [role]);
 
-  const overview = useMemo(() => {
-    const students = report?.students || [];
-    const withFinal = students.filter((s) => Number.isFinite(Number(s.final_score)));
-    const avg = withFinal.length ? withFinal.reduce((acc, s) => acc + Number(s.final_score), 0) / withFinal.length : 0;
-    const impVals = students.filter((s) => Number.isFinite(Number(s.improvement))).map((s) => Number(s.improvement));
-    const avgImp = impVals.length ? impVals.reduce((acc, v) => acc + v, 0) / impVals.length : 0;
-    const top = students.filter((s) => (s.level?.key || "") === "gioi").length;
-    return { total: students.length, avg, avgImp, top };
-  }, [report]);
+  const rows = useMemo(() => {
+    const arr = (report?.per_student || []).filter((s) => (s?.name || "").toLowerCase().includes(keyword.toLowerCase()));
+    return [...arr].sort((a, b) => Number(b?.[sortBy] || -999) - Number(a?.[sortBy] || -999));
+  }, [report, keyword, sortBy]);
 
-  const exportReport = async (format) => {
-    const cid = Number(classroomId);
-    const url = `${API_BASE}/v1/lms/teacher/report/${cid}/export?format=${format}`;
-    const res = await fetch(url, { headers: { "X-User-Id": localStorage.getItem("user_id") || "1", "X-User-Role": localStorage.getItem("role") || "teacher" } });
-    if (!res.ok) throw new Error(`Export failed (${res.status})`);
-    const contentType = res.headers.get("content-type") || "";
-    if (contentType.includes("application/json")) {
-      const json = await res.json();
-      const blob = new Blob([JSON.stringify(json, null, 2)], { type: "application/json" });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = `teacher_report_${cid}.json`;
-      a.click();
-      return;
-    }
-    const blob = await res.blob();
+  const exportCsv = () => {
+    const headers = ["student_id", "name", "placement_score", "final_score", "improvement", "homework_completion_rate", "tutor_sessions_count", "weak_topics", "strong_topics", "ai_comment"];
+    const lines = [headers.join(",")].concat((report?.per_student || []).map((r) => headers.map((h) => JSON.stringify(r?.[h] ?? "")).join(",")));
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `teacher_report_${cid}.html`;
+    a.download = `teacher_report_${classroomId}.csv`;
     a.click();
+  };
+
+  const exportHtml = async () => {
+    const cid = Number(classroomId);
+    const res = await fetch(`${API_BASE}/v1/lms/teacher/report/${cid}/export?format=html`, { headers: { "X-User-Id": localStorage.getItem("user_id") || "1", "X-User-Role": "teacher" } });
+    const blob = await res.blob();
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `teacher_report_${cid}.html`; a.click();
   };
 
   if (role !== "teacher") return <div style={{ padding: 16 }}>Trang này dành cho giáo viên.</div>;
 
-  return (
-    <div style={{ maxWidth: 1180, margin: "0 auto", padding: 16 }}>
-      <h2>📊 Teacher Analytics Dashboard</h2>
-      <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
-        <input value={classroomId} onChange={(e) => setClassroomId(e.target.value)} style={{ padding: 8, borderRadius: 8, border: "1px solid #ddd", width: 140 }} />
-        <button onClick={loadReport} disabled={loading}>{loading ? "Đang tải..." : "Tải báo cáo"}</button>
-      </div>
-
-      {error ? <div style={{ background: "#fff1f2", border: "1px solid #fecdd3", borderRadius: 10, padding: 10 }}>{error}</div> : null}
-
-      {report ? (
-        <>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
-            <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 12, padding: 12 }}><div style={{ fontSize: 24, fontWeight: 800 }}>{overview.total} HS</div><div>Tổng học sinh</div></div>
-            <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 12, padding: 12 }}><div style={{ fontSize: 24, fontWeight: 800 }}>{overview.avg.toFixed(1)}%</div><div>Điểm TB</div></div>
-            <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 12, padding: 12 }}><div style={{ fontSize: 24, fontWeight: 800 }}>{overview.avgImp >= 0 ? "+" : ""}{overview.avgImp.toFixed(1)}%</div><div>Cải thiện TB</div></div>
-            <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 12, padding: 12 }}><div style={{ fontSize: 24, fontWeight: 800 }}>{overview.top}</div><div>Top HS (Giỏi)</div></div>
-          </div>
-
-          <div style={{ overflowX: "auto", background: "#fff", border: "1px solid #eee", borderRadius: 12, padding: 10 }}>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead>
-                <tr style={{ textAlign: "left", borderBottom: "1px solid #eee" }}>
-                  <th>Tên</th><th>Đầu vào</th><th>Cuối kỳ</th><th>+/-</th><th>Level</th><th>AI Note</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(report.students || []).map((s) => (
-                  <Fragment key={s.user_id}>
-                    <tr key={s.user_id} onClick={() => setExpandedId(expandedId === s.user_id ? null : s.user_id)} style={{ borderBottom: "1px solid #f3f4f6", cursor: "pointer" }}>
-                      <td>{s.name}</td>
-                      <td>{s.diagnostic_score ?? "N/A"}%</td>
-                      <td>{s.final_score ?? "N/A"}%</td>
-                      <td>{s.improvement ?? "N/A"}</td>
-                      <td>{levelBadge(s.level)}</td>
-                      <td>{s.ai_evaluation?.summary || "—"}</td>
-                    </tr>
-                    {expandedId === s.user_id ? (
-                      <tr>
-                        <td colSpan={6} style={{ background: "#fafafa", padding: 10 }}>
-                          <div><strong>Strengths:</strong> {(s.ai_evaluation?.strengths || []).join(", ") || "—"}</div>
-                          <div><strong>Improvements:</strong> {(s.ai_evaluation?.improvements || []).join(", ") || "—"}</div>
-                          <div><strong>Recommendation:</strong> {s.ai_evaluation?.recommendation || "—"}</div>
-                        </td>
-                      </tr>
-                    ) : null}
-                  </Fragment>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div style={{ marginTop: 14, background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 12, padding: 12 }}>
-            <strong>🤖 AI nhận xét lớp học:</strong> {report.class_summary?.overall_assessment || "Chưa có nhận xét"}
-          </div>
-
-          <div style={{ marginTop: 14, display: "flex", gap: 10 }}>
-            <button onClick={() => exportReport("html")}>📄 Xuất báo cáo HTML</button>
-            <button onClick={() => exportReport("json")}>📊 Xuất JSON</button>
-          </div>
-        </>
-      ) : null}
+  return <div style={{ maxWidth: 1200, margin: "0 auto", padding: 16 }}>
+    <h2>📊 Teacher Analytics Dashboard</h2>
+    <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+      <input value={classroomId} onChange={(e) => setClassroomId(e.target.value)} style={{ width: 120 }} />
+      <button onClick={loadReport}>{loading ? "Đang tải..." : "Tải báo cáo"}</button>
+      <button onClick={exportCsv}>⬇️ CSV</button>
+      <button onClick={exportHtml}>⬇️ HTML</button>
     </div>
-  );
+
+    <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+      <button onClick={() => setTab("overview")}>Overview</button>
+      <button onClick={() => setTab("students")}>Per Student</button>
+      <button onClick={() => setTab("heatmap")}>Heatmap</button>
+    </div>
+
+    {tab === "overview" && <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 10, padding: 12 }}>
+      <div>Tổng HS: <b>{report?.summary?.total_students || 0}</b></div>
+      <div>Đã có final: <b>{report?.summary?.students_with_final || 0}</b></div>
+      <div>Cải thiện TB: <b>{report?.summary?.avg_improvement || 0}%</b></div>
+    </div>}
+
+    {tab === "students" && <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 10, padding: 10 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <input placeholder="Tìm học sinh" value={keyword} onChange={(e) => setKeyword(e.target.value)} />
+        <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
+          <option value="improvement">Improvement</option>
+          <option value="final_score">Final score</option>
+          <option value="homework_completion_rate">Homework completion</option>
+        </select>
+      </div>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead><tr><th>Tên</th><th>Placement</th><th>Final</th><th>+/−</th><th>Homework</th><th>Tutor</th></tr></thead>
+        <tbody>
+          {rows.map((s) => <tr key={s.student_id} onClick={() => setSelected(s)} style={{ cursor: "pointer", borderTop: "1px solid #f1f5f9" }}>
+            <td>{s.name}</td><td>{s.placement_score ?? "-"}</td><td>{s.final_score ?? "-"}</td><td>{s.improvement ?? "-"}</td><td>{s.homework_completion_rate}%</td><td>{s.tutor_sessions_count}</td>
+          </tr>)}
+        </tbody>
+      </table>
+    </div>}
+
+    {tab === "heatmap" && <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 10 }}>
+      {(report?.topic_heatmap || []).map((h) => {
+        const v = Number(h.avg_score || 0);
+        const bg = v >= 80 ? "#22c55e" : v >= 65 ? "#facc15" : "#ef4444";
+        return <div key={h.topic} style={{ borderRadius: 8, padding: 12, color: "#111", background: `${bg}55` }}><div><b>{h.topic}</b></div><div>{v}%</div><div>{h.students} HS</div></div>;
+      })}
+    </div>}
+
+    {selected && <div onClick={() => setSelected(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", display: "grid", placeItems: "center" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: 12, width: 560, maxWidth: "90vw", padding: 16 }}>
+        <h3>{selected.name}</h3>
+        <div>AI: {selected.ai_comment}</div>
+        <div>Weak: {(selected.weak_topics || []).join(", ") || "-"}</div>
+        <div>Strong: {(selected.strong_topics || []).join(", ") || "-"}</div>
+        <button onClick={() => setSelected(null)}>Đóng</button>
+      </div>
+    </div>}
+  </div>;
 }
