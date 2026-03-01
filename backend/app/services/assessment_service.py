@@ -478,6 +478,52 @@ def _cap_int(x: Any, *, default: int, lo: int, hi: int) -> int:
     return max(int(lo), min(int(hi), int(n)))
 
 
+def _normalize_difficulty_distribution(
+    diff: Dict[str, int] | None,
+    *,
+    total: int = 15,
+) -> Dict[str, int]:
+    """Normalize 3-level difficulty config to a stable question distribution.
+
+    - Accepts partial/malformed input and keeps all three buckets present.
+    - Preserves relative weights when provided, with deterministic rounding.
+    """
+    total_q = max(3, int(total))
+    raw = diff or {}
+    weights = {
+        "easy": max(0, _cap_int(raw.get("easy"), default=3, lo=0, hi=100)),
+        "medium": max(0, _cap_int(raw.get("medium"), default=4, lo=0, hi=100)),
+        "hard": max(0, _cap_int(raw.get("hard"), default=3, lo=0, hi=100)),
+    }
+    if sum(weights.values()) <= 0:
+        weights = {"easy": 3, "medium": 4, "hard": 3}
+
+    base = {k: max(1, int(total_q * v / sum(weights.values()))) for k, v in weights.items()}
+    current = sum(base.values())
+
+    # Deterministic adjust to exact total while keeping every bucket >= 1.
+    order_add = ["medium", "hard", "easy"]
+    order_sub = ["easy", "medium", "hard"]
+    while current < total_q:
+        for k in order_add:
+            if current >= total_q:
+                break
+            base[k] += 1
+            current += 1
+    while current > total_q:
+        changed = False
+        for k in order_sub:
+            if current <= total_q:
+                break
+            if base[k] > 1:
+                base[k] -= 1
+                current -= 1
+                changed = True
+        if not changed:
+            break
+    return base
+
+
 def _heuristic_estimated_minutes(q: Dict[str, Any], *, level: str) -> int:
     """Fallback time estimation (minutes) when no LLM is available.
 
@@ -2989,10 +3035,10 @@ def generate_diagnostic_assessment(
     if not topic_id_list:
         raise ValueError("topic_ids is required")
 
-    diff = difficulty_config or {}
-    easy = _cap_int(diff.get("easy"), default=5, lo=1, hi=10)
-    medium = _cap_int(diff.get("medium"), default=5, lo=1, hi=10)
-    hard = _cap_int(diff.get("hard"), default=5, lo=1, hi=10)
+    normalized_diff = _normalize_difficulty_distribution(difficulty_config, total=15)
+    easy = _cap_int(normalized_diff.get("easy"), default=5, lo=1, hi=10)
+    medium = _cap_int(normalized_diff.get("medium"), default=5, lo=1, hi=10)
+    hard = _cap_int(normalized_diff.get("hard"), default=5, lo=1, hi=10)
 
     topic_rows = (
         db.query(DocumentTopic)
