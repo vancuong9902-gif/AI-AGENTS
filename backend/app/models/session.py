@@ -16,3 +16,4 @@ class Session(Base):
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     answers_snapshot_json: Mapped[list[dict]] = mapped_column(JSONB, nullable=False, default=list)
     locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    linked_attempt_record_id: Mapped[int | None] = mapped_column(ForeignKey("attempts.id"), nullable=True)

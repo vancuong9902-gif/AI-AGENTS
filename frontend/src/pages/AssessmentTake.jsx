@@ -13,6 +13,7 @@ export default function AssessmentTake() {
   const [answers, setAnswers] = useState({});
   const [deadlineAt, setDeadlineAt] = useState(null);
   const [timeLeftSec, setTimeLeftSec] = useState(null);
+  const [attemptLocked, setAttemptLocked] = useState(false);
   const [attemptId, setAttemptId] = useState(null);
   const [serverOffsetMs, setServerOffsetMs] = useState(0);
   const [timedOutBanner, setTimedOutBanner] = useState(false);
@@ -255,6 +256,7 @@ export default function AssessmentTake() {
       setData(d);
       setAnswers({});
       setAttemptId(null);
+      setAttemptLocked(false);
       setTimedOutBanner(false);
       setAttemptLocked(false);
       warningShownRef.current = { five: false, one: false };
@@ -268,6 +270,18 @@ export default function AssessmentTake() {
       const currentAttemptId = Number(session?.attempt_id || 0) || null;
       setAttemptId(currentAttemptId);
 
+      const startedAttemptId = Number(session?.attempt_id || 0) || null;
+      if (startedAttemptId) {
+        try {
+          const timer = await apiJson(`/attempts/${startedAttemptId}/timer-status`, { method: "GET" });
+          setTimeLeftSec(Number(timer?.remaining_seconds ?? timer?.time_left_seconds ?? 0));
+          setAttemptLocked(Boolean(timer?.locked));
+          setDeadlineAt(null);
+        } catch {
+          const secs = Number(session?.duration_seconds || session?.time_limit_seconds || 0);
+          setDeadlineAt(null);
+          setTimeLeftSec(Number.isFinite(secs) && secs > 0 ? secs : null);
+        }
       const serverNowMs = Date.parse(session?.server_time || "");
       const offsetMs = Number.isFinite(serverNowMs) && serverNowMs > 0 ? serverNowMs - Date.now() : 0;
       setServerOffsetMs(offsetMs);
@@ -297,6 +311,10 @@ export default function AssessmentTake() {
 
   // Server-synced countdown timer tick
   useEffect(() => {
+    if (timeLeftSec == null) return;
+    if (result) return;
+    if (submitting) return;
+    if (attemptLocked) return;
     if (timeLeftSec == null || result || submitting) return;
 
     const t = setInterval(() => {
@@ -311,6 +329,7 @@ export default function AssessmentTake() {
     }, 1000);
 
     return () => clearInterval(t);
+  }, [timeLeftSec == null, result, submitting, deadlineAt, attemptLocked]);
   }, [timeLeftSec == null, result, submitting]);
   }, [timeLeftSec == null, result, submitting, deadlineAt, serverOffsetMs]);
 
@@ -360,6 +379,14 @@ export default function AssessmentTake() {
 
   // Heartbeat every 30s: autosave + lock sync from server truth.
   useEffect(() => {
+    if (timeLeftSec !== 0 && !attemptLocked) return;
+    if (result) return;
+    if (submitting) return;
+    if (autoSubmittedRef.current) return;
+    autoSubmittedRef.current = true;
+    submit(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeLeftSec, result, submitting]);
     if (!attemptId || result || submitting || !data?.questions?.length) return;
 
     const buildAnswers = () =>
@@ -407,6 +434,35 @@ export default function AssessmentTake() {
     setAnswers((prev) => ({ ...prev, [qid]: { ...(prev[qid] || {}), answer_text: txt } }));
   };
 
+  useEffect(() => {
+    if (!attemptId || result || submitting) return undefined;
+
+    const buildAnswerList = () => (data?.questions || []).map((q) => ({
+      question_id: q.question_id,
+      answer_index: answers[q.question_id]?.answer_index ?? null,
+      answer_text: answers[q.question_id]?.answer_text ?? null,
+    }));
+
+    const tick = async () => {
+      try {
+        const hb = await apiJson(`/attempts/${attemptId}/heartbeat`, {
+          method: "POST",
+          body: { answers: buildAnswerList() },
+        });
+        const nextLeft = Number(hb?.time_left_seconds ?? 0);
+        if (Number.isFinite(nextLeft)) setTimeLeftSec(nextLeft);
+        setAttemptLocked(Boolean(hb?.locked));
+      } catch {
+        // keep local countdown as fallback
+      }
+    };
+
+    tick();
+    const id = setInterval(tick, 30000);
+    return () => clearInterval(id);
+  }, [attemptId, result, submitting, data, answers]);
+
+
   const submit = async (auto = false) => {
     if (!data?.assessment_id) return;
     setSubmitting(true);
@@ -419,6 +475,20 @@ export default function AssessmentTake() {
         answer_text: answers[q.question_id]?.answer_text ?? null,
       }));
 
+      let r = null;
+      if (attemptId) {
+        r = await apiJson(`/attempts/${attemptId}/submit`, {
+          method: "POST",
+          body: { answers: answerList, force: Boolean(auto) },
+        });
+      } else {
+        r = await apiJson(`/assessments/quiz-sets/${data.assessment_id}/submit`, {
+          method: "POST",
+          body: {
+            user_id: Number(userId ?? 1),
+            answers: answerList,
+          },
+        });
       if (!attemptId) {
         throw new Error("Không tìm thấy attempt để nộp bài.");
 
@@ -435,7 +505,8 @@ export default function AssessmentTake() {
       });
 
       setResult(r);
-      setTimedOutBanner(Boolean(auto || r?.timed_out));
+      setTimedOutBanner(Boolean(auto || r?.timed_out || r?.locked));
+      setAttemptLocked(Boolean(r?.locked));
 
       const attemptId = r?.attempt_id || r?.attemptId || r?.assessment_attempt_id;
       if (attemptId) {
@@ -627,6 +698,12 @@ export default function AssessmentTake() {
           </button>
         </div>
       </div>
+
+      {attemptLocked && !result && (
+        <div style={{ marginTop: 12, background: "#fff1f0", border: "1px solid #ffccc7", padding: 12, borderRadius: 12, color: "#a8071a", fontWeight: 700 }}>
+          Bài làm đã bị khóa do hết thời gian. Hệ thống sẽ tự nộp bài.
+        </div>
+      )}
 
       {timedOutBanner && (
         <div style={{ marginTop: 12, background: "#fff1f0", border: "1px solid #ffccc7", padding: 12, borderRadius: 12, color: "#a8071a", fontWeight: 700 }}>
