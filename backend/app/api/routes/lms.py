@@ -149,6 +149,47 @@ def _count_plan_tasks(plan_json: dict | None) -> tuple[int, int]:
     return total, homework_total
 
 
+def _normalize_submit_synced_diagnostic(base: dict, *, quiz_kind: str | None = None) -> dict:
+    if not isinstance(base, dict):
+        return base
+
+    synced = base.get("synced_diagnostic")
+    synced_payload = dict(synced) if isinstance(synced, dict) else {}
+
+    plan_id = synced_payload.get("plan_id") or synced_payload.get("learning_plan_id")
+    if plan_id is None:
+        plan_id = base.get("learning_plan_id")
+    if plan_id is None:
+        assigned = base.get("assigned_learning_path")
+        if isinstance(assigned, dict):
+            plan_id = assigned.get("plan_id")
+
+    level = synced_payload.get("level")
+    if not level:
+        student_level = base.get("student_level")
+        if isinstance(student_level, dict):
+            level = student_level.get("level_key") or student_level.get("label")
+        elif isinstance(student_level, str):
+            level = student_level
+
+    stage = synced_payload.get("stage")
+    normalized_kind = str(quiz_kind or base.get("assessment_kind") or "").lower()
+    if not stage and normalized_kind == "diagnostic_pre":
+        stage = "pre"
+
+    if synced_payload or plan_id is not None or level or stage:
+        if plan_id is not None:
+            synced_payload["plan_id"] = plan_id
+            synced_payload["learning_plan_id"] = plan_id
+        if level:
+            synced_payload["level"] = level
+        if stage:
+            synced_payload["stage"] = stage
+        base["synced_diagnostic"] = synced_payload
+
+    return base
+
+
 def _final_exam_eligibility_payload(db: Session, *, classroom_id: int, user_id: int) -> dict:
     has_diagnostic_pre = (
         db.query(DiagnosticAttempt.id)
@@ -836,6 +877,8 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
         base["is_late_submission"] = False
         base["notes"] = "Bài nộp đúng hạn."
 
+    base = _normalize_submit_synced_diagnostic(base, quiz_kind=getattr(quiz, "kind", None))
+
     # === AUTO-ASSIGN LEARNING PATH SAU KHI PHÂN LOẠI ===
     classroom_id_for_path = int(getattr(quiz, "classroom_id", 0) or 0)
     try:
@@ -861,6 +904,7 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
         )
         base["learning_path_assigned"] = True
         base["learning_plan_id"] = auto_plan.get("plan_id")
+        base = _normalize_submit_synced_diagnostic(base, quiz_kind=getattr(quiz, "kind", None))
     except Exception as _e:
         logging.getLogger(__name__).warning(f"Auto-assign learning path failed: {_e}")
         base["learning_path_assigned"] = False
@@ -897,6 +941,8 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
             trace_id=str(getattr(request.state, "request_id", "") or None),
         )
         _publish_mas_event_non_blocking(db, event=evt)
+    base = _normalize_submit_synced_diagnostic(base, quiz_kind=getattr(quiz, "kind", None))
+
     return {
         "request_id": request.state.request_id,
         "data": {
@@ -1158,6 +1204,8 @@ def lms_submit_attempt(request: Request, assessment_id: int, payload: SubmitAtte
             base["assigned_learning_path"] = path_result
     except Exception:
         base["assigned_learning_path"] = None  # Không bao giờ làm hỏng flow chính
+
+    base = _normalize_submit_synced_diagnostic(base, quiz_kind=getattr(q, "kind", None))
 
     persisted = persist_multidim_profile(db, user_id=int(payload.user_id), profile=multidim_profile)
 
