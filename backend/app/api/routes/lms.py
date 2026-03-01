@@ -1737,6 +1737,84 @@ def get_my_path(request: Request, user_id: int, db: Session = Depends(get_db)):
     }
 
 
+
+
+@router.get("/lms/student/{user_id}/topic-progress")
+def get_topic_progress(
+    request: Request,
+    user_id: int,
+    classroom_id: int | None = Query(default=None, ge=1),
+    db: Session = Depends(get_db),
+):
+    plan_q = db.query(LearningPlan).filter(LearningPlan.user_id == int(user_id))
+    if classroom_id is not None:
+        plan_q = plan_q.filter(LearningPlan.classroom_id == int(classroom_id))
+
+    plan = plan_q.order_by(LearningPlan.id.desc()).first()
+    if not plan:
+        return {"request_id": request.state.request_id, "data": {"topics": []}, "error": None}
+
+    plan_json = plan.plan_json if isinstance(plan.plan_json, dict) else {}
+    assigned_tasks = plan_json.get("assigned_tasks") if isinstance(plan_json.get("assigned_tasks"), list) else []
+    days = plan_json.get("days") if isinstance(plan_json.get("days"), list) else []
+
+    completed_rows = (
+        db.query(LearningPlanTaskCompletion)
+        .filter(
+            LearningPlanTaskCompletion.plan_id == int(plan.id),
+            LearningPlanTaskCompletion.completed.is_(True),
+        )
+        .all()
+    )
+    completed_set = {(int(r.day_index), int(r.task_index)) for r in completed_rows}
+
+    attempted_quiz_ids = {
+        int(x[0])
+        for x in db.query(Attempt.quiz_set_id).filter(Attempt.user_id == int(user_id)).distinct().all()
+        if x and x[0] is not None
+    }
+
+    by_topic: dict[str, dict[str, int | float | str]] = {}
+
+    for t in assigned_tasks:
+        if not isinstance(t, dict):
+            continue
+        topic = str(t.get("topic_title") or t.get("topic") or "Chưa phân loại").strip() or "Chưa phân loại"
+        if topic not in by_topic:
+            by_topic[topic] = {"topic": topic, "completed_tasks": 0, "total_tasks": 0}
+        by_topic[topic]["total_tasks"] = int(by_topic[topic]["total_tasks"]) + 1
+
+        quiz_id = t.get("quiz_id")
+        if str(quiz_id).isdigit() and int(quiz_id) in attempted_quiz_ids:
+            by_topic[topic]["completed_tasks"] = int(by_topic[topic]["completed_tasks"]) + 1
+
+    for day in days:
+        if not isinstance(day, dict):
+            continue
+        day_index = int(day.get("day_index") or 0)
+        tasks = day.get("tasks") if isinstance(day.get("tasks"), list) else []
+        for task_index, task in enumerate(tasks):
+            if not isinstance(task, dict):
+                continue
+            topic = str(task.get("topic_title") or task.get("topic") or "").strip()
+            if not topic:
+                continue
+            if topic not in by_topic:
+                by_topic[topic] = {"topic": topic, "completed_tasks": 0, "total_tasks": 0}
+            by_topic[topic]["total_tasks"] = int(by_topic[topic]["total_tasks"]) + 1
+            if (int(day_index), int(task_index)) in completed_set:
+                by_topic[topic]["completed_tasks"] = int(by_topic[topic]["completed_tasks"]) + 1
+
+    out = []
+    for row in by_topic.values():
+        total = max(0, int(row.get("total_tasks") or 0))
+        done = max(0, min(total, int(row.get("completed_tasks") or 0)))
+        pct = round((done / total) * 100, 2) if total > 0 else 0.0
+        out.append({"topic": row.get("topic"), "completed_tasks": done, "total_tasks": total, "percent": pct})
+
+    out.sort(key=lambda x: str(x.get("topic") or "").lower())
+    return {"request_id": request.state.request_id, "data": {"topics": out}, "error": None}
+
 @router.get("/students/{student_id}/recommendations")
 def student_recommendations(request: Request, student_id: int, db: Session = Depends(get_db)):
     latest = (

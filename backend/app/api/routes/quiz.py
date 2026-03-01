@@ -4,8 +4,8 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.schemas.quiz import QuizGenerateRequest, QuizSubmitRequest
-from app.services.quiz_service import generate_quiz_with_rag, get_or_create_practice_quiz_set_by_topic, grade_and_store_attempt
+from app.schemas.quiz import PracticeGenerateRequest, QuizGenerateRequest, QuizSubmitRequest
+from app.services.quiz_service import generate_practice_quiz, generate_quiz_with_rag, get_or_create_practice_quiz_set_by_topic, grade_and_store_attempt
 
 router = APIRouter(tags=['quiz'])
 
@@ -15,6 +15,21 @@ def quiz_generate(request: Request, payload: QuizGenerateRequest, db: Session = 
     data = generate_quiz_with_rag(db=db, payload=payload)
     return {'request_id': request.state.request_id, 'data': data, 'error': None}
 
+
+
+
+@router.post('/quiz/generate-practice')
+def quiz_generate_practice(request: Request, payload: PracticeGenerateRequest, db: Session = Depends(get_db)):
+    data = generate_practice_quiz(
+        db=db,
+        classroom_id=int(payload.classroom_id),
+        student_id=int(payload.student_id),
+        document_ids=[int(x) for x in (payload.document_ids or [])],
+        topic=str(payload.topic or "").strip(),
+        difficulty=str(payload.difficulty),
+        count=int(payload.count),
+    )
+    return {'request_id': request.state.request_id, 'data': data, 'error': None}
 
 @router.post('/quiz/{quiz_id}/submit')
 def quiz_submit(request: Request, quiz_id: int, payload: QuizSubmitRequest, db: Session = Depends(get_db)):

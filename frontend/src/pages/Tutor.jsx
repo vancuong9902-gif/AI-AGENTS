@@ -64,6 +64,14 @@ export default function Tutor() {
     localStorage.setItem(storageKey, JSON.stringify(messages));
   }, [messages, storageKey]);
 
+  const formatCitationPage = (c) => {
+    const ps = c?.page_start;
+    const pe = c?.page_end;
+    if (Number.isInteger(ps) && Number.isInteger(pe)) return ps === pe ? `Trang ${ps}` : `Trang ${ps}–${pe}`;
+    if (Number.isInteger(ps)) return `Trang ${ps}`;
+    return "";
+  };
+
   const ask = async (overrideQuestion) => {
     const q = ((overrideQuestion ?? question) || "").trim();
     if (!q || loading) return;
@@ -83,11 +91,30 @@ export default function Tutor() {
           allowed_topics: Array.isArray(learningPlan?.topics) ? learningPlan.topics : [],
         },
       });
-      const answer = data?.answer_md || data?.answer || "(Không có câu trả lời)";
       const isOffTopic = data?.is_off_topic === true || data?.off_topic === true;
+      const politeOffTopic = "Mình chưa thấy nội dung này trong tài liệu lớp. Bạn thử hỏi theo đúng chương/mục…";
+      const answer = isOffTopic ? politeOffTopic : (data?.answer_md || data?.answer || "(Không có câu trả lời)");
       const suggested = data?.suggested_questions || data?.follow_up_questions || [];
       setRightSuggestions(Array.isArray(suggested) ? suggested.slice(0, 5) : []);
-      setMessages((prev) => [...prev, { role: "assistant", text: answer, meta: data, offTopic: isOffTopic }]);
+
+      let meta = data || {};
+      const sourceIds = Array.isArray(data?.sources)
+        ? data.sources.map((x) => Number(x?.chunk_id)).filter((x) => Number.isInteger(x) && x > 0)
+        : [];
+      if (sourceIds.length > 0) {
+        try {
+          const cites = await apiJson(`/documents/chunks/citations?chunk_ids=${sourceIds.join(",")}`);
+          const map = {};
+          (Array.isArray(cites) ? cites : []).forEach((c) => {
+            if (Number.isInteger(c?.chunk_id)) map[c.chunk_id] = c;
+          });
+          meta = { ...meta, citation_map: map };
+        } catch {
+          // ignore citation failures
+        }
+      }
+
+      setMessages((prev) => [...prev, { role: "assistant", text: answer, meta, offTopic: isOffTopic }]);
     } catch (e) {
       const msg = e?.message || "Tutor lỗi";
       setError(msg);
@@ -121,7 +148,7 @@ export default function Tutor() {
                   <ul style={{ margin: "6px 0", paddingLeft: 18 }}>
                     {m.meta.sources.map((s, i) => (
                       <li key={`${s.chunk_id}-${i}`}>
-                        <b>Chunk #{s.chunk_id}</b> (score {Number(s.score || 0).toFixed(2)}): {s.preview}
+                        <b>Chunk #{s.chunk_id}</b>{m.meta?.citation_map?.[s?.chunk_id] ? ` · ${formatCitationPage(m.meta.citation_map[s.chunk_id])}` : ""} (score {Number(s.score || 0).toFixed(2)}): {s.preview}
                       </li>
                     ))}
                   </ul>

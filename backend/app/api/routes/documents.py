@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from typing import Optional, Any
 
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, Request, UploadFile, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, Query, Request, UploadFile, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -115,6 +115,80 @@ def _infer_page_range_from_chunks(chunks: list[DocumentChunk], start_idx: int | 
     if not vals:
         return (None, None)
     return (min(vals), max(vals))
+
+
+@router.get('/documents/chunks/citations')
+def get_chunk_citations(
+    request: Request,
+    chunk_ids: str = Query(..., description="Comma-separated chunk ids, e.g. 1,2,3"),
+    db: Session = Depends(get_db),
+):
+    raw_ids = [x.strip() for x in str(chunk_ids or '').split(',') if x.strip()]
+    parsed_ids: list[int] = []
+    for raw in raw_ids:
+        try:
+            cid = int(raw)
+        except Exception:
+            continue
+        if cid > 0:
+            parsed_ids.append(cid)
+
+    if not parsed_ids:
+        return {"request_id": request.state.request_id, "data": [], "error": None}
+
+    rows = db.query(DocumentChunk).filter(DocumentChunk.id.in_(parsed_ids)).all()
+    by_id = {int(r.id): r for r in rows}
+
+    out: list[dict[str, Any]] = []
+    for cid in parsed_ids:
+        row = by_id.get(int(cid))
+        if not row:
+            out.append({
+                "chunk_id": int(cid),
+                "document_id": None,
+                "page_start": None,
+                "page_end": None,
+                "heading": None,
+                "snippet": "",
+            })
+            continue
+
+        meta = row.meta if isinstance(row.meta, dict) else {}
+
+        page_start = meta.get('page_start')
+        page_end = meta.get('page_end')
+        if not isinstance(page_start, int):
+            page_start = meta.get('page') if isinstance(meta.get('page'), int) else meta.get('page_num') if isinstance(meta.get('page_num'), int) else meta.get('page_number') if isinstance(meta.get('page_number'), int) else None
+        if not isinstance(page_end, int):
+            page_end = meta.get('page_to') if isinstance(meta.get('page_to'), int) else meta.get('page_end') if isinstance(meta.get('page_end'), int) else page_start
+
+        page_range = meta.get('page_range')
+        if (page_start is None or page_end is None) and isinstance(page_range, str):
+            nums = [int(x) for x in page_range.replace('–', '-').split('-') if x.strip().isdigit()]
+            if nums:
+                page_start = page_start if isinstance(page_start, int) else nums[0]
+                page_end = page_end if isinstance(page_end, int) else nums[-1]
+
+        if isinstance(page_start, int) and not isinstance(page_end, int):
+            page_end = page_start
+        if isinstance(page_end, int) and not isinstance(page_start, int):
+            page_start = page_end
+
+        heading = meta.get('heading') or meta.get('section_title') or meta.get('title')
+        snippet = ' '.join(str(row.text or '').split())
+        if len(snippet) > 220:
+            snippet = f"{snippet[:219].rstrip()}…"
+
+        out.append({
+            "chunk_id": int(row.id),
+            "document_id": int(row.document_id),
+            "page_start": int(page_start) if isinstance(page_start, int) else None,
+            "page_end": int(page_end) if isinstance(page_end, int) else None,
+            "heading": str(heading).strip() if heading else None,
+            "snippet": snippet,
+        })
+
+    return {"request_id": request.state.request_id, "data": out, "error": None}
 
 
 

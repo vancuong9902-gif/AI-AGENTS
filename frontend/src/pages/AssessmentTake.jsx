@@ -31,9 +31,9 @@ export default function AssessmentTake() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [pathAssigned, setPathAssigned] = useState(false);
+  const [citationMap, setCitationMap] = useState({});
   const [explanationsByQuestion, setExplanationsByQuestion] = useState({});
   const [explanationsLoading, setExplanationsLoading] = useState(false);
-
   const autoSubmittedRef = useRef(false);
   const warningShownRef = useRef({ five: false, one: false });
   const diagnosticBannerRef = useRef(null);
@@ -184,6 +184,46 @@ export default function AssessmentTake() {
   const resolvedScore = Number(result?.total_score_percent ?? result?.score_percent ?? 0);
   const scoreTheme = levelTheme(resolvedScore);
 
+
+  useEffect(() => {
+    const allSources = [];
+    (result?.answer_review || []).forEach((row) => {
+      if (Array.isArray(row?.sources)) allSources.push(...row.sources);
+    });
+    const chunkIds = [...new Set(allSources.map((src) => Number(src?.chunk_id)).filter((id) => Number.isInteger(id) && id > 0))];
+    if (chunkIds.length === 0) {
+      setCitationMap({});
+      return;
+    }
+
+    let ignore = false;
+    (async () => {
+      try {
+        const data = await apiJson(`/documents/chunks/citations?chunk_ids=${chunkIds.join(",")}`);
+        if (ignore) return;
+        const map = {};
+        (Array.isArray(data) ? data : []).forEach((item) => {
+          if (Number.isInteger(item?.chunk_id)) map[item.chunk_id] = item;
+        });
+        setCitationMap(map);
+      } catch {
+        if (!ignore) setCitationMap({});
+      }
+    })();
+
+    return () => {
+      ignore = true;
+    };
+  }, [result]);
+
+  const pageLabel = (cite) => {
+    if (!cite) return "";
+    const start = Number(cite?.page_start);
+    const end = Number(cite?.page_end);
+    if (Number.isInteger(start) && Number.isInteger(end)) return start === end ? `Trang ${start}` : `Trang ${start}–${end}`;
+    if (Number.isInteger(start)) return `Trang ${start}`;
+    return "";
+  };
   useEffect(() => {
     const loadExplanations = async () => {
       if (!result?.attempt_id) return;
@@ -289,6 +329,113 @@ export default function AssessmentTake() {
     setSubmitting(false);
   };
 
+  const renderSources = (srcs) => {
+    if (!Array.isArray(srcs) || srcs.length === 0) return null;
+    return (
+      <div style={{ marginTop: 8, fontSize: 13, color: "#555" }}>
+        <div style={{ fontWeight: 700, marginBottom: 4 }}>Nguồn tham khảo</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {srcs.slice(0, 8).map((s, i) => (
+            <span
+              key={i}
+              style={{
+                border: "1px solid #eee",
+                background: "#fafafa",
+                borderRadius: 999,
+                padding: "4px 10px",
+              }}
+            >
+              chunk #{s?.chunk_id ?? "?"}{citationMap?.[s?.chunk_id] ? ` · ${pageLabel(citationMap[s.chunk_id])}` : ""}
+            </span>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  const sectionMeta = {
+    easy: {
+      id: "section-easy",
+      className: "easy",
+      title: "PHẦN I: CÂU HỎI CƠ BẢN",
+      label: "🟢 CƠ BẢN",
+      color: "#52c41a",
+      bg: "#f6ffed",
+      questions: groupedQuestions.easy,
+    },
+    medium: {
+      id: "section-medium",
+      className: "medium",
+      title: "PHẦN II: CÂU HỎI VẬN DỤNG",
+      label: "🟡 VẬN DỤNG",
+      color: "#fa8c16",
+      bg: "#fff7e6",
+      questions: groupedQuestions.medium,
+    },
+    hard: {
+      id: "section-hard",
+      className: "hard",
+      title: "PHẦN III: CÂU HỎI NÂNG CAO",
+      label: "🔴 NÂNG CAO",
+      color: "#f5222d",
+      bg: "#fff1f0",
+      questions: groupedQuestions.hard,
+    },
+  };
+
+  const renderQuestionCard = (q, orderNo) => (
+    <div
+      key={q.question_id}
+      style={{ background: "#fff", borderRadius: 12, padding: 12, boxShadow: "0 2px 10px rgba(0,0,0,0.06)" }}
+    >
+      <div style={{ fontWeight: 700, marginBottom: 6 }}>
+        Câu {orderNo} ({q.type === "mcq" ? "Trắc nghiệm" : "Tự luận"}) • {detectDifficulty(q)}
+        {Number(q?.estimated_minutes || 0) > 0 ? (
+          <span style={{ fontWeight: 500, color: "#666" }}> • ~{q.estimated_minutes} phút</span>
+        ) : null}
+      </div>
+      <div style={{ whiteSpace: "pre-wrap" }}>{q.stem}</div>
+
+      {q.type === "mcq" && (
+        <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+          {(q.options || []).map((op, i) => (
+            <label key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+              <input
+                type="radio"
+                name={`q_${q.question_id}`}
+                checked={(answers[q.question_id]?.answer_index ?? null) === i}
+                onChange={() => setMcq(q.question_id, i)}
+                disabled={!!result || attemptLocked}
+              />
+              <span>{op}</span>
+            </label>
+          ))}
+        </div>
+      )}
+
+      {q.type === "essay" && (
+        <div style={{ marginTop: 10 }}>
+          <textarea
+            rows={5}
+            value={answers[q.question_id]?.answer_text ?? ""}
+            onChange={(e) => setEssay(q.question_id, e.target.value)}
+            placeholder="Nhập câu trả lời tự luận..."
+            style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd" }}
+            disabled={!!result || attemptLocked}
+          />
+          <div style={{ color: "#666", marginTop: 6 }}>Thang điểm: {q.max_points || 10} (AI sẽ chấm theo rubric)</div>
+        </div>
+      )}
+    </div>
+  );
+
+  if (loading) {
+    return (
+      <div style={{ maxWidth: 900, margin: "0 auto", padding: 16 }}>
+        <h2>Đang tải…</h2>
+      </div>
+    );
+  }
   if (loading) return <div style={{ padding: 16 }}>Đang tải bài kiểm tra…</div>;
   if (error && !data) return <div style={{ padding: 16, color: "#b42318" }}>{error}</div>;
 

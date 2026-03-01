@@ -3,12 +3,6 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { apiJson } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 
-const LEVEL_TO_BACKEND = {
-  easy: "beginner",
-  medium: "intermediate",
-  hard: "advanced",
-};
-
 const LEVEL_LABEL = {
   easy: "Dễ",
   medium: "Trung bình",
@@ -40,7 +34,7 @@ export default function StudentPractice() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
-  const normalizedLevel = LEVEL_TO_BACKEND[level] ? level : "medium";
+  const normalizedLevel = ["easy", "medium", "hard"].includes(level) ? level : "medium";
 
   const onGenerate = useCallback(async () => {
     setLoading(true);
@@ -48,21 +42,17 @@ export default function StudentPractice() {
     setResult(null);
     setAnswers({});
     try {
-      const payload = {
-        user_id: Number(userId || 1),
-        topic: topicParam || `Topic ${documentId}`,
-        level: LEVEL_TO_BACKEND[normalizedLevel],
-        question_count: Number(questionCount),
-        rag: {
-          query: `${topicParam || "topic"} ${LEVEL_LABEL[normalizedLevel]} practice`,
-          top_k: 8,
-          filters: { document_id: Number(documentId) || undefined, topic_id: Number(topicParam) || undefined },
-        },
-      };
-
-      const generated = await apiJson("/quiz/generate", {
+      const classroomId = Number(localStorage.getItem("active_classroom_id") || 0) || 1;
+      const generated = await apiJson("/quiz/generate-practice", {
         method: "POST",
-        body: payload,
+        body: {
+          classroom_id: classroomId,
+          student_id: Number(userId || 1),
+          document_ids: [Number(documentId)].filter((x) => Number.isInteger(x) && x > 0),
+          topic: topicParam || `Topic ${documentId}`,
+          difficulty: normalizedLevel,
+          count: Number(questionCount),
+        },
       });
       setQuiz(generated);
     } catch (e) {
@@ -116,7 +106,7 @@ export default function StudentPractice() {
         <p className="text-sm text-slate-500">documentId={documentId || "?"} • topic={topicParam || "?"}</p>
 
         <div className="flex flex-wrap items-center gap-3">
-          {Object.keys(LEVEL_TO_BACKEND).map((key) => (
+          {Object.keys(LEVEL_LABEL).map((key) => (
             <button
               key={key}
               type="button"
