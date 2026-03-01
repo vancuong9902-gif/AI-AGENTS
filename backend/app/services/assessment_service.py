@@ -2141,7 +2141,8 @@ def generate_assessment(
     level: str,
     easy_count: int,
     medium_count: int = 0,
-    hard_count: int,
+    hard_mcq_count: int = 0,
+    hard_count: int = 0,
     document_ids: List[int],
     topics: List[str],
     kind: str = "midterm",
@@ -2152,7 +2153,7 @@ def generate_assessment(
     dedup_user_id: int | None = None,
     attempt_user_id: int | None = None,
 ) -> Dict[str, Any]:
-    total_q = int(easy_count) + int(medium_count) + int(hard_count)
+    total_q = int(easy_count) + int(medium_count) + int(hard_mcq_count) + int(hard_count)
 
     if not _is_assessment_kind(kind):
         raise ValueError("Invalid kind")
@@ -2366,7 +2367,7 @@ def generate_assessment(
     # Easy/Medium MCQ
     # Prefer LLM-based MCQs when available (more natural, less "chọn câu trích" style).
     gen_mode = (settings.QUIZ_GEN_MODE or "auto").strip().lower()
-    def _generate_mcq_bucket(*, count: int, bucket_name: str, target_blooms: list[str], excluded_stems: set[str] | None = None) -> List[Dict[str, Any]]:
+    def _generate_mcq_bucket(*, count: int, bucket_name: str, target_blooms: list[str], excluded_stems: set[str] | None = None, custom_hint: str | None = None) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
         if int(count) <= 0:
             return out
@@ -2381,8 +2382,8 @@ def generate_assessment(
                 if cnt <= 0:
                     continue
                 try:
-                    hint = None
-                    if int(medium_count) > 0:
+                    hint = custom_hint
+                    if not hint:
                         hint = (
                             f"TARGET_DIFFICULTY={bucket_name.upper()} - ưu tiên Bloom levels: {', '.join(target_blooms)}. "
                             "Không dùng mức ngoài nhóm mục tiêu nếu không thật sự cần thiết."
@@ -2484,14 +2485,23 @@ def generate_assessment(
     bucket_excluded_stems = _excluded_stems if _is_final_diagnostic_kind(kind) else None
     easy_mcqs = _generate_mcq_bucket(count=int(easy_count), bucket_name="easy", target_blooms=["remember", "understand"], excluded_stems=bucket_excluded_stems)
     medium_mcqs = _generate_mcq_bucket(count=int(medium_count), bucket_name="medium", target_blooms=["apply", "analyze"], excluded_stems=bucket_excluded_stems)
+    hard_mcq_hint = "TARGET_DIFFICULTY=HARD; BLOOM=evaluate/analyze; REQUIRE_SCENARIO=1"
+    hard_mcqs = _generate_mcq_bucket(
+        count=int(hard_mcq_count),
+        bucket_name="hard",
+        target_blooms=["evaluate", "create"],
+        excluded_stems=bucket_excluded_stems,
+        custom_hint=hard_mcq_hint,
+    )
     generated.extend(easy_mcqs)
     generated.extend(medium_mcqs)
+    generated.extend(hard_mcqs)
 
     # Clean/filter MCQ questions to keep options/stems demo-friendly (dedup + sanitize)
     if generated:
         mcqs = [q for q in generated if (q.get("type") or "").lower() == "mcq"]
         others = [q for q in generated if (q.get("type") or "").lower() != "mcq"]
-        mcq_target_total = int(easy_count) + int(medium_count)
+        mcq_target_total = int(easy_count) + int(medium_count) + int(hard_mcq_count)
         mcqs = clean_mcq_questions(mcqs, limit=mcq_target_total)
 
         # Optional LLM editor pass for MCQs (improves stems/distractors/explanations).
@@ -2555,7 +2565,7 @@ def generate_assessment(
         for q in (questions or []):
             qtype = str((q or {}).get("type") or "").strip().lower()
             bloom = normalize_bloom_level((q or {}).get("bloom_level"))
-            if qtype == "essay" and bloom in {"evaluate", "create"}:
+            if bloom in {"evaluate", "create"}:
                 counts["hard"] += 1
             elif bloom in {"remember", "understand"}:
                 counts["easy"] += 1
@@ -2564,7 +2574,7 @@ def generate_assessment(
         return counts
 
     # Validate and re-sample per difficulty bucket if one group is short.
-    desired = {"easy": int(easy_count), "medium": int(medium_count), "hard": int(hard_count)}
+    desired = {"easy": int(easy_count), "medium": int(medium_count), "hard": int(hard_mcq_count) + int(hard_count)}
     current = _bucket_counts(generated)
     if current["easy"] < desired["easy"]:
         generated.extend(
@@ -2587,13 +2597,25 @@ def generate_assessment(
         )
     current = _bucket_counts(generated)
     if current["hard"] < desired["hard"]:
-        for j in range(desired["hard"] - current["hard"]):
-            topic_for_q = topics_cycle[j % len(topics_cycle)]
-            source = _pick_source_for_topic(db, topic=topic_for_q, level=level, document_ids=document_ids)
-            qq = _build_essay_question(topic=topic_for_q, level=level, source=source)
-            qq["type"] = "essay"
-            qq["bloom_level"] = "evaluate" if (j % 2 == 0) else "create"
-            generated.append(qq)
+        hard_gap = desired["hard"] - current["hard"]
+        generated.extend(
+            _generate_mcq_bucket(
+                count=hard_gap,
+                bucket_name="hard",
+                target_blooms=["evaluate", "create"],
+                excluded_stems=bucket_excluded_stems,
+                custom_hint=hard_mcq_hint,
+            )
+        )
+        current = _bucket_counts(generated)
+        if current["hard"] < desired["hard"]:
+            for j in range(desired["hard"] - current["hard"]):
+                topic_for_q = topics_cycle[j % len(topics_cycle)]
+                source = _pick_source_for_topic(db, topic=topic_for_q, level=level, document_ids=document_ids)
+                qq = _build_essay_question(topic=topic_for_q, level=level, source=source)
+                qq["type"] = "essay"
+                qq["bloom_level"] = "evaluate" if (j % 2 == 0) else "create"
+                generated.append(qq)
 
     
     # Optional LLM editor pass for essay questions (improves teacher-like prompts + rubric).
@@ -2644,7 +2666,7 @@ def generate_assessment(
             semantic_mode,
         )
 
-    target_total = int(easy_count) + int(medium_count) + int(hard_count)
+    target_total = int(easy_count) + int(medium_count) + int(hard_mcq_count) + int(hard_count)
     deficit = target_total - len(generated)
     if deficit > 0:
         topic_list = topics_cycle or [((title or "tài liệu").strip() or "tài liệu")]
@@ -2883,7 +2905,7 @@ def generate_assessment(
     for q in (questions_out or []):
         qtype = str((q or {}).get("type") or "").strip().lower()
         bloom = normalize_bloom_level((q or {}).get("bloom_level"))
-        if qtype == "essay" and bloom in {"evaluate", "create"}:
+        if bloom in {"evaluate", "create"}:
             difficulty_plan["hard"] += 1
         elif bloom in {"remember", "understand"}:
             difficulty_plan["easy"] += 1

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 Level = Literal["beginner", "intermediate", "advanced"]
 AssessmentKind = Literal["diagnostic_pre", "midterm", "diagnostic_post"]
@@ -17,11 +17,20 @@ class AssessmentGenerateRequest(BaseModel):
     kind: AssessmentKind = "midterm"
 
     # Easy = MCQ; Hard = essay
-    easy_count: int = Field(default=5, ge=1, le=50)
+    easy_count: int = Field(default=5, ge=0, le=50)
+    medium_count: int = Field(default=0, ge=0, le=50)
+    hard_mcq_count: int = Field(default=0, ge=0, le=20)
     hard_count: int = Field(default=2, ge=0, le=20)
 
     document_ids: List[int] = Field(default_factory=list)
     topics: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_total_questions(self):
+        total = int(self.easy_count) + int(self.medium_count) + int(self.hard_mcq_count) + int(self.hard_count)
+        if total <= 0:
+            raise ValueError("Total question count must be greater than 0")
+        return self
 
 
 class AssessmentQuestionOut(BaseModel):

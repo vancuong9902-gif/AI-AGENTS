@@ -22,7 +22,7 @@ def test_template_difficulty_mapping_three_levels():
         ],
     )
     counts = template_to_assessment_counts(tpl)
-    assert counts == {"easy_count": 4, "medium_count": 5, "hard_count": 5}
+    assert counts == {"easy_count": 4, "medium_count": 5, "hard_mcq_count": 2, "hard_count": 3}
 
 
 def test_generate_variants_similarity_gate_math():

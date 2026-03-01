@@ -69,8 +69,7 @@ def _calc_difficulty_plan(questions: list[dict[str, Any]]) -> dict[str, int]:
     out = {"easy": 0, "medium": 0, "hard": 0}
     for q in questions:
         bloom = assessment_service.normalize_bloom_level(q.get("bloom_level"))
-        qtype = str(q.get("type") or "").lower()
-        if qtype == "essay" and bloom in {"evaluate", "create"}:
+        if bloom in {"evaluate", "create"}:
             out["hard"] += 1
         elif bloom in {"remember", "understand"}:
             out["easy"] += 1
@@ -121,6 +120,13 @@ def test_placement_three_difficulty_and_response_plan(monkeypatch):
                 _mcq("M4", "analyze"),
             ]
             return bank[:question_count]
+        if "TARGET_DIFFICULTY=HARD" in hint:
+            bank = [
+                _mcq("HM1", "evaluate"),
+                _mcq("HM2", "evaluate"),
+                _mcq("HM3", "create"),
+            ]
+            return bank[:question_count]
         return []
 
     monkeypatch.setattr(assessment_service, "_generate_mcq_with_llm", _fake_gen_mcq)
@@ -139,13 +145,14 @@ def test_placement_three_difficulty_and_response_plan(monkeypatch):
         kind="diagnostic_pre",
         easy_count=4,
         medium_count=4,
+        hard_mcq_count=2,
         hard_count=2,
         document_ids=[9],
-        topics=["python"],
+        topics=[],
     )
 
-    assert len(result["questions"]) == 10
+    assert len(result["questions"]) == 12
 
     plan = _calc_difficulty_plan(result["questions"])
-    assert plan == {"easy": 4, "medium": 4, "hard": 2}
+    assert plan == {"easy": 4, "medium": 4, "hard": 4}
     assert result["difficulty_plan"] == plan
