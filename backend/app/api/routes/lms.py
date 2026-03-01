@@ -504,42 +504,73 @@ def _collect_quiz_ids_from_learning_plan_json(plan_json: dict | None) -> set[int
 
 def collect_excluded_quiz_ids_for_classroom_final(db: Session, classroom_id: int) -> list[int]:
     cid = int(classroom_id)
-    excluded: set[int] = set()
-
-    assigned_ids = (
-        db.query(ClassroomAssessment.assessment_id)
-        .filter(ClassroomAssessment.classroom_id == cid)
-        .distinct()
-        .all()
-    )
-    excluded.update(int(r[0]) for r in assigned_ids if r and r[0] is not None)
-
-    student_ids = [
+    assigned_ids = {
         int(r[0])
-        for r in db.query(ClassroomMember.user_id)
-        .filter(ClassroomMember.classroom_id == cid)
-        .distinct()
-        .all()
-        if r and r[0] is not None
-    ]
-    if student_ids:
-        attempted_ids = (
-            db.query(Attempt.quiz_set_id)
-            .filter(Attempt.user_id.in_(student_ids), Attempt.quiz_set_id.isnot(None))
+        for r in (
+            db.query(ClassroomAssessment.assessment_id)
+            .filter(ClassroomAssessment.classroom_id == cid)
             .distinct()
             .all()
         )
-        excluded.update(int(r[0]) for r in attempted_ids if r and r[0] is not None)
+        if r and r[0] is not None
+    }
 
-        lp_rows = (
-            db.query(LearningPlan.plan_json)
-            .filter(LearningPlan.classroom_id == cid, LearningPlan.user_id.in_(student_ids))
+    placement_ids = {
+        int(r[0])
+        for r in (
+            db.query(ClassroomAssessment.assessment_id)
+            .join(QuizSet, QuizSet.id == ClassroomAssessment.assessment_id)
+            .filter(
+                ClassroomAssessment.classroom_id == cid,
+                QuizSet.kind == "diagnostic_pre",
+            )
+            .distinct()
             .all()
         )
-        for row in lp_rows:
-            excluded.update(_collect_quiz_ids_from_learning_plan_json((row[0] if row else None) or {}))
+        if r and r[0] is not None
+    }
 
+    excluded = assigned_ids | placement_ids
     return sorted(excluded)
+
+
+def build_classroom_final_exclude_quiz_ids(
+    db: Session,
+    *,
+    classroom_id: int,
+    current_quiz_id: int | None = None,
+) -> list[int]:
+    cid = int(classroom_id)
+    placement_ids = {
+        int(r[0])
+        for r in (
+            db.query(ClassroomAssessment.assessment_id)
+            .join(QuizSet, QuizSet.id == ClassroomAssessment.assessment_id)
+            .filter(
+                ClassroomAssessment.classroom_id == cid,
+                QuizSet.kind == "diagnostic_pre",
+            )
+            .distinct()
+            .all()
+        )
+        if r and r[0] is not None
+    }
+
+    extra_exclude_ids = {
+        int(r[0])
+        for r in (
+            db.query(ClassroomAssessment.assessment_id)
+            .filter(ClassroomAssessment.classroom_id == cid)
+            .distinct()
+            .all()
+        )
+        if r and r[0] is not None
+    }
+
+    if current_quiz_id is not None:
+        extra_exclude_ids.discard(int(current_quiz_id))
+
+    return sorted(placement_ids | extra_exclude_ids)
 
 
 def _placement_quiz_ids_by_classroom(db: Session, *, classroom_id: int) -> list[int]:
@@ -637,7 +668,10 @@ def lms_generate_placement(request: Request, payload: GenerateLmsQuizIn, db: Ses
 @router.post("/lms/final/generate")
 def lms_generate_final(request: Request, payload: GenerateLmsQuizIn, db: Session = Depends(get_db)):
     payload.title = payload.title or "Final Test"
-    exclude_ids = collect_excluded_quiz_ids_for_classroom_final(db, classroom_id=int(payload.classroom_id))
+    exclude_ids = build_classroom_final_exclude_quiz_ids(
+        db,
+        classroom_id=int(payload.classroom_id),
+    )
 
     data = generate_assessment(
         db,
@@ -734,7 +768,10 @@ def create_final_quiz(request: Request, payload: PlacementQuizIn, db: Session = 
         medium_count=int(payload.difficulty_settings.get("medium", 4)),
         hard_count=int(payload.difficulty_settings.get("hard", 2)),
     )
-    exclude_ids = collect_excluded_quiz_ids_for_classroom_final(db, classroom_id=int(payload.classroom_id))
+    exclude_ids = build_classroom_final_exclude_quiz_ids(
+        db,
+        classroom_id=int(payload.classroom_id),
+    )
     response = _generate_assessment_lms(
         request=request,
         db=db,
