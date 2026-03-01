@@ -18,10 +18,10 @@ const isValidPdfFile = (candidate) => {
 };
 
 const processingMessage = (status, progress) => {
-  if (status === 'ready') return 'Sẵn sàng!';
+  if (status === 'ready') return 'Sẵn sàng xử lý chủ đề!';
   if (status === 'error') return 'Có lỗi khi xử lý tài liệu.';
-  if (progress >= 70) return 'Đang nhận diện topic...';
-  return 'Đang xử lý PDF...';
+  if (progress >= 70) return 'Đang nhận diện chủ đề...';
+  return 'Đang xử lý tệp PDF...';
 };
 
 export default function Upload() {
@@ -159,12 +159,14 @@ export default function Upload() {
   return (
     <div className='container grid-12'>
       <Card className='span-12'>
-        <PageHeader title='Teacher Upload PDF' subtitle='Kéo thả hoặc chọn file PDF (tối đa 50MB).' breadcrumbs={['Teacher', 'Upload']} />
+        <PageHeader title='Tải tài liệu PDF' subtitle='Kéo thả hoặc chọn tệp PDF (tối đa 50MB).' breadcrumbs={['Giáo viên', 'Tải tài liệu']} />
         {error ? <Banner tone='error'>{error}</Banner> : null}
       </Card>
 
       <Card className='span-8 stack-md'>
         <div
+          role='region'
+          aria-label='Khu vực kéo thả tệp PDF'
           onDragOver={(e) => {
             e.preventDefault();
             setIsDragging(true);
@@ -172,26 +174,32 @@ export default function Upload() {
           onDragLeave={() => setIsDragging(false)}
           onDrop={handleDrop}
           style={{
-            border: isDragging ? '2px dashed var(--primary)' : '2px dashed var(--line)',
+            border: isDragging ? '2px dashed var(--primary)' : '2px dashed var(--border)',
             borderRadius: 12,
             padding: 24,
-            background: isDragging ? 'var(--bg-soft)' : 'transparent',
+            background: isDragging ? 'var(--primary-soft)' : 'transparent',
             textAlign: 'center',
           }}
         >
           <div style={{ fontWeight: 600 }}>Kéo & thả file PDF vào đây</div>
           <div style={{ color: 'var(--muted)', marginTop: 6 }}>hoặc</div>
-          <input type='file' accept='.pdf,application/pdf' onChange={(e) => selectFile(e.target.files?.[0] || null)} style={{ marginTop: 12 }} />
+          <input
+            type='file'
+            accept='.pdf,application/pdf'
+            aria-label='Chọn tệp PDF để tải lên'
+            onChange={(e) => selectFile(e.target.files?.[0] || null)}
+            style={{ marginTop: 12 }}
+          />
           <div style={{ marginTop: 10, color: 'var(--muted)' }}>{file ? `Đã chọn: ${file.name}` : 'Chưa chọn file'}</div>
         </div>
 
         <Button variant='primary' disabled={!file || uploading} onClick={handleUpload}>
-          {uploading ? 'Đang tải lên...' : 'Upload PDF'}
+          {uploading ? 'Đang tải lên...' : 'Tải PDF lên'}
         </Button>
 
         {(uploading || uploadProgress > 0) ? (
           <div>
-            <div style={{ height: 10, background: 'var(--line)', borderRadius: 999, overflow: 'hidden' }}>
+            <div style={{ height: 10, background: 'var(--border)', borderRadius: 999, overflow: 'hidden' }}>
               <div style={{ width: `${uploadProgress}%`, height: '100%', background: 'var(--primary)' }} />
             </div>
             <div style={{ marginTop: 8, color: 'var(--muted)' }}>Tiến độ upload: {uploadProgress}%</div>
@@ -206,11 +214,11 @@ export default function Upload() {
           <>
             <Banner tone={statusData.status === 'error' ? 'error' : statusData.status === 'ready' ? 'success' : 'info'}>{stageText}</Banner>
             {(statusData.status === 'pending' || statusData.status === 'processing') ? <Spinner /> : null}
-            <div>Progress: {statusData.progress_pct || 0}%</div>
-            <div>Số topic: {statusData.topic_count || 0}</div>
+            <div>Tiến độ: {statusData.progress_pct || 0}%</div>
+            <div>Số chủ đề: {statusData.topic_count || 0}</div>
             {statusData.status === 'ready' && uploadedDoc?.doc_id ? (
               <Button variant='primary' onClick={() => navigate(`/documents/${uploadedDoc.doc_id}/topics/preview`)}>
-                Xem topic đã phân tích →
+                Xem chủ đề đã phân tích →
               </Button>
             ) : null}
           </>
@@ -220,11 +228,12 @@ export default function Upload() {
       {uploadStep === 'confirm_topics' && (
         <Card className='span-12' style={{ marginTop: 16 }}>
           <h2 style={{ marginTop: 0 }}>📚 AI đã đề xuất {suggestedTopics.length} chủ đề</h2>
-          <p style={{ color: '#666' }}>Kiểm tra, chỉnh sửa rồi xác nhận để tiếp tục.</p>
+          <p style={{ color: 'var(--muted)' }}>Kiểm tra, chỉnh sửa rồi xác nhận để tiếp tục.</p>
           <div style={{ display: 'grid', gap: 8 }}>
             {confirmedTopics.map((topic, idx) => (
               <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <input
+                  aria-label={`Chủ đề ${idx + 1}`}
                   value={topic}
                   onChange={(e) => {
                     const next = [...confirmedTopics];
@@ -233,7 +242,7 @@ export default function Upload() {
                   }}
                   style={{ flex: 1, padding: 10, border: '1px solid #ddd', borderRadius: 10 }}
                 />
-                <Button onClick={() => setConfirmedTopics(confirmedTopics.filter((_, i) => i !== idx))}>Xoá</Button>
+                <Button aria-label={`Xóa chủ đề ${idx + 1}`} onClick={() => setConfirmedTopics(confirmedTopics.filter((_, i) => i !== idx))}>Xóa</Button>
               </div>
             ))}
           </div>
@@ -249,7 +258,7 @@ export default function Upload() {
                   setUploadStep('done');
                   if (uploadedDoc?.doc_id) navigate(`/documents/${uploadedDoc.doc_id}/topics/preview`);
                 } catch (e) {
-                  setError(e?.message || 'Xác nhận topics thất bại.');
+                  setError(e?.message || 'Xác nhận chủ đề thất bại.');
                 }
               }}
             >

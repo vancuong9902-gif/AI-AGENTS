@@ -36,9 +36,9 @@ export default function Navbar({ onNavigate }) {
       </div>
 
       <div className='nav-group-label'>{role === 'teacher' ? 'Không gian giáo viên' : 'Không gian học viên'}</div>
-      <nav className='nav-section'>
+      <nav className='nav-section' aria-label='Điều hướng theo vai trò'>
         <NavLink onClick={onNavigate} className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} to='/'>
-          <FiHome /> Đăng nhập
+          <FiHome /> Trang đăng nhập
         </NavLink>
         {navItems.map(({ to, label, icon: Icon }) => (
           <NavLink onClick={onNavigate} key={to} className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`} to={to}>
