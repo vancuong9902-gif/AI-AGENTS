@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { apiJson } from "../lib/api";
 
 const EXAM_TYPE_OPTIONS = [
@@ -31,6 +31,7 @@ function extractQuestions(quiz) {
 }
 
 export default function TeacherAssessments() {
+  const [searchParams] = useSearchParams();
   const [classrooms, setClassrooms] = useState([]);
   const [classroomId, setClassroomId] = useState(() => {
     const v = localStorage.getItem("teacher_active_classroom_id");
@@ -64,6 +65,13 @@ export default function TeacherAssessments() {
   const effectiveDocIds = useMemo(() => {
     return (selectedDocIds || []).map((x) => Number(x)).filter((n) => Number.isFinite(n) && n > 0);
   }, [selectedDocIds]);
+
+  const preferredDocId = useMemo(() => {
+    const q = Number(searchParams.get("documentId"));
+    if (Number.isFinite(q) && q > 0) return q;
+    if (effectiveDocIds.length === 1) return effectiveDocIds[0];
+    return null;
+  }, [searchParams, effectiveDocIds]);
 
   const allTopics = useMemo(() => {
     return effectiveDocIds.flatMap((docId) => {
@@ -174,6 +182,21 @@ export default function TeacherAssessments() {
       return (prev || []).filter((t) => allowed.has(t));
     });
   }, [allTopics]);
+
+  useEffect(() => {
+    if (!classroomId || !preferredDocId) return;
+    const key = `teacher_selected_topics_${classroomId}_${preferredDocId}`;
+    const raw = localStorage.getItem(key);
+    if (!raw) return;
+    try {
+      const cached = JSON.parse(raw);
+      const allowed = new Set(allTopics.map((t) => t.name));
+      const restored = (Array.isArray(cached) ? cached : []).filter((name) => allowed.has(name));
+      if (restored.length > 0) setSelectedTopics(restored);
+    } catch {
+      // ignore malformed cache
+    }
+  }, [classroomId, preferredDocId, allTopics]);
 
   const updateExamType = (examType) => {
     const selected = EXAM_TYPE_OPTIONS.find((o) => o.value === examType) || DEFAULT_EXAM_TYPE;

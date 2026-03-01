@@ -154,6 +154,22 @@ def test_filter_removes_high_similarity_stems(monkeypatch):
     assert all("python programming language" not in q["stem"].lower() for q in result["questions"])
 
 
+
+
+def test_no_keyword_overlap_between_placement_and_final():
+    """String similarity thấp nhưng keyword overlap cao vẫn phải bị filter."""
+    excluded = {"describe practical applications of machine learning models in healthcare data analysis"}
+    stem = "How are machine learning models applied in healthcare data analysis in practice?"
+
+    low_similarity = SequenceMatcher(
+        None,
+        stem.lower(),
+        "describe practical applications of machine learning models in healthcare data analysis",
+    ).ratio()
+
+    assert low_similarity < 0.95
+    assert assessment_service._is_dup(stem, excluded, similarity_threshold=0.95)
+
 def test_deficit_refill_generates_new_questions(monkeypatch):
     """Nếu filter loại 3 câu, hệ thống generate thêm 3 câu mới."""
     excluded = {33: ["alpha", "beta", "gamma"]}

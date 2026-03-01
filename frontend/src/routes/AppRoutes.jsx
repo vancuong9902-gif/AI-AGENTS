@@ -34,6 +34,7 @@ import TopicDetail from "../pages/TopicDetail";
 import StudentPractice from "../pages/StudentPractice";
 import FinalExam from "../pages/FinalExam";
 import TopicPreview from "../pages/TopicPreview";
+import TopicSelection from "../pages/TopicSelection";
 
 export default function AppRoutes() {
   return (
@@ -300,6 +301,16 @@ export default function AppRoutes() {
         element={
           <ProtectedRoute allow={["teacher"]}>
             <TeacherStudentPlan />
+          </ProtectedRoute>
+        }
+      />
+
+
+      <Route
+        path="/teacher/classrooms/:classroomId/documents/:documentId/topics"
+        element={
+          <ProtectedRoute allow={["teacher"]}>
+            <TopicSelection />
           </ProtectedRoute>
         }
       />
