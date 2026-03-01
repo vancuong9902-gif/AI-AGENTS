@@ -90,6 +90,23 @@ docker compose up -d --build backend
 
 Điều này cho phép chạy demo header mode mà không expose luồng JWT/email-password khi chưa cần.
 
+
+#### Luồng bảo mật tài khoản Gmail (sinh viên/giáo viên)
+
+Khi `AUTH_ENABLED=true`, hệ thống auth hỗ trợ các API sau:
+
+- `POST /api/auth/register`: đăng ký với `full_name`, `email` (bắt buộc Gmail), `phone_number`, `major`, `class_name`, `role`, `password` mạnh (>=8 ký tự, có hoa/thường/số).
+- `POST /api/auth/verify-email`: xác minh OTP email sau đăng ký để kích hoạt tài khoản.
+- `POST /api/auth/login-json` và `POST /api/auth/login`: đăng nhập bằng Gmail + mật khẩu.
+- `POST /api/auth/forgot-password` + `POST /api/auth/reset-password`: quên mật khẩu qua OTP gửi email.
+- `POST /api/auth/change-password/request-otp` + `POST /api/auth/change-password`: đổi mật khẩu với mật khẩu cũ + OTP.
+- `POST /api/auth/update-email` + `POST /api/auth/update-email/confirm`: đổi Gmail đăng nhập và xác minh OTP email mới.
+
+Biện pháp bảo mật đã bật:
+- Chặn brute-force: sai mật khẩu quá 5 lần sẽ bị khóa tạm thời (HTTP 429).
+- Mọi thao tác nhạy cảm đều yêu cầu OTP email.
+- Dữ liệu đầu vào (Gmail, số điện thoại, mật khẩu) được validate ở tầng schema trước khi xử lý.
+
 ## 5) Chạy dev local (không dùng container backend/frontend)
 ### 5.1 Chạy Backend
 
