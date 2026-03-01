@@ -3007,9 +3007,20 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
     question_by_id: Dict[int, Question] = {int(q.id): q for q in questions}
     quiz_doc_ids = _coerce_document_ids(getattr(quiz_set, "document_ids_json", None))
 
+    def _difficulty_from_bloom(raw_bloom: Any) -> str:
+        bloom = str(raw_bloom or "").strip().lower()
+        if bloom in {"remember", "understand"}:
+            return "easy"
+        if bloom in {"apply", "analyze"}:
+            return "medium"
+        if bloom in {"evaluate", "create"}:
+            return "hard"
+        return "medium"
+
     for q in questions:
         a = answer_map.get(q.id, {})
         topic = _infer_topic_from_stem(q.stem, fallback=str(quiz_set.topic))
+        difficulty = _difficulty_from_bloom(getattr(q, "bloom_level", None))
 
         if q.type == "mcq":
             mcq_total += 1
@@ -3022,13 +3033,22 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
             is_correct = chosen_i == int(q.correct_index)
             score_points = 1 if is_correct else 0
             mcq_earned += score_points
+            options = list(getattr(q, "options", None) or [])
+            correct_index = int(getattr(q, "correct_index", -1) or -1)
+            correct_answer_text = options[correct_index] if 0 <= correct_index < len(options) else None
+            student_answer_text = options[chosen_i] if 0 <= chosen_i < len(options) else None
 
             breakdown.append({
                 "question_id": q.id,
                 "type": "mcq",
                 "topic": topic,
+                "difficulty": difficulty,
+                "stem": q.stem,
+                "options": options,
                 "chosen": chosen_i,
-                "correct": int(q.correct_index),
+                "correct": correct_index,
+                "correct_answer_text": correct_answer_text,
+                "student_answer_text": student_answer_text,
                 "is_correct": bool(is_correct),
                 "score_points": int(score_points),
                 "max_points": 1,
@@ -3043,6 +3063,8 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
                 "question_id": q.id,
                 "type": "essay",
                 "topic": topic,
+                "difficulty": difficulty,
+                "stem": q.stem,
                 "answer_text": txt,
                 "score_points": 0,
                 "max_points": int(q.max_points or 10),
@@ -3273,6 +3295,41 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
         except Exception:
             learning_plan_created = False
 
+    summary_topic: Dict[str, Dict[str, Any]] = {}
+    summary_difficulty: Dict[str, Dict[str, Any]] = {
+        "easy": {"earned": 0, "total": 0, "percent": 0},
+        "medium": {"earned": 0, "total": 0, "percent": 0},
+        "hard": {"earned": 0, "total": 0, "percent": 0},
+    }
+    for item in bd:
+        topic = str(item.get("topic") or "Chưa phân loại").strip() or "Chưa phân loại"
+        diff = str(item.get("difficulty") or "medium").strip().lower()
+        if diff not in summary_difficulty:
+            diff = "medium"
+
+        earned = float(item.get("score_points") or 0)
+        total = float(item.get("max_points") or 0)
+
+        if topic not in summary_topic:
+            summary_topic[topic] = {"earned": 0.0, "total": 0.0, "percent": 0}
+        summary_topic[topic]["earned"] += earned
+        summary_topic[topic]["total"] += total
+
+        summary_difficulty[diff]["earned"] += earned
+        summary_difficulty[diff]["total"] += total
+
+    for bucket in summary_topic.values():
+        total = float(bucket.get("total") or 0)
+        bucket["earned"] = int(round(float(bucket.get("earned") or 0)))
+        bucket["total"] = int(round(total))
+        bucket["percent"] = int(round((float(bucket["earned"]) / total) * 100)) if total > 0 else 0
+
+    for bucket in summary_difficulty.values():
+        total = float(bucket.get("total") or 0)
+        bucket["earned"] = int(round(float(bucket.get("earned") or 0)))
+        bucket["total"] = int(round(total))
+        bucket["percent"] = int(round((float(bucket["earned"]) / total) * 100)) if total > 0 else 0
+
     result = {
         "assessment_id": assessment_id,
         "assessment_kind": assessment_kind,
@@ -3291,6 +3348,10 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
         "max_points": total_points,
         "status": "submitted (essay pending)" if pending else "graded",
         "breakdown": bd,
+        "summary": {
+            "by_topic": summary_topic,
+            "by_difficulty": summary_difficulty,
+        },
         "answer_review": answer_review,
         "synced_diagnostic": synced_diagnostic,
         "learning_plan_created": bool(learning_plan_created),
