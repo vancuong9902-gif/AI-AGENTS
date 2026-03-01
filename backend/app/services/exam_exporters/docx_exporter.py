@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import tempfile
+import zipfile
+import json
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from docx import Document
 
@@ -75,3 +77,47 @@ def export_assessment_to_docx(assessment: Dict[str, Any], *, kind: str = "") -> 
 
     doc.save(out_path)
     return Path(out_path)
+
+
+def export_batch_to_zip(papers: List[Dict[str, Any]], include_answer_key: bool) -> Path:
+    base_dir = Path(tempfile.mkdtemp(prefix="batch_exam_"))
+    zip_path = base_dir / "batch_exam.zip"
+
+    metadata = {
+        "total_papers": len(papers),
+        "codes": [str(p.get("paper_code") or "") for p in papers],
+    }
+
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for idx, paper in enumerate(papers, start=1):
+            code = str(paper.get("paper_code") or f"P{idx}")
+            docx_path = export_assessment_to_docx(paper)
+            zf.write(docx_path, arcname=f"paper_{code}.docx")
+
+        if include_answer_key:
+            key_doc = Document()
+            key_doc.add_heading("BẢNG ĐÁP ÁN", level=1)
+            for paper in papers:
+                code = str(paper.get("paper_code") or "?")
+                key_doc.add_heading(f"Đề {code}", level=2)
+                questions = paper.get("questions") or []
+                for qi, q in enumerate(questions, start=1):
+                    qtype = str(q.get("type") or "").lower()
+                    if qtype == "mcq":
+                        try:
+                            ans = chr(65 + int(q.get("correct_index")))
+                        except Exception:
+                            ans = "?"
+                        key_doc.add_paragraph(f"Q{qi}: {ans}")
+                    else:
+                        key_doc.add_paragraph(f"Q{qi}: Essay")
+
+            answer_key_path = base_dir / "answer_key.docx"
+            key_doc.save(answer_key_path)
+            zf.write(answer_key_path, arcname="answer_key.docx")
+
+        metadata_path = base_dir / "metadata.json"
+        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        zf.write(metadata_path, arcname="metadata.json")
+
+    return zip_path

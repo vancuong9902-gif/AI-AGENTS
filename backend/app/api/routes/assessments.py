@@ -38,6 +38,7 @@ from app.services.assessment_service import (
     leaderboard_for_assessment,
     grade_essays,
     get_latest_submission,
+    get_or_generate_attempt_explanations,
 )
 
 
@@ -515,6 +516,30 @@ def assessments_submit(
         return {"request_id": request.state.request_id, "data": data, "error": None}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/assessments/{assessment_id}/explanations")
+def assessments_explanations(
+    request: Request,
+    assessment_id: int,
+    attempt_id: int | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    if (getattr(user, "role", "student") or "student") == "student":
+        if not _student_can_access_assessment(db, student_id=int(user.id), assessment_id=int(assessment_id)):
+            raise HTTPException(status_code=404, detail="Assessment not found")
+
+    try:
+        data = get_or_generate_attempt_explanations(
+            db,
+            assessment_id=int(assessment_id),
+            user_id=int(user.id),
+            attempt_id=int(attempt_id) if attempt_id is not None else None,
+        )
+        return {"request_id": request.state.request_id, "data": data, "error": None}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.post("/assessments/quiz-sets/{quiz_set_id}/start")

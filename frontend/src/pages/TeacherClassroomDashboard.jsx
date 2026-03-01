@@ -115,7 +115,9 @@ export default function TeacherClassroomDashboard() {
 
   const exportXlsx = async () => {
     try {
-      await downloadFile(`${API_BASE}/lms/teacher/report/${classroomId}/export?format=xlsx`, `teacher-report-class-${classroomId}.xlsx`);
+      const teacherId = Number(localStorage.getItem("user_id") || 0);
+      const teacherQuery = teacherId > 0 ? `&teacher_id=${teacherId}` : "";
+      await downloadFile(`${API_BASE}/lms/teacher/report/${classroomId}/export?format=xlsx${teacherQuery}`, `teacher-report-class-${classroomId}.xlsx`);
     } catch (e) {
       setErr(`Xuất Excel thất bại: ${e?.message || e}`);
     }

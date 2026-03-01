@@ -18,6 +18,7 @@ class Attempt(Base):
     score_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     answers_json: Mapped[list[dict]] = mapped_column(JSONB, nullable=False, default=list)
     breakdown_json: Mapped[list[dict]] = mapped_column(JSONB, nullable=False, default=list)
+    explanation_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True, default=None)
     duration_sec: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     is_late: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     late_by_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
