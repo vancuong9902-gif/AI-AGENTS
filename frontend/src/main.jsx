@@ -5,11 +5,14 @@ import App from "./App";
 import "./index.css";
 import "./ui/theme.css";
 import { AuthProvider } from "./context/AuthContext";
+import { ToastProvider } from "./ui/Toast";
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <BrowserRouter>
     <AuthProvider>
-      <App />
+      <ToastProvider>
+        <App />
+      </ToastProvider>
     </AuthProvider>
   </BrowserRouter>
 );

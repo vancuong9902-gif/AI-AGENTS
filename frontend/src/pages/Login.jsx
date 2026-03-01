@@ -1,14 +1,17 @@
-import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { useAuth } from "../context/AuthContext";
+import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
+import Card from '../ui/Card';
+import Button from '../ui/Button';
+import PageHeader from '../ui/PageHeader';
 
 export default function Login() {
   const navigate = useNavigate();
   const { role, setRole, userId, setUserId, fullName, setFullName } = useAuth();
 
-  const [localRole, setLocalRole] = useState(role || "student");
+  const [localRole, setLocalRole] = useState(role || 'student');
   const [localId, setLocalId] = useState(String(userId ?? 1));
-  const [localName, setLocalName] = useState(fullName || "");
+  const [localName, setLocalName] = useState(fullName || '');
 
   const parsedId = useMemo(() => {
     const n = Number(localId);
@@ -20,66 +23,49 @@ export default function Login() {
     if (!parsedId) return;
     setUserId(parsedId);
     setRole(localRole);
-    setFullName((localName || "").trim() || null);
-
-    // Default landing pages
-    if (localRole === "teacher") navigate("/teacher/classrooms");
-    else navigate("/classrooms");
+    setFullName((localName || '').trim() || null);
+    if (localRole === 'teacher') navigate('/teacher/classrooms');
+    else navigate('/classrooms');
   };
 
   return (
-    <div style={{ maxWidth: 720, margin: "0 auto", padding: 16 }}>
-      <h1>🔐 Demo Login (không email, không JWT)</h1>
-      <p style={{ color: "#666", marginTop: 0 }}>
-        Chọn <b>Role</b> và nhập <b>User ID</b> để sử dụng hệ thống.
-      </p>
+    <div className='container grid-12'>
+      <Card className='span-12'>
+        <PageHeader
+          title='Đăng nhập bản demo'
+          subtitle='Chọn vai trò và mã người dùng để bắt đầu trải nghiệm hệ thống.'
+          breadcrumbs={['Trang chủ']}
+        />
+      </Card>
 
-      <form onSubmit={submit} style={{ background: "#fff", borderRadius: 16, padding: 14, boxShadow: "0 2px 10px rgba(0,0,0,0.06)" }}>
-        <div style={{ display: "grid", gap: 12 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <div>
-              <div style={{ fontWeight: 900, color: "#555", marginBottom: 6 }}>Role</div>
-              <select
-                value={localRole}
-                onChange={(e) => setLocalRole(e.target.value)}
-                style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #ddd", background: "#fff" }}
-              >
-                <option value="student">student</option>
-                <option value="teacher">teacher</option>
+      <Card className='span-8 stack-md'>
+        <form className='stack-md' onSubmit={submit}>
+          <div className='grid-12'>
+            <label className='input-wrap span-6' htmlFor='role'>
+              <span className='input-label'>Vai trò</span>
+              <select id='role' value={localRole} className='input' onChange={(e) => setLocalRole(e.target.value)}>
+                <option value='student'>Học viên</option>
+                <option value='teacher'>Giáo viên</option>
               </select>
-            </div>
-            <div>
-              <div style={{ fontWeight: 900, color: "#555", marginBottom: 6 }}>User ID</div>
-              <input
-                value={localId}
-                onChange={(e) => setLocalId(e.target.value)}
-                placeholder="VD: 1"
-                style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #ddd" }}
-              />
-              {!parsedId ? <div style={{ marginTop: 6, color: "#b15b00", fontSize: 13 }}>User ID phải là số dương.</div> : null}
-            </div>
+            </label>
+            <label className='input-wrap span-6' htmlFor='user-id'>
+              <span className='input-label'>Mã người dùng</span>
+              <input id='user-id' value={localId} onChange={(e) => setLocalId(e.target.value)} className='input' placeholder='Ví dụ: 1' />
+              {!parsedId ? <span className='input-helper'>Mã người dùng phải là số dương.</span> : null}
+            </label>
           </div>
 
-          <div>
-            <div style={{ fontWeight: 900, color: "#555", marginBottom: 6 }}>Tên hiển thị (tuỳ chọn)</div>
-            <input
-              value={localName}
-              onChange={(e) => setLocalName(e.target.value)}
-              placeholder="VD: Nguyễn Văn A"
-              style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #ddd" }}
-            />
-          </div>
+          <label className='input-wrap' htmlFor='full-name'>
+            <span className='input-label'>Tên hiển thị (tuỳ chọn)</span>
+            <input id='full-name' value={localName} onChange={(e) => setLocalName(e.target.value)} className='input' placeholder='Ví dụ: Nguyễn Văn A' />
+          </label>
 
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <button type="submit" disabled={!parsedId} style={{ padding: "10px 14px" }}>
-              Đăng nhập
-            </button>
-            <span style={{ color: "#666" }}>
-              Tip: teacher demo thường là ID=1.
-            </span>
+          <div className='row'>
+            <Button variant='primary' type='submit' disabled={!parsedId}>Đăng nhập</Button>
+            <span className='page-subtitle'>Gợi ý: tài khoản giáo viên demo thường dùng mã 1.</span>
           </div>
-        </div>
-      </form>
+        </form>
+      </Card>
     </div>
   );
 }
