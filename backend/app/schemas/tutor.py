@@ -9,6 +9,8 @@ class TutorChatRequest(BaseModel):
     user_id: int
     question: str
     topic: Optional[str] = None
+    exam_mode: bool = False
+    timed_test: bool = False
 
     # retrieval controls
     top_k: int = 6
@@ -40,6 +42,7 @@ class TutorChatData(BaseModel):
     quick_check_mcq: List[Dict[str, Any]] = Field(default_factory=list)
     sources: List[TutorSource] = Field(default_factory=list)
     retrieval: Dict[str, Any] = Field(default_factory=dict)
+    exam_mode_applied: bool = False
 
 
 # -----------------------------
