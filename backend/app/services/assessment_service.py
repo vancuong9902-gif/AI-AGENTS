@@ -2237,8 +2237,8 @@ def generate_assessment(
     final_exam_excluded_instruction = ""
     diagnostic_pre_stems_for_prompt: list[str] = []
 
-    if kind == "final_exam":
-        dedup_uid = int(dedup_user_id) if dedup_user_id is not None else int(teacher_id)
+    if _is_final_diagnostic_kind(kind):
+        dedup_uid = int(dedup_user_id) if dedup_user_id is not None else int(attempt_user_id if attempt_user_id is not None else teacher_id)
         used_entry_stems = _get_used_question_stems(db, dedup_uid)
         _excluded_stems.update(used_entry_stems)
         topic_rows = (
@@ -2257,8 +2257,8 @@ def generate_assessment(
     _excluded_stems = {x for x in _excluded_stems if x}
 
     dedup_topics_from_entry: list[str] = []
-    if kind == "final_exam":
-        history_user_id = int(attempt_user_id if attempt_user_id is not None else teacher_id)
+    if _is_final_diagnostic_kind(kind):
+        history_user_id = int(attempt_user_id if attempt_user_id is not None else dedup_user_id if dedup_user_id is not None else teacher_id)
         diagnostic_pre_stems = get_classroom_diagnostic_pre_stems(
             db,
             user_id=history_user_id,
@@ -3149,14 +3149,51 @@ def generate_final_exam(
 ) -> Dict[str, Any]:
     """Generate final exam with strict deduplication against diagnostic_pre."""
 
-    pre_exam_ids = [
+    # NOTE: quiz_set.user_id is teacher/creator, not learner. Exclusion must be based on learner history.
+    attempted_pre_exam_ids = [
         int(r[0])
         for r in (
-            db.query(QuizSet.id)
-            .filter(QuizSet.user_id == int(user_id), QuizSet.kind == "diagnostic_pre")
+            db.query(Attempt.quiz_set_id)
+            .join(QuizSet, QuizSet.id == Attempt.quiz_set_id)
+            .filter(Attempt.user_id == int(user_id), QuizSet.kind == "diagnostic_pre")
+            .distinct()
             .all()
         )
+        if r and r[0] is not None
     ]
+
+    assigned_pre_exam_ids = []
+    if int(classroom_id or 0) > 0:
+        assigned_pre_exam_ids = [
+            int(r[0])
+            for r in (
+                db.query(ClassroomAssessment.assessment_id)
+                .join(QuizSet, QuizSet.id == ClassroomAssessment.assessment_id)
+                .filter(
+                    ClassroomAssessment.classroom_id == int(classroom_id),
+                    QuizSet.kind == "diagnostic_pre",
+                )
+                .distinct()
+                .all()
+            )
+            if r and r[0] is not None
+        ]
+
+    pre_exam_ids = sorted({*attempted_pre_exam_ids, *assigned_pre_exam_ids})
+
+    entry_test_ids = [
+        int(r[0])
+        for r in (
+            db.query(Attempt.quiz_set_id)
+            .join(QuizSet, QuizSet.id == Attempt.quiz_set_id)
+            .filter(Attempt.user_id == int(user_id), QuizSet.kind == "entry_test")
+            .distinct()
+            .all()
+        )
+        if r and r[0] is not None
+    ]
+
+    exclude_quiz_ids = sorted({*pre_exam_ids, *entry_test_ids})
 
     topics = [
         str(r[0]).strip()
@@ -3184,7 +3221,9 @@ def generate_final_exam(
         document_ids=[int(document_id)],
         topics=topics,
         kind="final_exam",
-        exclude_quiz_ids=pre_exam_ids,
+        exclude_quiz_ids=exclude_quiz_ids,
+        dedup_user_id=int(user_id),
+        attempt_user_id=int(user_id),
         time_limit_minutes=90,
     )
 
