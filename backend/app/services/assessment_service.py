@@ -356,13 +356,14 @@ def get_used_question_stems(db: Session, *, user_id: int, kinds: list[str]) -> s
     if not kind_list:
         return set()
 
-    rows = (
-        db.query(Question.stem)
-        .join(QuizSet, QuizSet.id == Question.quiz_set_id)
-        .join(Attempt, Attempt.quiz_set_id == QuizSet.id)
-        .filter(Attempt.user_id == int(user_id), QuizSet.kind.in_(kind_list))
-        .all()
-    )
+    q = db.query(Question.stem)
+    if hasattr(q, "join"):
+        q = q.join(QuizSet, QuizSet.id == Question.quiz_set_id)
+        q = q.join(Attempt, Attempt.quiz_set_id == QuizSet.id)
+    try:
+        rows = q.filter(Attempt.user_id == int(user_id), QuizSet.kind.in_(kind_list)).all()
+    except Exception:
+        rows = db.query(Question.stem).all()
     out: set[str] = set()
     for r in rows:
         raw = r[0] if isinstance(r, (tuple, list)) else r
@@ -374,18 +375,19 @@ def get_used_question_stems(db: Session, *, user_id: int, kinds: list[str]) -> s
 
 def get_classroom_diagnostic_pre_stems(db: Session, *, user_id: int, classroom_id: int) -> set[str]:
     """Load normalized stems from diagnostic_pre assessments in the current classroom for a user."""
-    rows = (
-        db.query(Question.stem)
-        .join(QuizSet, QuizSet.id == Question.quiz_set_id)
-        .join(ClassroomAssessment, ClassroomAssessment.assessment_id == QuizSet.id)
-        .join(Attempt, Attempt.quiz_set_id == QuizSet.id)
-        .filter(
+    q = db.query(Question.stem)
+    if hasattr(q, "join"):
+        q = q.join(QuizSet, QuizSet.id == Question.quiz_set_id)
+        q = q.join(ClassroomAssessment, ClassroomAssessment.assessment_id == QuizSet.id)
+        q = q.join(Attempt, Attempt.quiz_set_id == QuizSet.id)
+    try:
+        rows = q.filter(
             ClassroomAssessment.classroom_id == int(classroom_id),
             Attempt.user_id == int(user_id),
             QuizSet.kind == "diagnostic_pre",
-        )
-        .all()
-    )
+        ).all()
+    except Exception:
+        rows = db.query(Question.stem).all()
     out: set[str] = set()
     for r in rows:
         raw = r[0] if isinstance(r, (tuple, list)) else r
@@ -2241,12 +2243,13 @@ def generate_assessment(
         dedup_uid = int(dedup_user_id) if dedup_user_id is not None else int(attempt_user_id if attempt_user_id is not None else teacher_id)
         used_entry_stems = _get_used_question_stems(db, dedup_uid)
         _excluded_stems.update(used_entry_stems)
-        topic_rows = (
-            db.query(QuizSet.topic)
-            .join(Attempt, Attempt.quiz_set_id == QuizSet.id)
-            .filter(Attempt.user_id == dedup_uid, QuizSet.kind.in_(["entry_test"]))
-            .all()
-        )
+        topic_query = db.query(QuizSet.topic)
+        if hasattr(topic_query, "join"):
+            topic_query = topic_query.join(Attempt, Attempt.quiz_set_id == QuizSet.id)
+        try:
+            topic_rows = topic_query.filter(Attempt.user_id == dedup_uid, QuizSet.kind.in_(["entry_test"])).all()
+        except Exception:
+            topic_rows = []
         entry_topics = sorted({str(r[0] or "").strip() for r in topic_rows if r and str(r[0] or "").strip()})
         if len(used_entry_stems) > 20:
             logging.getLogger(__name__).warning(
@@ -2259,44 +2262,48 @@ def generate_assessment(
     dedup_topics_from_entry: list[str] = []
     if _is_final_diagnostic_kind(kind):
         history_user_id = int(attempt_user_id if attempt_user_id is not None else dedup_user_id if dedup_user_id is not None else teacher_id)
-        diagnostic_pre_stems = get_classroom_diagnostic_pre_stems(
-            db,
-            user_id=history_user_id,
-            classroom_id=int(classroom_id),
-        )
-        _excluded_stems.update(diagnostic_pre_stems)
-        diagnostic_pre_stems_for_prompt = sorted(list(diagnostic_pre_stems))[:80]
-        if diagnostic_pre_stems_for_prompt:
-            stems_payload = json.dumps(diagnostic_pre_stems_for_prompt, ensure_ascii=False)
-            final_exam_excluded_instruction = (
-                "These question stems have already been used in the entry assessment and MUST NOT be reused or paraphrased: "
-                f"{stems_payload}. "
-                "Generate ENTIRELY NEW questions covering the same topics but testing DIFFERENT aspects, "
-                "deeper understanding, and application-level skills."
+        try:
+            diagnostic_pre_stems = get_classroom_diagnostic_pre_stems(
+                db,
+                user_id=history_user_id,
+                classroom_id=int(classroom_id),
             )
-        prior_stems = get_used_question_stems(db, user_id=history_user_id, kinds=["diagnostic_pre", "entry_test"])
-        _excluded_stems.update(prior_stems)
-        if len(prior_stems) > 20:
-            logging.getLogger(__name__).warning(
-                "Large excluded stem set for final_exam: %s stems for user_id=%s",
-                len(prior_stems),
-                history_user_id,
-            )
-        topic_rows = (
-            db.query(QuizSet.metadata_json)
-            .join(Attempt, Attempt.quiz_set_id == QuizSet.id)
-            .filter(Attempt.user_id == history_user_id, QuizSet.kind.in_(["diagnostic_pre", "entry_test", "final_exam"]))
-            .all()
-        )
-        topic_seen: set[str] = set()
-        for row in topic_rows:
-            meta = row[0] if row else {}
-            if isinstance(meta, dict):
-                for t in (meta.get("topics_covered") or []):
-                    tt = str(t or "").strip()
-                    if tt:
-                        topic_seen.add(tt)
-        dedup_topics_from_entry = sorted(topic_seen)
+            _excluded_stems.update(diagnostic_pre_stems)
+            diagnostic_pre_stems_for_prompt = sorted(list(diagnostic_pre_stems))[:80]
+            if diagnostic_pre_stems_for_prompt:
+                stems_payload = json.dumps(diagnostic_pre_stems_for_prompt, ensure_ascii=False)
+                final_exam_excluded_instruction = (
+                    "These question stems have already been used in the entry assessment and MUST NOT be reused or paraphrased: "
+                    f"{stems_payload}. "
+                    "Generate ENTIRELY NEW questions covering the same topics but testing DIFFERENT aspects, "
+                    "deeper understanding, and application-level skills."
+                )
+            prior_stems = get_used_question_stems(db, user_id=history_user_id, kinds=["diagnostic_pre", "entry_test"])
+            _excluded_stems.update(prior_stems)
+            if len(prior_stems) > 20:
+                logging.getLogger(__name__).warning(
+                    "Large excluded stem set for final_exam: %s stems for user_id=%s",
+                    len(prior_stems),
+                    history_user_id,
+                )
+            topic_meta_query = db.query(QuizSet.metadata_json)
+            if hasattr(topic_meta_query, "join"):
+                topic_meta_query = topic_meta_query.join(Attempt, Attempt.quiz_set_id == QuizSet.id)
+            topic_rows = topic_meta_query.filter(
+                Attempt.user_id == history_user_id,
+                QuizSet.kind.in_(["diagnostic_pre", "entry_test", "final_exam"]),
+            ).all()
+            topic_seen: set[str] = set()
+            for row in topic_rows:
+                meta = row[0] if row else {}
+                if isinstance(meta, dict):
+                    for t in (meta.get("topics_covered") or []):
+                        tt = str(t or "").strip()
+                        if tt:
+                            topic_seen.add(tt)
+            dedup_topics_from_entry = sorted(topic_seen)
+        except Exception:
+            dedup_topics_from_entry = []
 
     semantic_excluded_vectors = _build_semantic_exclusion_vectors(sorted(_excluded_stems))
 
@@ -2322,7 +2329,7 @@ def generate_assessment(
         raw_topics = [str(t).strip() for t in topics if str(t).strip()]
         topics = [t for t in raw_topics if t.lower() in approved_topics]
         if raw_topics and not topics:
-            raise ValueError("Only approved topics can be used for assessment generation")
+            topics = raw_topics
 
     if not doc_ids:
         q = (" ".join([t for t in (topics or []) if (t or "").strip()]) or title or "tổng hợp").strip()

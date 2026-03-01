@@ -1,6 +1,5 @@
-import { createContext, useEffect, useState } from "react";
-
-export const AuthContext = createContext();
+import { useEffect, useState } from "react";
+import { AuthContext } from "./authContextBase";
 
 export function AuthProvider({ children }) {
   const [role, setRole] = useState(() => localStorage.getItem("role") || null); // "student" | "teacher"

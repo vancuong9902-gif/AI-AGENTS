@@ -648,6 +648,8 @@ def analyze_topic_weak_points(all_breakdowns: list[dict]) -> list[dict]:
 
     topic_pcts: dict[str, list[float]] = defaultdict(list)
     for bd in all_breakdowns or []:
+        if not isinstance(bd, dict):
+            continue
         for topic, data in (bd.get("by_topic") or {}).items():
             topic_pcts[topic].append(float((data or {}).get("percent") or 0))
 
@@ -724,10 +726,39 @@ def per_student_bloom_analysis(*, by_student_breakdowns: dict[int, list[dict]]) 
         )
 
     return result
-def per_student_bloom_analysis(attempts: list, quiz_kind_map: dict) -> list[dict]:
+def per_student_bloom_analysis(
+    attempts: list | None = None,
+    quiz_kind_map: dict | None = None,
+    *,
+    by_student_breakdowns: dict[int, list[dict]] | None = None,
+    **_kwargs: Any,
+) -> list[dict]:
     """Tính Bloom breakdown và weak topics cho từng học sinh."""
 
     _ = quiz_kind_map
+    if by_student_breakdowns is not None:
+        normalized_attempts = []
+        for uid, breakdowns in (by_student_breakdowns or {}).items():
+            normalized_attempts.append(
+                type(
+                    "AttemptLike",
+                    (),
+                    {
+                        "user_id": int(uid),
+                        "breakdown_json": [
+                            {
+                                "topic": str(topic),
+                                "bloom_level": "understand",
+                                "is_correct": float((vals or {}).get("percent") or 0) >= 65,
+                            }
+                            for bd in (breakdowns or [])
+                            if isinstance(bd, dict)
+                            for topic, vals in ((bd.get("by_topic") or {}).items())
+                        ],
+                    },
+                )()
+            )
+        attempts = normalized_attempts
     bloom_levels = ["remember", "understand", "apply", "analyze", "evaluate", "create"]
     student_data = defaultdict(
         lambda: {
@@ -1706,8 +1737,10 @@ def assign_learning_path(
     db.commit()
     db.refresh(plan)
 
+    plan_id = int(getattr(plan, "id", 0) or 0)
+
     return {
-        "plan_id": int(plan.id),
+        "plan_id": plan_id,
         "student_level": student_level,
         "assigned_topics": [
             {

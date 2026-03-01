@@ -173,7 +173,7 @@ def _offtopic_gate_cache_key(question: str, topic: Optional[str], document_ids: 
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _is_question_on_topic_llm(
+def _is_question_on_topic_llm_gate(
     db: Session,
     question: str,
     topic: Optional[str],
@@ -363,7 +363,22 @@ def _topic_lexical_overlap(question: str, topic: Optional[str], context_lines: L
     return overlap >= 2 or (overlap >= 1 and len(q_tokens) <= 5)
 
 
-def _is_question_on_topic_llm(db: Session, *, question: str, topic: Optional[str], document_ids: Optional[List[int]]) -> Dict[str, Any]:
+def _is_question_on_topic_llm(*args, **kwargs):
+    """Backward-compatible dispatcher for tuple or dict gate styles."""
+    if kwargs:
+        db = args[0] if args else kwargs.get("db")
+        return _is_question_on_topic_llm_cached(
+            db,
+            question=str(kwargs.get("question") or ""),
+            topic=kwargs.get("topic"),
+            document_ids=kwargs.get("document_ids"),
+        )
+    if len(args) >= 4:
+        return _is_question_on_topic_llm_gate(args[0], args[1], args[2], args[3])
+    raise TypeError("_is_question_on_topic_llm expects either positional gate args or keyword cached args")
+
+
+def _is_question_on_topic_llm_cached(db: Session, *, question: str, topic: Optional[str], document_ids: Optional[List[int]]) -> Dict[str, Any]:
     cache_key = _topic_gate_cache_key(question=question, topic=topic, document_ids=document_ids)
     cached = _topic_gate_cache_get(cache_key)
     if cached:
@@ -927,7 +942,7 @@ def tutor_chat(
     llm_gate_result: Optional[Dict[str, Any]] = None
     llm_gate_failed = False
     try:
-        gate_on_topic, gate_reason, gate_matched_topic = _is_question_on_topic_llm(db, q, topic, doc_ids)
+        gate_on_topic, gate_reason, gate_matched_topic = _is_question_on_topic_llm_gate(db, q, topic, doc_ids)
         llm_gate_result = {
             "is_on_topic": bool(gate_on_topic),
             "reason": str(gate_reason or "llm_gate"),

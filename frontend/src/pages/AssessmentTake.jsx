@@ -537,6 +537,7 @@ export default function AssessmentTake() {
 
       <div style={{ position: "fixed", top: 16, right: 16, display: "grid", gap: 8, zIndex: 1000 }}>
         {toasts.map((t) => (
+          <>
           <div key={t.id} style={{ background: "#111827", color: "#fff", padding: "10px 12px", borderRadius: 10, boxShadow: "0 6px 20px rgba(0,0,0,0.25)" }}>
             {t.message}
           </div>
@@ -828,8 +829,7 @@ export default function AssessmentTake() {
               })}
             </div>
           </div>
-        </div>
-      )}
+          </>
         ))}
       </div>
     </div>
