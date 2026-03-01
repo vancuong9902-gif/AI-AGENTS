@@ -25,8 +25,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Lint (if script exists)
-        run: npm run --if-present lint
+      - name: Lint
+        run: npm run lint
 
       - name: Build
         run: npm run build
