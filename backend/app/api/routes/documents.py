@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import unicodedata
 from io import BytesIO
 from datetime import datetime, timezone
 
@@ -50,6 +51,10 @@ from app.services.text_repair import repair_ocr_spacing_text
 router = APIRouter(tags=['documents'])
 
 DOCUMENT_PROCESS_STATUS: dict[int, dict[str, Any]] = {}
+
+
+def _normalize_topic_field(text: str) -> str:
+    return unicodedata.normalize("NFC", fix_vietnamese_encoding(str(text or "").strip()))
 
 
 def _build_clean_text_instructions() -> list[str]:
@@ -601,7 +606,8 @@ def regenerate_document_topics(
 
         topic_models: list[DocumentTopic] = []
         for i, (t, (s_idx, e_idx)) in enumerate(zip(topics, ranges)):
-            cleaned_title, title_warnings = validate_and_clean_topic_title(str(t.get('title') or '').strip()[:255])
+            cleaned_title, title_warnings = validate_and_clean_topic_title(_normalize_topic_field(str(t.get('title') or ''))[:255])
+            clean_summary = _normalize_topic_field(str(t.get('summary') or ''))
             page_start, page_end = _infer_page_range_from_chunks(chunks, s_idx, e_idx)
             original_exercises = extract_exercises_from_topic(
                 str(t.get('content_preview') or t.get('summary') or ''),
@@ -630,11 +636,11 @@ def regenerate_document_topics(
                 document_id=int(document_id),
                 is_confirmed=False,
                 topic_index=i,
-                title=(cleaned_title or str(t.get('title') or '').strip())[:255],
-                display_title=(cleaned_title or str(t.get('title') or '').strip())[:255],
+                title=(cleaned_title or _normalize_topic_field(str(t.get('title') or '')))[:255],
+                display_title=(cleaned_title or _normalize_topic_field(str(t.get('title') or '')))[:255],
                 needs_review=bool(t.get('needs_review') or title_warnings),
                 extraction_confidence=float(t.get('extraction_confidence') or 0.0),
-                summary=str(t.get('summary') or '').strip(),
+                summary=clean_summary,
                 keywords=[str(x).strip() for x in (t.get('keywords') or []) if str(x).strip()],
                 start_chunk_index=s_idx,
                 end_chunk_index=e_idx,
@@ -944,10 +950,10 @@ def confirm_document_topics(
         db.query(DocumentTopic).filter(DocumentTopic.document_id == int(doc_id)).delete()
         now = datetime.now(timezone.utc)
         for order, title in enumerate(titles):
-            cleaned, _warnings = validate_and_clean_topic_title(title)
+            cleaned, _warnings = validate_and_clean_topic_title(_normalize_topic_field(title))
             row = DocumentTopic(
                 document_id=int(doc_id),
-                title=(cleaned or title)[:255],
+                title=(cleaned or _normalize_topic_field(title))[:255],
                 topic_index=int(order),
                 status='approved',
                 is_confirmed=True,
@@ -1193,8 +1199,8 @@ def add_custom_topic(
     if int(doc.user_id) != int(getattr(teacher, 'id')):
         raise HTTPException(status_code=403, detail='Not allowed')
 
-    title = str(payload.get('title') or '').strip()
-    description = str(payload.get('description') or '').strip()
+    title = _normalize_topic_field(str(payload.get('title') or ''))
+    description = _normalize_topic_field(str(payload.get('description') or ''))
     if not title:
         raise HTTPException(status_code=422, detail='title is required')
 
@@ -1604,18 +1610,19 @@ async def process_document_pipeline(
                     ranges = assign_topic_chunk_ranges(topics, chunk_lengths=[len(c.text or '') for c in chunk_models])
 
                 for i, (t, (s_idx, e_idx)) in enumerate(zip(topics, ranges)):
-                    cleaned_title, title_warnings = validate_and_clean_topic_title(str(t.get('title') or '').strip()[:255])
+                    cleaned_title, title_warnings = validate_and_clean_topic_title(_normalize_topic_field(str(t.get('title') or ''))[:255])
+                    clean_summary = _normalize_topic_field(str(t.get('summary') or ''))
                     page_start, page_end = _infer_page_range_from_chunks(chunk_models, s_idx, e_idx)
                     topic_models.append(
                         DocumentTopic(
                             document_id=doc.id,
                             is_confirmed=False,
                             topic_index=i,
-                            title=(cleaned_title or str(t.get('title') or '').strip())[:255],
-                            display_title=(cleaned_title or str(t.get('title') or '').strip())[:255],
+                            title=(cleaned_title or _normalize_topic_field(str(t.get('title') or '')))[:255],
+                            display_title=(cleaned_title or _normalize_topic_field(str(t.get('title') or '')))[:255],
                             needs_review=bool(t.get('needs_review') or title_warnings),
                             extraction_confidence=float(t.get('extraction_confidence') or 0.0),
-                            summary=str(t.get('summary') or '').strip(),
+                            summary=clean_summary,
                             keywords=[str(x).strip() for x in (t.get('keywords') or []) if str(x).strip()],
                             start_chunk_index=s_idx,
                             end_chunk_index=e_idx,
