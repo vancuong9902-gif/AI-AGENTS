@@ -43,18 +43,33 @@ def get_template(template_id: str) -> Optional[ExamTemplateOut]:
 
 
 def template_to_assessment_counts(template: ExamTemplateOut) -> Dict[str, int]:
-    """Map template sections -> (easy_count, hard_count).
+    """Map template sections -> (easy_count, medium_count, hard_count).
 
-    Current system supports:
-    - easy_count: number of MCQ
-    - hard_count: number of essay
+    Rules:
+    - multiple_choice with explicit difficulty easy/medium/hard goes to that bucket
+    - essay defaults to hard unless difficulty=medium
+    - missing difficulty for multiple_choice defaults to easy (backward compatible)
     """
     easy = 0
+    medium = 0
     hard = 0
     for sec in template.sections:
+        difficulty = str(sec.difficulty or "").strip().lower()
         if sec.type == "multiple_choice":
-            easy += int(sec.count)
+            if difficulty == "hard":
+                hard += int(sec.count)
+            elif difficulty == "medium":
+                medium += int(sec.count)
+            else:
+                easy += int(sec.count)
         elif sec.type == "essay":
-            hard += int(sec.count)
-    # Defensive: ensure non-negative
-    return {"easy_count": max(0, easy), "hard_count": max(0, hard)}
+            if difficulty == "medium":
+                medium += int(sec.count)
+            else:
+                hard += int(sec.count)
+
+    return {
+        "easy_count": max(0, easy),
+        "medium_count": max(0, medium),
+        "hard_count": max(0, hard),
+    }

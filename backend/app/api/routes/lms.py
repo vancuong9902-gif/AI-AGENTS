@@ -34,6 +34,7 @@ from app.infra.queue import enqueue
 from app.services.teacher_report_export_service import build_classroom_report_pdf
 from app.services.analytics_service import build_classroom_final_report, export_classroom_final_report_pdf
 from app.tasks.report_tasks import task_export_teacher_report_pdf
+from app.services.lms_report_export_service import export_report_pdf, export_report_xlsx
 from app.models.session import Session as UserSession
 from app.models.student_assignment import StudentAssignment
 from app.models.diagnostic_attempt import DiagnosticAttempt
@@ -2220,6 +2221,14 @@ def export_teacher_report(
         _report_cache[classroom_id] = report
         _report_cache_time[classroom_id] = time.time()
 
+    if export_format == "pdf":
+        pdf_path = export_report_pdf(report, name=f"teacher_classroom_{classroom_id}")
+        return FileResponse(pdf_path, media_type="application/pdf", filename=f"classroom_{classroom_id}_report.pdf")
+
+    if export_format == "xlsx":
+        xlsx_path = export_report_xlsx(report, name=f"teacher_classroom_{classroom_id}")
+        return FileResponse(xlsx_path, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=f"classroom_{classroom_id}_report.xlsx")
+
     if export_format == "html":
         template = _templates.get_template("teacher_report.html")
         rendered = template.render(report=report, generated_date=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"))
@@ -2232,7 +2241,41 @@ def export_teacher_report(
             "error": None,
         }
 
-    raise HTTPException(status_code=400, detail="Only html and json formats are supported")
+    raise HTTPException(status_code=400, detail="Supported formats: pdf, xlsx, html, json")
+
+
+@router.get("/lms/student/{user_id}/report/export")
+@router.get("/v1/lms/student/{user_id}/report/export")
+def export_student_report(
+    user_id: int,
+    format: str = Query("pdf"),
+    db: Session = Depends(get_db),
+):
+    student = db.query(User).filter(User.id == int(user_id)).first()
+    attempts = db.query(Attempt).filter(Attempt.user_id == int(user_id)).order_by(Attempt.created_at.desc()).limit(50).all()
+    pre = [float(a.score_percent or 0) for a in attempts if str(getattr(a.quiz_set, "kind", "")) in ("entry_test", "diagnostic_pre")]
+    post = [float(a.score_percent or 0) for a in attempts if str(getattr(a.quiz_set, "kind", "")) in ("final_exam", "diagnostic_post")]
+    report = {
+        "students": [{
+            "student_id": int(user_id),
+            "name": str(getattr(student, "full_name", "") or f"User #{user_id}"),
+            "entry_score": pre[0] if pre else 0,
+            "mid_score": 0,
+            "final_score": post[0] if post else 0,
+            "level": str(getattr(student, "level", "") or ""),
+            "topic_scores": {},
+            "study_time_minutes": 0,
+        }],
+        "summary": {"attempt_count": len(attempts)},
+    }
+    export_format = str(format or "pdf").strip().lower()
+    if export_format == "pdf":
+        path = export_report_pdf(report, name=f"student_{user_id}")
+        return FileResponse(path, media_type="application/pdf", filename=f"student_{user_id}_report.pdf")
+    if export_format == "xlsx":
+        path = export_report_xlsx(report, name=f"student_{user_id}")
+        return FileResponse(path, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=f"student_{user_id}_report.xlsx")
+    raise HTTPException(status_code=400, detail="Supported formats: pdf|xlsx")
 
 
 @router.get("/lms/classroom/{classroom_id}/final-report")

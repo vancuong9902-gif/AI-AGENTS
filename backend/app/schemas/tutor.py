@@ -15,6 +15,11 @@ class TutorChatRequest(BaseModel):
     document_ids: Optional[List[int]] = None
     allowed_topics: Optional[List[str]] = None
 
+    # anti-cheat context
+    assessment_id: Optional[int] = None
+    attempt_id: Optional[int] = None
+    exam_mode: bool = False
+
 
 class TutorSource(BaseModel):
     chunk_id: int
@@ -58,6 +63,11 @@ class TutorGenerateQuestionsRequest(BaseModel):
     top_k: int = 8
     document_ids: Optional[List[int]] = None
     allowed_topics: Optional[List[str]] = None
+
+    # anti-cheat context
+    assessment_id: Optional[int] = None
+    attempt_id: Optional[int] = None
+    exam_mode: bool = False
 
 
 class TutorPracticeQuestion(BaseModel):
