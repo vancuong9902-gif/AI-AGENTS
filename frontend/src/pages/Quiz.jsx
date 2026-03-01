@@ -238,9 +238,7 @@ export default function Quiz() {
         body: payload,
       });
 
-      navigate('/result', {
-        state: { type: 'entry', result: response, autoSubmitted: auto },
-      });
+      navigate(`/result/${encodeURIComponent(attemptId)}`);
     } catch (error) {
       submittedRef.current = false;
       setSubmitError(error?.message || 'Nộp bài thất bại.');

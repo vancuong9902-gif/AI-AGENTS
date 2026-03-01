@@ -3,9 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
-from sqlalchemy import Enum as SAEnum
 from sqlalchemy import JSON
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base_class import Base
@@ -28,13 +27,11 @@ class DocumentTopic(Base):
     extraction_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     metadata_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
-    status: Mapped[str] = mapped_column(
-        SAEnum("pending_review", "approved", "rejected", "edited", name="document_topic_review_status"),
-        nullable=False,
-        default="pending_review",
-        server_default="pending_review",
-        index=True,
-    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="published", server_default="published", index=True)
+    edited_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    meta_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+
+    # Backward-compatible fields used by existing demo flows.
     teacher_edited_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     teacher_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

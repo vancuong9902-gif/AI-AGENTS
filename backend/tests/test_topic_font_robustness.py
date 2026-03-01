@@ -38,6 +38,13 @@ def test_clean_unicode_utf8_title_keeps_original_content():
     _assert_human_readable(repaired)
 
 
+def test_vni_typing_heading_is_repaired_to_unicode_title():
+    raw = "Toa1n ho5c lo7p 10"
+    repaired = validate_topic_title(raw)
+    assert repaired == "Toán học lớp 10"
+    _assert_human_readable(repaired)
+
+
 def test_fix_mojibake_topic_returns_utf8_vietnamese():
     assert fix_mojibake_topic("PhÆ°Æ¡ng trÃ¬nh báº­c hai") == "Phương trình bậc hai"
 
@@ -102,4 +109,3 @@ def test_extract_topics_mixed_language_keeps_language_specific_titles():
     titles = [t["title"] for t in topics]
     assert "Hệ phương trình tuyến tính" in titles
     assert "Vector dot product" in titles
-
