@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { apiJson } from "../lib/api";
-import { useAuth } from "../context/AuthContext";
+
+const TABS = [
+  { key: "theory", label: "Lý thuyết" },
+  { key: "exercises", label: "Bài tập" },
+  { key: "quiz", label: "Mini Quiz" },
+];
 
 function MarkdownSafe({ text }) {
   if (!String(text || "").trim()) {
-    return <p className="text-slate-500">Chưa có nội dung học cho topic này.</p>;
+    return <p className="text-slate-500">Chưa có nội dung lý thuyết.</p>;
   }
 
   return (
@@ -29,44 +34,60 @@ function asArray(v) {
   return Array.isArray(v) ? v : [];
 }
 
-function getQuestionId(question, index) {
-  return question?.question_id ?? question?.id ?? index + 1;
+function ExerciseCard({ item, chunksById }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-xl border border-slate-200 p-4">
+      <p className="font-semibold text-slate-800">{item?.question}</p>
+      {asArray(item?.options).length > 0 && (
+        <ul className="mt-2 list-disc pl-6 text-sm text-slate-700">
+          {asArray(item?.options).map((opt, idx) => <li key={idx}>{opt}</li>)}
+        </ul>
+      )}
+      <button type="button" onClick={() => setOpen((v) => !v)} className="mt-3 rounded-lg bg-slate-100 px-3 py-1 text-sm font-medium">
+        {open ? "Ẩn đáp án" : "Xem đáp án"}
+      </button>
+      {open && (
+        <div className="mt-3 space-y-2 text-sm text-slate-700">
+          <p><b>Đáp án:</b> {item?.answer || "N/A"}</p>
+          <p><b>Giải thích:</b> {item?.explanation || "N/A"}</p>
+          <p><b>Trích nguồn:</b> {asArray(item?.source_chunks).join(", ") || "N/A"}</p>
+          <div className="space-y-2">
+            {asArray(item?.source_chunks).map((cid) => (
+              <blockquote key={cid} className="rounded border-l-4 border-blue-400 bg-blue-50 p-2 text-xs text-slate-700">
+                [chunk:{cid}] {chunksById?.[cid] || "(Không có preview)"}
+              </blockquote>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
-
-const LEVEL_MAP = {
-  easy: "beginner",
-  medium: "intermediate",
-  hard: "advanced",
-};
 
 export default function TopicDetail() {
   const { documentId, topicId } = useParams();
-  const navigate = useNavigate();
-  const { userId } = useAuth();
-
-  const [tab, setTab] = useState("study");
+  const [tab, setTab] = useState("theory");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
   const [topic, setTopic] = useState(null);
-  const [loadingTopic, setLoadingTopic] = useState(false);
-  const [topicError, setTopicError] = useState("");
-
-  const [quiz, setQuiz] = useState(null);
-  const [answers, setAnswers] = useState({});
+  const [quizAnswers, setQuizAnswers] = useState({});
   const [quizResult, setQuizResult] = useState(null);
-  const [loadingQuiz, setLoadingQuiz] = useState(false);
-  const [submitLoading, setSubmitLoading] = useState(false);
-  const [quizError, setQuizError] = useState("");
+  const [timeLeft, setTimeLeft] = useState(180);
 
   const fetchTopic = useCallback(async () => {
-    if (!documentId || !topicId) return;
-    setLoadingTopic(true);
-    setTopicError("");
+    setLoading(true);
+    setError("");
     try {
-      const data = await apiJson(`/documents/${documentId}/topics/${topicId}?include_content=1`);
+      const data = await apiJson(`/documents/${documentId}/topics/${topicId}?include_content=1&include_material=1`);
       setTopic(data || null);
-    } catch (error) {
-      setTopicError(error?.message || "Không tải được topic");
+      setTimeLeft(180);
+      setQuizAnswers({});
+      setQuizResult(null);
+    } catch (e) {
+      setError(e?.message || "Không thể tải topic");
     } finally {
-      setLoadingTopic(false);
+      setLoading(false);
     }
   }, [documentId, topicId]);
 
@@ -74,186 +95,103 @@ export default function TopicDetail() {
     fetchTopic();
   }, [fetchTopic]);
 
-  const onGenerateQuickQuiz = useCallback(async () => {
-    if (!topic?.title || loadingQuiz) return;
-    setLoadingQuiz(true);
-    setQuizError("");
-    setQuizResult(null);
-    setAnswers({});
-    try {
-      const generated = await apiJson("/quiz/generate", {
-        method: "POST",
-        body: {
-          user_id: Number(userId || 1),
-          topic: topic.title,
-          level: "intermediate",
-          question_count: 5,
-          rag: {
-            query: `${topic.title} practice questions`,
-            top_k: 6,
-            filters: { document_id: Number(documentId), topic_id: Number(topicId) },
-          },
-        },
-      });
-      setQuiz(generated);
-    } catch (error) {
-      setQuizError(error?.message || "Không thể tạo quiz nhanh");
-    } finally {
-      setLoadingQuiz(false);
-    }
-  }, [documentId, loadingQuiz, topic?.title, topicId, userId]);
+  useEffect(() => {
+    if (tab !== "quiz" || quizResult) return undefined;
+    if (timeLeft <= 0) return undefined;
+    const timer = setTimeout(() => setTimeLeft((v) => v - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [tab, quizResult, timeLeft]);
 
-  const onSubmitQuickQuiz = useCallback(async () => {
-    if (!quiz?.quiz_id) return;
-    setSubmitLoading(true);
-    setQuizError("");
-    try {
-      const payloadAnswers = asArray(quiz?.questions).map((q, index) => {
-        const qid = getQuestionId(q, index);
-        return {
-          question_id: Number(qid),
-          answer: Number.isInteger(answers[qid]) ? answers[qid] : -1,
-        };
-      });
+  const material = topic?.material || {};
+  const exercises = material?.exercises || { easy: [], medium: [], hard: [] };
+  const miniQuiz = asArray(material?.mini_quiz).slice(0, 5);
 
-      const result = await apiJson(`/quiz/${quiz.quiz_id}/submit`, {
-        method: "POST",
-        body: {
-          user_id: Number(userId || 1),
-          duration_sec: 0,
-          answers: payloadAnswers,
-        },
-      });
-      setQuizResult(result);
-    } catch (error) {
-      setQuizError(error?.message || "Nộp quiz thất bại");
-    } finally {
-      setSubmitLoading(false);
-    }
-  }, [answers, quiz, userId]);
-
-  const breakdownMap = useMemo(() => {
+  const chunksById = useMemo(() => {
     const out = {};
-    asArray(quizResult?.breakdown).forEach((row) => {
-      out[row?.question_id] = row;
+    asArray(topic?.chunk_previews).forEach((c) => {
+      out[c?.chunk_id] = c?.text_preview;
     });
     return out;
-  }, [quizResult?.breakdown]);
+  }, [topic?.chunk_previews]);
+
+  const onGradeQuiz = useCallback(() => {
+    let correct = 0;
+    miniQuiz.forEach((q, idx) => {
+      const selected = Number(quizAnswers[idx]);
+      const answerText = String(q?.answer || "").trim().toLowerCase();
+      const selectedText = Number.isInteger(selected) ? String(q?.options?.[selected] || "").trim().toLowerCase() : "";
+      if (selectedText && answerText && selectedText === answerText) correct += 1;
+    });
+    setQuizResult({ correct, total: miniQuiz.length, score: miniQuiz.length ? Math.round((correct / miniQuiz.length) * 100) : 0 });
+  }, [miniQuiz, quizAnswers]);
 
   return (
     <div className="mx-auto max-w-5xl space-y-5 px-4 py-6">
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h1 className="text-2xl font-bold text-slate-900">{topic?.display_title || topic?.title || "Topic detail"}</h1>
+        <h1 className="text-2xl font-bold text-slate-900">{topic?.display_title || topic?.title || "Topic Detail"}</h1>
         <p className="mt-2 text-sm text-slate-500">Document #{documentId} • Topic #{topicId}</p>
+        {topic?.material_warning && <p className="mt-2 text-sm text-amber-600">Cảnh báo: {asArray(topic.material_warning).join("; ")}</p>}
       </section>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="flex gap-2 border-b border-slate-200 pb-3">
-          {[{ key: "study", label: "Nội dung học" }, { key: "book-practice", label: "Bài tập trong sách" }, { key: "quick-quiz", label: "Kiểm tra nhanh" }].map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              onClick={() => setTab(item.key)}
-              className={`rounded-lg px-4 py-2 text-sm font-medium ${tab === item.key ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700"}`}
-            >
+          {TABS.map((item) => (
+            <button key={item.key} type="button" onClick={() => setTab(item.key)} className={`rounded-lg px-4 py-2 text-sm font-medium ${tab === item.key ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-700"}`}>
               {item.label}
             </button>
           ))}
         </div>
 
-        {loadingTopic && <p className="mt-4 text-slate-500">Đang tải topic...</p>}
-        {topicError && <p className="mt-4 text-red-600">{topicError}</p>}
+        {loading && <p className="mt-4 text-slate-500">Đang tải...</p>}
+        {error && <p className="mt-4 text-red-600">{error}</p>}
 
-        {!loadingTopic && !topicError && tab === "study" && (
-          <div className="mt-5 space-y-4">
-            <MarkdownSafe text={topic?.study_guide_md} />
-            <button
-              type="button"
-              onClick={() => navigate(`/practice?documentId=${documentId}&topic=${topicId}&level=medium`)}
-              className="rounded-lg bg-blue-600 px-4 py-2 font-medium text-white"
-            >
-              Sang luyện tập theo topic
-            </button>
-          </div>
-        )}
-
-        {!loadingTopic && !topicError && tab === "book-practice" && (
-          <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4 text-slate-700 whitespace-pre-wrap">
-            {topic?.practice || topic?.practice_preview || "Chưa tìm thấy phần bài tập trong sách."}
-          </div>
-        )}
-
-        {!loadingTopic && !topicError && tab === "quick-quiz" && (
-          <div className="mt-5 space-y-4">
-            {!quiz && (
-              <button type="button" onClick={onGenerateQuickQuiz} disabled={loadingQuiz} className="rounded-lg bg-blue-600 px-4 py-2 text-white disabled:opacity-60">
-                {loadingQuiz ? "Đang tạo quiz..." : "Tạo quiz nhanh 5 câu"}
-              </button>
-            )}
-
-            {quiz && !quizResult && (
-              <>
-                {asArray(quiz.questions).map((question, qIndex) => {
-                  const qid = getQuestionId(question, qIndex);
-                  return (
-                    <div key={qid} className="rounded-xl border border-slate-200 p-4">
-                      <p className="font-semibold">Câu {qIndex + 1}. {question?.stem}</p>
-                      <div className="mt-3 space-y-2">
-                        {asArray(question?.options).map((option, optIndex) => (
-                          <label key={`${qid}-${optIndex}`} className="flex items-center gap-2">
-                            <input
-                              type="radio"
-                              name={String(qid)}
-                              checked={answers[qid] === optIndex}
-                              onChange={() => setAnswers((prev) => ({ ...prev, [qid]: optIndex }))}
-                            />
-                            <span>{option}</span>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })}
-
-                <button type="button" onClick={onSubmitQuickQuiz} disabled={submitLoading} className="rounded-lg bg-emerald-600 px-4 py-2 text-white disabled:opacity-60">
-                  {submitLoading ? "Đang chấm..." : "Nộp và chấm ngay"}
-                </button>
-              </>
-            )}
-
-            {quizResult && (
-              <div className="space-y-3">
-                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-                  <p className="text-lg font-bold text-emerald-700">Điểm: {quizResult?.score_percent ?? 0}%</p>
-                  <p className="text-sm text-emerald-700">Đúng {quizResult?.correct_count ?? 0}/{quizResult?.total ?? 0} câu</p>
-                </div>
-
-                {asArray(quiz?.questions).map((question, qIndex) => {
-                  const qid = getQuestionId(question, qIndex);
-                  const row = breakdownMap[qid];
-                  if (!row) return null;
-                  const options = asArray(question?.options);
-                  return (
-                    <div key={`${qid}-r`} className={`rounded-xl border p-4 ${row?.is_correct ? "border-emerald-200 bg-emerald-50" : "border-red-200 bg-red-50"}`}>
-                      <p className="font-semibold">Câu {qIndex + 1}: {row?.is_correct ? "Đúng" : "Sai"}</p>
-                      <p className="text-sm">Bạn chọn: {Number.isInteger(row?.chosen) ? options[row.chosen] : "(chưa chọn)"}</p>
-                      <p className="text-sm">Đáp án đúng: {Number.isInteger(row?.correct) ? options[row.correct] : "N/A"}</p>
-                      {!row?.is_correct && row?.explanation && <p className="mt-2 text-sm text-slate-700">Giải thích: {row.explanation}</p>}
-                    </div>
-                  );
-                })}
-
-                <button
-                  type="button"
-                  onClick={() => navigate(`/practice?documentId=${documentId}&topic=${topicId}&level=${Object.keys(LEVEL_MAP)[1]}`)}
-                  className="rounded-lg bg-blue-600 px-4 py-2 text-white"
-                >
-                  Luyện thêm 10-20 câu
-                </button>
+        {!loading && !error && tab === "theory" && (
+          <div className="mt-4 space-y-4">
+            {!!material?.theory?.summary && <p className="rounded bg-slate-50 p-3 text-slate-700"><b>Tóm tắt:</b> {material.theory.summary}</p>}
+            {asArray(material?.theory?.key_concepts).length > 0 && (
+              <div>
+                <h3 className="mb-2 font-semibold">Key concepts</h3>
+                <ul className="list-disc pl-6 text-slate-700">
+                  {asArray(material.theory.key_concepts).map((k, i) => <li key={i}>{k}</li>)}
+                </ul>
               </div>
             )}
+            <MarkdownSafe text={material?.theory?.content_md || topic?.study_guide_md} />
+          </div>
+        )}
 
-            {quizError && <p className="text-red-600">{quizError}</p>}
+        {!loading && !error && tab === "exercises" && (
+          <div className="mt-4 space-y-4">
+            {[{ key: "easy", label: "Dễ" }, { key: "medium", label: "Trung bình" }, { key: "hard", label: "Khó" }].map((lv) => (
+              <details key={lv.key} className="rounded-xl border border-slate-200 p-3" open>
+                <summary className="cursor-pointer font-semibold">{lv.label} ({asArray(exercises?.[lv.key]).length})</summary>
+                <div className="mt-3 space-y-3">
+                  {asArray(exercises?.[lv.key]).length === 0 && <p className="text-sm text-slate-500">Chưa có bài tập.</p>}
+                  {asArray(exercises?.[lv.key]).map((item, idx) => <ExerciseCard key={`${lv.key}-${idx}`} item={item} chunksById={chunksById} />)}
+                </div>
+              </details>
+            ))}
+          </div>
+        )}
+
+        {!loading && !error && tab === "quiz" && (
+          <div className="mt-4 space-y-4">
+            <p className="text-sm font-medium text-slate-700">Thời gian còn lại: {Math.floor(timeLeft / 60)}:{String(timeLeft % 60).padStart(2, "0")}</p>
+            {miniQuiz.map((q, qIndex) => (
+              <div key={qIndex} className="rounded-xl border border-slate-200 p-4">
+                <p className="font-semibold">Câu {qIndex + 1}. {q?.question}</p>
+                <div className="mt-2 space-y-2">
+                  {asArray(q?.options).map((opt, idx) => (
+                    <label key={idx} className="flex items-center gap-2 text-sm">
+                      <input type="radio" name={`q-${qIndex}`} checked={Number(quizAnswers[qIndex]) === idx} onChange={() => setQuizAnswers((prev) => ({ ...prev, [qIndex]: idx }))} />
+                      <span>{opt}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ))}
+            {!quizResult && <button type="button" className="rounded-lg bg-emerald-600 px-4 py-2 text-white" onClick={onGradeQuiz}>Nộp quiz</button>}
+            {quizResult && <p className="rounded-lg bg-emerald-50 p-3 font-semibold text-emerald-700">Kết quả: {quizResult.correct}/{quizResult.total} ({quizResult.score}%)</p>}
           </div>
         )}
       </section>

@@ -13,7 +13,7 @@ from typing import Any
 from app.services.llm_service import chat_json, chat_text, llm_available
 from sqlalchemy.orm import Session
 
-from app.models.learning_plan import LearningPlanHomeworkSubmission
+from app.models.learning_plan import LearningPlanHomeworkSubmission, LearningPlanTaskCompletion
 from app.models.agent_log import AgentLog
 from app.models.diagnostic_attempt import DiagnosticAttempt
 from app.models.user import User
@@ -1200,82 +1200,160 @@ Trả về JSON:
 
 def generate_full_teacher_report(classroom_id: int, db: Session) -> dict[str, Any]:
     classroom_id = int(classroom_id)
-    members = (
-        db.query(ClassroomMember)
-        .filter(ClassroomMember.classroom_id == classroom_id, ClassroomMember.role == "student")
-        .all()
-    )
+    members = db.query(ClassroomMember).filter(ClassroomMember.classroom_id == classroom_id).all()
+    student_members = [m for m in members if str(getattr(m, "role", "student")).lower() == "student"]
+    classroom = db.get(Classroom, classroom_id)
 
-    students_data: list[dict[str, Any]] = []
-    for member in members:
+    diagnostic_quiz_ids = [
+        int(qid)
+        for qid, in (
+            db.query(ClassroomAssessment.assessment_id)
+            .join(QuizSet, QuizSet.id == ClassroomAssessment.assessment_id)
+            .filter(ClassroomAssessment.classroom_id == classroom_id, QuizSet.kind.in_(["diagnostic_pre", "diagnostic_post"]))
+            .all()
+        )
+    ]
+
+    student_ids = [int(m.user_id) for m in student_members]
+    attempts = []
+    if student_ids and diagnostic_quiz_ids:
+        attempts = (
+            db.query(Attempt)
+            .join(QuizSet, QuizSet.id == Attempt.quiz_set_id)
+            .filter(Attempt.user_id.in_(student_ids), Attempt.quiz_set_id.in_(diagnostic_quiz_ids), QuizSet.kind.in_(["diagnostic_pre", "diagnostic_post"]))
+            .order_by(Attempt.created_at.desc())
+            .all()
+        )
+
+    attempts_by_student: dict[int, dict[str, Attempt]] = defaultdict(dict)
+    quiz_kind_cache: dict[int, str] = {}
+    for at in attempts:
+        uid = int(at.user_id)
+        qid = int(at.quiz_set_id)
+        kind = quiz_kind_cache.get(qid)
+        if kind is None:
+            q = db.query(QuizSet).filter(QuizSet.id == qid).first()
+            kind = str(getattr(q, "kind", "")).lower()
+            quiz_kind_cache[qid] = kind
+        if kind in {"diagnostic_pre", "diagnostic_post"} and kind not in attempts_by_student[uid]:
+            attempts_by_student[uid][kind] = at
+
+    per_student: list[dict[str, Any]] = []
+    topic_bucket: dict[str, list[float]] = defaultdict(list)
+
+    for member in student_members:
         user_id = int(member.user_id)
-        diag = (
-            db.query(DiagnosticAttempt)
-            .filter(DiagnosticAttempt.user_id == user_id, DiagnosticAttempt.stage == "pre")
-            .order_by(DiagnosticAttempt.created_at.desc())
-            .first()
-        )
-        final = (
-            db.query(DiagnosticAttempt)
-            .filter(DiagnosticAttempt.user_id == user_id, DiagnosticAttempt.stage == "post")
-            .order_by(DiagnosticAttempt.created_at.desc())
-            .first()
-        )
+        student_name = str((member.user.full_name if getattr(member, "user", None) else None) or f"Student #{user_id}")
+        pre_attempt = attempts_by_student.get(user_id, {}).get("diagnostic_pre")
+        final_attempt = attempts_by_student.get(user_id, {}).get("diagnostic_post")
 
-        homework_done = (
-            db.query(LearningPlanHomeworkSubmission)
-            .filter(LearningPlanHomeworkSubmission.user_id == user_id)
-            .count()
-        )
-        plan = (
+        placement_score = float(getattr(pre_attempt, "score_percent", 0) or 0) if pre_attempt else None
+        final_score = float(getattr(final_attempt, "score_percent", 0) or 0) if final_attempt else None
+        improvement = round(final_score - placement_score, 2) if placement_score is not None and final_score is not None else None
+
+        breakdown_source = (final_attempt or pre_attempt)
+        breakdown = score_breakdown((breakdown_source.breakdown_json if breakdown_source else []) or [])
+        by_topic = breakdown.get("by_topic") or {}
+        for topic, vals in by_topic.items():
+            topic_bucket[str(topic)].append(float((vals or {}).get("percent") or 0.0))
+
+        weak_topics = [str(t.get("topic")) for t in (breakdown.get("weak_topics") or []) if isinstance(t, dict) and t.get("topic")]
+        strong_topics = [str(topic) for topic, _ in sorted(by_topic.items(), key=lambda x: float((x[1] or {}).get("percent") or 0.0), reverse=True)[:3]]
+
+        latest_plan = (
             db.query(LearningPlan)
             .filter(LearningPlan.user_id == user_id, LearningPlan.classroom_id == classroom_id)
             .order_by(LearningPlan.updated_at.desc())
             .first()
         )
-        tutor_queries = db.query(AgentLog).filter(AgentLog.user_id == user_id).count()
 
-        diag_score = float(diag.score_percent) if diag else None
-        final_score = float(final.score_percent) if final else None
-        topic_scores = _extract_topic_scores_for_student(final or diag)
-        base_score = final_score if final_score is not None else (diag_score or 0.0)
-        level_key = classify_student_level(int(round(base_score)))
-        level_map = {
-            "gioi": "Giỏi",
-            "kha": "Khá",
-            "trung_binh": "Trung bình",
-            "yeu": "Yếu",
-        }
+        homework_completion_rate = 0.0
+        if latest_plan:
+            total_tasks, homework_tasks = 0, 0
+            days = (latest_plan.plan_json or {}).get("days") if isinstance(latest_plan.plan_json, dict) else []
+            for day in days if isinstance(days, list) else []:
+                tasks = day.get("tasks") if isinstance(day, dict) else []
+                for task in tasks if isinstance(tasks, list) else []:
+                    total_tasks += 1
+                    if str((task or {}).get("type") or "").lower() == "homework":
+                        homework_tasks += 1
 
-        student_data = {
-            "user_id": user_id,
-            "name": str((member.user.full_name if member.user else None) or f"Student #{user_id}"),
-            "diagnostic_score": round(diag_score, 2) if diag_score is not None else None,
+            completed_tasks = db.query(LearningPlanTaskCompletion).filter(LearningPlanTaskCompletion.plan_id == int(latest_plan.id), LearningPlanTaskCompletion.completed.is_(True)).count()
+            homework_submissions = db.query(LearningPlanHomeworkSubmission).filter(LearningPlanHomeworkSubmission.plan_id == int(latest_plan.id), LearningPlanHomeworkSubmission.user_id == user_id).count()
+            denom = max(1, max(total_tasks, homework_tasks))
+            homework_completion_rate = round((max(completed_tasks, homework_submissions) / denom) * 100.0, 2)
+
+        tutor_sessions = db.query(AgentLog).filter(AgentLog.user_id == user_id).count()
+
+        ai_comment = ""
+        if llm_available():
+            try:
+                ai_comment = str(chat_text([
+                    {"role": "system", "content": "Bạn là trợ lý giáo dục. Hãy viết nhận xét ngắn 1-2 câu."},
+                    {"role": "user", "content": f"Học sinh {student_name}, placement={placement_score}, final={final_score}, improvement={improvement}, weak_topics={weak_topics[:3]}, strong_topics={strong_topics[:3]}, completion={homework_completion_rate}%"},
+                ], temperature=0.2, max_tokens=120) or "").strip()
+            except Exception:
+                ai_comment = ""
+        if not ai_comment:
+            if improvement is None:
+                ai_comment = "Chưa đủ dữ liệu placement/final để đánh giá tiến bộ."
+            elif improvement >= 10:
+                ai_comment = "Học sinh cải thiện tốt, có thể giao thêm bài nâng cao."
+            elif improvement >= 0:
+                ai_comment = "Học sinh có tiến bộ nhẹ, cần củng cố các chủ đề yếu."
+            else:
+                ai_comment = "Kết quả giảm so với placement, cần theo dõi sát và hỗ trợ thêm."
+
+        per_student.append({
+            "student_id": user_id,
+            "name": student_name,
+            "placement_score": round(placement_score, 2) if placement_score is not None else None,
             "final_score": round(final_score, 2) if final_score is not None else None,
-            "improvement": round(final_score - diag_score, 2) if diag_score is not None and final_score is not None else None,
-            "level": {"key": level_key, "label": level_map.get(level_key, level_key)},
-            "topic_scores": topic_scores,
-            "homework_completed": int(homework_done),
-            "plan_completion_pct": _calc_plan_completion(plan, homework_done),
-            "tutor_sessions": int(tutor_queries),
-            "weak_topics": _pick_topics_by_threshold(topic_scores, threshold=60.0, reverse=False),
-            "strong_topics": _pick_topics_by_threshold(topic_scores, threshold=75.0, reverse=True),
-        }
-        student_data["ai_evaluation"] = _generate_student_ai_evaluation(student_data)
-        students_data.append(student_data)
+            "improvement": improvement,
+            "weak_topics": weak_topics,
+            "strong_topics": strong_topics,
+            "homework_completion_rate": homework_completion_rate,
+            "tutor_sessions_count": int(tutor_sessions),
+            "ai_comment": ai_comment,
+            "topic_scores": {k: round(float((v or {}).get("percent") or 0.0), 2) for k, v in by_topic.items()},
+        })
 
-    class_summary = _generate_class_ai_summary(students_data)
-    classroom = db.get(Classroom, classroom_id)
+    per_student.sort(key=lambda x: str(x.get("name") or "").lower())
+    topic_heatmap = [{"topic": t, "avg_score": round(sum(vals) / len(vals), 2), "students": len(vals)} for t, vals in sorted(topic_bucket.items()) if vals]
+    improvements = [float(s["improvement"]) for s in per_student if s.get("improvement") is not None]
+
     return {
         "classroom_id": classroom_id,
         "classroom_name": str(getattr(classroom, "name", None) or f"Classroom #{classroom_id}"),
         "generated_at": datetime.utcnow().isoformat(),
-        "total_students": len(students_data),
-        "students": students_data,
-        "class_summary": class_summary,
+        "summary": {
+            "total_students": len(per_student),
+            "students_with_final": sum(1 for s in per_student if s.get("final_score") is not None),
+            "avg_improvement": round(sum(improvements) / len(improvements), 2) if improvements else 0.0,
+        },
+        "per_student": per_student,
+        "topic_heatmap": topic_heatmap,
+        "rows": per_student,
+        "progress_chart": [{"student_id": s["student_id"], "improvement": s.get("improvement")} for s in per_student],
+        "weak_topics": [x for x in topic_heatmap if float(x.get("avg_score") or 0) < 65.0],
+        "students": [
+            {
+                "user_id": s["student_id"],
+                "name": s["name"],
+                "diagnostic_score": s["placement_score"],
+                "final_score": s["final_score"],
+                "improvement": s["improvement"],
+                "weak_topics": s["weak_topics"],
+                "strong_topics": s["strong_topics"],
+                "tutor_sessions": s["tutor_sessions_count"],
+                "ai_evaluation": {"summary": s["ai_comment"]},
+                "topic_scores": s["topic_scores"],
+            }
+            for s in per_student
+        ],
+        "class_summary": {"overall_assessment": "Báo cáo tổng hợp tiến độ lớp học."},
         "export_available": True,
     }
-
 
 def teacher_report(db: Session, classroom_id: int) -> dict[str, Any]:
     classroom_id = int(classroom_id)
@@ -1534,6 +1612,17 @@ def _topic_body_len(topic: DocumentTopic) -> int:
     return len(summary)
 
 
+def _topic_chunk_span(topic: DocumentTopic) -> int:
+    start = getattr(topic, "start_chunk_index", None)
+    end = getattr(topic, "end_chunk_index", None)
+    if start is None or end is None:
+        return 0
+    try:
+        return max(0, int(end) - int(start) + 1)
+    except Exception:
+        return 0
+
+
 def assign_learning_path(
     db: Session,
     *,
@@ -1555,9 +1644,16 @@ def assign_learning_path(
     query = db.query(DocumentTopic).filter(
         DocumentTopic.document_id.in_([int(doc_id) for doc_id in (document_ids or [])])
     )
-    if cfg["sort_by_len"]:
-        query = query.order_by(DocumentTopic.body_len.asc().nullslast())
     all_topics = query.all()
+    if cfg["sort_by_len"]:
+        all_topics = sorted(
+            all_topics,
+            key=lambda t: (
+                _topic_chunk_span(t) if _topic_chunk_span(t) > 0 else _topic_body_len(t),
+                int(getattr(t, "topic_index", 0) or 0),
+                int(getattr(t, "id", 0) or 0),
+            ),
+        )
     selected = all_topics[: int(cfg["max_topics"])]
 
     reasons = {
@@ -1604,7 +1700,7 @@ def assign_learning_path(
         user_id=int(user_id),
         classroom_id=int(classroom_id or 0),
         level=student_level,
-        plan_json={"assigned_tasks": assigned_tasks, "student_level": student_level},
+        plan_json={"assigned_tasks": assigned_tasks, "tasks": assigned_tasks, "student_level": student_level},
     )
     db.add(plan)
     db.commit()
