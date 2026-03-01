@@ -48,10 +48,17 @@ INPUT
 - current_topic (optional)
 - evidence_chunks (đã retrieve + rerank)
 - relevance_score (0..1)
+- exam_mode (true/false)
+- timed_test (true/false)
 
 LUẬT PHẠM VI
 - Nếu relevance_score < ngưỡng hoặc evidence không đủ: từ chối lịch sự, nói rõ “ngoài phạm vi tài liệu hiện tại”, gợi ý cách hỏi lại + đưa ra 3 câu hỏi liên quan trong phạm vi.
 - Nếu đủ evidence: giải thích như giáo viên:
+
+- Nếu exam_mode=true HOẶC timed_test=true:
+  - KHÔNG đưa đáp án trực tiếp.
+  - Chỉ đưa hint, nhắc lại lý thuyết liên quan và hướng dẫn các bước tự làm.
+  - Nếu học sinh yêu cầu đáp án trực tiếp: từ chối khéo và tiếp tục đưa gợi ý.
   1) trả lời ngắn 1–2 câu
   2) giải thích chi tiết theo bước
   3) ví dụ (nếu không có trong evidence thì ghi “ví dụ minh hoạ giả định”)
@@ -816,6 +823,8 @@ def tutor_chat(
     top_k: int = 6,
     document_ids: Optional[List[int]] = None,
     allowed_topics: Optional[List[str]] = None,
+    exam_mode: bool = False,
+    timed_test: bool = False,
 ) -> Dict[str, Any]:
     """Virtual AI Tutor (RAG). Answers using only retrieved evidence and suggests follow-ups."""
 
@@ -824,6 +833,8 @@ def tutor_chat(
     q = (question or "").strip()
     if not q:
         raise HTTPException(status_code=422, detail="Missing question")
+    exam_active = bool(exam_mode or timed_test)
+
     # Minimal tracking for tutor usage analytics.
     db.add(UserSession(user_id=int(user_id), type="tutor_chat"))
     db.commit()
@@ -973,21 +984,19 @@ def tutor_chat(
         ).model_dump()
 
     scope = _topic_scope(topic)
-    gate_result = _is_question_on_topic_llm(db, question=q, topic=topic, document_ids=doc_ids)
-    suggested_questions = [str(x).strip() for x in (gate_result.get("suggested_questions") or []) if str(x).strip()][:3]
-    if not bool(gate_result.get("is_on_topic", True)):
+
     filters = {"document_ids": doc_ids} if doc_ids else {}
     query = f"{topic.strip()}: {q}" if topic and topic.strip() else q
     rag = corrective_retrieve_and_log(db=db, query=query, top_k=int(max(3, min(20, top_k))), filters=filters, topic=topic)
 
     off_topic_check = _off_topic_detector.check(question=q, topic=topic or "", rag_results=rag)
     if llm_gate_failed and off_topic_check["is_off_topic"]:
-        topic_label = topic or "chủ đề học hiện tại"
         refusal = (
             f"Mình xin phép chưa trả lời vì câu hỏi có vẻ ngoài phạm vi chủ đề hiện tại ({scope}). "
             "Bạn thử một trong các câu gợi ý bên dưới nhé."
         )
-        reason = str(gate_result.get("reason") or "off_topic")
+        reason = str(off_topic_check.get("reason") or "off_topic")
+        suggestions = _suggest_on_topic_questions(topic, q)
         _log_tutor_flagged_question(
             db,
             user_id=int(user_id),
@@ -1004,18 +1013,13 @@ def tutor_chat(
             refusal_reason=reason,
             off_topic_reason=reason,
             suggested_topics=intent_suggestions,
-            suggested_questions=suggested_questions,
-            follow_up_questions=suggested_questions,
+            suggested_questions=suggestions,
+            follow_up_questions=suggestions,
             quick_check_mcq=[],
             sources=[],
             sources_used=[],
-            retrieval={"topic_gate": gate_result},
             retrieval={**(rag.get("corrective") or {}), "off_topic_check": off_topic_check, "llm_topic_gate": {"fallback": "lexical"}},
         ).model_dump()
-
-    filters = {"document_ids": doc_ids} if doc_ids else {}
-    query = f"{topic.strip()}: {q}" if topic and topic.strip() else q
-    rag = corrective_retrieve_and_log(db=db, query=query, top_k=int(max(3, min(20, top_k))), filters=filters, topic=topic)
 
     corr = rag.get("corrective") or {}
     attempts = corr.get("attempts") or []
@@ -1108,12 +1112,18 @@ def tutor_chat(
         packed = pack_chunks(chunks, max_chunks=min(4, len(chunks)), max_chars_per_chunk=750, max_total_chars=2800)
         rag_context = "\n\n".join([f"[chunk_id:{c.get('chunk_id')}] {str(c.get('text') or '')}" for c in packed])
         sys = TUTOR_SYSTEM_PROMPT.format(topic_scope=scope, rag_context=rag_context, user_question_summary=(q[:90] + "…") if len(q) > 90 else q)
-        user = {"question": q, "topic": (topic or "").strip() or None, "session_history": {"recent_questions": recent_questions[-5:], "explained_topics": explained_topics[-8:]}, "output_format": {"answer_md": "markdown", "follow_up_questions": ["string", "string", "string"]}}
+        user = {"question": q, "topic": (topic or "").strip() or None, "exam_mode": exam_mode, "timed_test": timed_test, "session_history": {"recent_questions": recent_questions[-5:], "explained_topics": explained_topics[-8:]}, "output_format": {"answer_md": "markdown", "follow_up_questions": ["string", "string", "string"]}}
         try:
             resp = chat_json(messages=[{"role": "system", "content": sys}, {"role": "user", "content": json.dumps(user, ensure_ascii=False)}], temperature=0.25, max_tokens=1200)
             if isinstance(resp, dict) and (resp.get("answer_md") or "").strip():
                 answer_md = prev_note + str(resp.get("answer_md") or "").strip()
                 fu = _normalize_follow_up_questions(topic, [str(x).strip() for x in (resp.get("follow_up_questions") or []) if str(x).strip()])
+                if exam_active:
+                    answer_md = (
+                        "**Chế độ kiểm tra đang bật:** Mình không thể đưa đáp án trực tiếp.\n\n"
+                        + answer_md
+                        + "\n\n> Gợi ý thêm: thử trình bày theo 3 phần: (1) khái niệm chính, (2) lập luận/biến đổi theo từng bước, (3) tự kiểm tra kết quả bằng điều kiện của đề."
+                    )
                 answer_md = _append_topic_aware_section(answer_md, topic=topic, follow_ups=fu, homework_links=_related_homework_links(db, user_id=int(user_id), topic=topic))
                 if topic:
                     explained_topics = (explained_topics + [topic])[-8:]
@@ -1121,7 +1131,7 @@ def tutor_chat(
                 session["explained_topics"] = explained_topics
                 _save_tutor_session(int(user_id), session)
                 confidence = min(0.98, max(0.5, 0.6 + (best_rel * 0.4)))
-                return TutorChatData(answer_md=answer_md, was_answered=True, is_off_topic=False, refusal_message=None, refusal_reason=None, off_topic_reason=None, suggested_topics=intent_suggestions, follow_up_questions=fu, quick_check_mcq=(quick_mcq[:2]), sources=sources, sources_used=sources_used, confidence=confidence, retrieval=rag.get("corrective") or {}).model_dump()
+                return TutorChatData(answer_md=answer_md, was_answered=True, is_off_topic=False, refusal_message=None, refusal_reason=None, off_topic_reason=None, suggested_topics=intent_suggestions, follow_up_questions=fu, quick_check_mcq=(quick_mcq[:2]), sources=sources, sources_used=sources_used, confidence=confidence, retrieval=rag.get("corrective") or {}, exam_mode_applied=exam_active).model_dump()
         except Exception:
             pass
 
@@ -1132,11 +1142,18 @@ def tutor_chat(
             txt = txt[:257].rstrip() + "…"
         if txt:
             bullets.append(f"- {txt}")
-    answer_md = (
-        ("Mình đang ở chế độ **không dùng LLM**. Các đoạn liên quan nhất:\n\n" + "\n".join(bullets))
-        if bullets
-        else "Mình **chưa đủ thông tin trong tài liệu** để trả lời chắc chắn câu này."
-    )
+    if exam_active:
+        answer_md = (
+            "**Chế độ kiểm tra đang bật:** mình chỉ có thể gợi ý, không đưa đáp án trực tiếp.\n\n"
+            + ("Các ý bạn nên bám từ tài liệu:\n\n" + "\n".join(bullets) if bullets else "Hiện chưa có đủ đoạn tài liệu rõ ràng để gợi ý an toàn.")
+            + "\n\nHãy thử tự trả lời theo khung: định nghĩa/ý chính → các bước suy luận → kết luận ngắn."
+        )
+    else:
+        answer_md = (
+            ("Mình đang ở chế độ **không dùng LLM**. Các đoạn liên quan nhất:\n\n" + "\n".join(bullets))
+            if bullets
+            else "Mình **chưa đủ thông tin trong tài liệu** để trả lời chắc chắn câu này."
+        )
     fu = _normalize_follow_up_questions(topic, [])
     answer_md = _append_topic_aware_section(prev_note + answer_md, topic=topic, follow_ups=fu, homework_links=_related_homework_links(db, user_id=int(user_id), topic=topic))
     if topic:
@@ -1144,7 +1161,7 @@ def tutor_chat(
     session["recent_questions"] = (recent_questions + [q])[-5:]
     session["explained_topics"] = explained_topics
     _save_tutor_session(int(user_id), session)
-    return TutorChatData(answer_md=answer_md, was_answered=bool(bullets), is_off_topic=False, refusal_message=None, refusal_reason=None if bullets else "insufficient_context", off_topic_reason=None if bullets else "insufficient_context", suggested_topics=intent_suggestions, follow_up_questions=fu, quick_check_mcq=quick_mcq, sources=sources, sources_used=sources_used, confidence=0.55 if bullets else 0.4, retrieval=rag.get("corrective") or {}).model_dump()
+    return TutorChatData(answer_md=answer_md, was_answered=bool(bullets), is_off_topic=False, refusal_message=None, refusal_reason=None if bullets else "insufficient_context", off_topic_reason=None if bullets else "insufficient_context", suggested_topics=intent_suggestions, follow_up_questions=fu, quick_check_mcq=quick_mcq, sources=sources, sources_used=sources_used, confidence=0.55 if bullets else 0.4, retrieval=rag.get("corrective") or {}, exam_mode_applied=exam_active).model_dump()
 
 
 def tutor_generate_questions(

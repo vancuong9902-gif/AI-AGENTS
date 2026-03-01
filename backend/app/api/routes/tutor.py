@@ -91,6 +91,8 @@ def chat(request: Request, payload: TutorChatRequest, db: Session = Depends(get_
         top_k=payload.top_k,
         document_ids=payload.document_ids,
         allowed_topics=payload.allowed_topics,
+        exam_mode=payload.exam_mode,
+        timed_test=payload.timed_test,
     )
 
     # Safety: ensure response is JSON-serializable.
