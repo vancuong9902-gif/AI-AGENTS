@@ -1,12 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams, Link, useNavigate } from "react-router-dom";
+import { useParams, Link } from "react-router-dom";
 import { apiJson } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
-import Result from "./Result";
 
 export default function AssessmentTake() {
   const { id, quizSetId } = useParams();
-  const navigate = useNavigate();
   const assessmentId = Number(quizSetId || id);
   const { userId } = useAuth();
 
@@ -14,6 +12,8 @@ export default function AssessmentTake() {
   const [answers, setAnswers] = useState({});
   const [deadlineAt, setDeadlineAt] = useState(null);
   const [timeLeftSec, setTimeLeftSec] = useState(null);
+  const [attemptId, setAttemptId] = useState(null);
+  const [timedOutBanner, setTimedOutBanner] = useState(false);
   const [result, setResult] = useState(null);
   const [aiRecommendations, setAiRecommendations] = useState([]);
   const [recLoading, setRecLoading] = useState(false);
@@ -37,6 +37,8 @@ export default function AssessmentTake() {
   }, [data]);
 
   const timeLimitSec = useMemo(() => {
+    const direct = Number(data?.duration_seconds || 0);
+    if (Number.isFinite(direct) && direct > 0) return Math.round(direct);
     const mins = Number(data?.time_limit_minutes || 0);
     return Number.isFinite(mins) && mins > 0 ? Math.round(mins * 60) : 0;
   }, [data]);
@@ -201,10 +203,24 @@ export default function AssessmentTake() {
     autoSubmittedRef.current = false;
     try {
       const d = await apiJson(`/assessments/${assessmentId}`, { method: "GET" });
-      const session = await apiJson(`/assessments/${assessmentId}/start`, { method: "POST" });
       setData(d);
       setAnswers({});
+      setAttemptId(null);
+      setTimedOutBanner(false);
       warningShownRef.current = { five: false, one: false };
+
+      let session = null;
+      try {
+        session = await apiJson(`/attempts/start`, {
+          method: "POST",
+          body: { quiz_id: Number(d?.assessment_id || assessmentId), student_id: Number(userId ?? 0) },
+        });
+        setAttemptId(Number(session?.attempt_id || 0) || null);
+      } catch {
+        const fallback = await apiJson(`/assessments/${assessmentId}/start`, { method: "POST" });
+        session = fallback;
+      }
+
       const deadlineMs = Date.parse(session?.deadline || "");
       if (Number.isFinite(deadlineMs) && deadlineMs > 0) {
         setDeadlineAt(deadlineMs);
@@ -290,16 +306,24 @@ export default function AssessmentTake() {
         answer_text: answers[q.question_id]?.answer_text ?? null,
       }));
 
-      const r = await apiJson(`/assessments/quiz-sets/${data.assessment_id}/submit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_id: Number(userId ?? 1),
-          answers: answerList,
-        }),
-      });
+      let r = null;
+      if (attemptId) {
+        r = await apiJson(`/attempts/${attemptId}/submit`, {
+          method: "POST",
+          body: { answers: answerList },
+        });
+      } else {
+        r = await apiJson(`/assessments/quiz-sets/${data.assessment_id}/submit`, {
+          method: "POST",
+          body: {
+            user_id: Number(userId ?? 1),
+            answers: answerList,
+          },
+        });
+      }
 
       setResult(r);
+      setTimedOutBanner(Boolean(auto || r?.timed_out));
 
       const attemptId = r?.attempt_id || r?.attemptId || r?.assessment_attempt_id;
       if (attemptId) {
@@ -321,21 +345,8 @@ export default function AssessmentTake() {
         setPathAssigned(Boolean(r?.learning_plan_created));
       }
 
-      const resultType = isEntryTest
-        ? "entry"
-        : (String(r?.assessment_kind || data?.kind || "").toLowerCase() === "final_exam" ? "final" : "assessment");
-      navigate("/result", {
-        state: {
-          type: resultType,
-          result: {
-            ...r,
-            timed_out: auto || Boolean(r?.timed_out),
-          },
-        },
-      });
-
-      if (auto) {
-        setError("Hết giờ ⏱️ — hệ thống đã tự nộp bài.");
+      if (auto || r?.timed_out) {
+        setError("Hết giờ, hệ thống đã tự nộp");
       }
     } catch (e) {
       setError(e?.message || "Submit thất bại");
@@ -461,11 +472,17 @@ export default function AssessmentTake() {
           </Link>
           <button onClick={load} style={{ padding: "8px 12px" }}>Làm lại</button>
         </div>
-        <Result
-          result={result}
-          quizType={String(result?.assessment_kind || data?.kind || "").toLowerCase() === "final_exam" ? "final" : "diagnostic"}
-          diagnosticScore={Number((result?.score || 0) - (result?.improvement_vs_diagnostic || 0))}
-        />
+        <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 16 }}>
+          <h3 style={{ marginTop: 0 }}>Kết quả</h3>
+          <div>Điểm: <b>{Math.round(Number(result?.total_score_percent ?? result?.score_percent ?? 0))}/100</b></div>
+          <div>Đúng: {Number(result?.correct_count ?? 0)} / {Number(result?.total_questions ?? data?.questions?.length || 0)}</div>
+          {Number(result?.time_spent_seconds || 0) > 0 && (
+            <div>Thời gian làm bài: {fmtTime(Number(result?.time_spent_seconds || 0))}</div>
+          )}
+          {Number(result?.duration_seconds || 0) > 0 && (
+            <div>Giới hạn thời gian: {fmtTime(Number(result?.duration_seconds || 0))}</div>
+          )}
+        </div>
         {pathAssigned && (
           <div style={{ marginTop: 12, padding: 10, borderRadius: 10, background: "#fffbe6", border: "1px solid #ffe58f" }}>
             🎯 Dựa trên kết quả, hệ thống đã tạo lộ trình học tập phù hợp cho bạn!
@@ -498,6 +515,12 @@ export default function AssessmentTake() {
           </button>
         </div>
       </div>
+
+      {timedOutBanner && (
+        <div style={{ marginTop: 12, background: "#fff1f0", border: "1px solid #ffccc7", padding: 12, borderRadius: 12, color: "#a8071a", fontWeight: 700 }}>
+          Hết giờ, hệ thống đã tự nộp
+        </div>
+      )}
 
       {timeLimitSec > 0 && (
         <div
