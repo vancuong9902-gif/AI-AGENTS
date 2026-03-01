@@ -52,6 +52,28 @@ router = APIRouter(tags=['documents'])
 DOCUMENT_PROCESS_STATUS: dict[int, dict[str, Any]] = {}
 
 
+def _build_clean_text_instructions() -> list[str]:
+    return [
+        "Xuất lại PDF với font Unicode (ưu tiên PDF text-based, không scan mờ).",
+        "Nếu PDF scan: chạy OCR tiếng Việt (vie+eng) rồi upload lại bản đã OCR.",
+        "Kiểm tra và sửa lỗi chữ vỡ/thiếu dấu trước khi tách topic.",
+    ]
+
+
+def _text_quality_gate(raw_text: str) -> dict[str, Any]:
+    repaired = repair_ocr_spacing_text(fix_vietnamese_encoding(str(raw_text or "")))
+    q = float(quality_score(repaired)) if repaired else 0.0
+    broken = bool(detect_broken_vn_font(repaired or raw_text or ""))
+    needs_clean = (q < 0.6) or broken
+    return {
+        "status": "NEED_CLEAN_TEXT" if needs_clean else "OK",
+        "quality_score": round(q, 4),
+        "broken_font_detected": bool(broken),
+        "instructions": _build_clean_text_instructions() if needs_clean else [],
+        "next_actions": ["force_ocr", "upload_better_pdf"] if needs_clean else [],
+    }
+
+
 def _set_doc_status(document_id: int, *, status: str, progress_pct: int, topic_count: int = 0) -> None:
     DOCUMENT_PROCESS_STATUS[int(document_id)] = {
         'status': str(status),
@@ -346,6 +368,22 @@ def list_document_topics(
 ):
     user_role = str(getattr(current_user, 'role', '') or '').strip().lower()
     is_teacher = user_role == 'teacher'
+
+    doc = db.query(Document).filter(Document.id == int(document_id)).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail='Document not found')
+    quality_gate = _text_quality_gate(str(getattr(doc, 'content', '') or ''))
+    if quality_gate.get('status') == 'NEED_CLEAN_TEXT':
+        raise HTTPException(
+            status_code=422,
+            detail={
+                'code': 'NEED_CLEAN_TEXT',
+                'message': 'Nội dung PDF chưa đạt chất lượng OCR/font để tách topic.',
+                'report': quality_gate,
+                'instructions': quality_gate.get('instructions') or [],
+                'next_actions': quality_gate.get('next_actions') or ['force_ocr', 'upload_better_pdf'],
+            },
+        )
 
     topics_q = db.query(DocumentTopic).filter(DocumentTopic.document_id == document_id)
     if not is_teacher:
@@ -1467,6 +1505,13 @@ def get_document_status(
     topic_count = int(
         db.query(func.count(DocumentTopic.id)).filter(DocumentTopic.document_id == int(document_id)).scalar() or 0
     )
+    quality_gate = _text_quality_gate(str(getattr(doc, 'content', '') or '')) if getattr(doc, 'content', None) else {
+        'status': 'PROCESSING',
+        'quality_score': 0.0,
+        'broken_font_detected': False,
+        'instructions': [],
+        'next_actions': [],
+    }
     if status_row:
         return {
             'request_id': request.state.request_id,
@@ -1474,16 +1519,20 @@ def get_document_status(
                 'status': status_row['status'],
                 'progress_pct': int(status_row['progress_pct']),
                 'topic_count': max(topic_count, int(status_row['topic_count'])),
+                'quality_gate': quality_gate,
             },
             'error': None,
         }
 
-    if topic_count > 0:
+    if quality_gate.get('status') == 'NEED_CLEAN_TEXT':
+        derived = {'status': 'need_clean_text', 'progress_pct': 100, 'topic_count': topic_count}
+    elif topic_count > 0:
         derived = {'status': 'ready', 'progress_pct': 100, 'topic_count': topic_count}
     else:
         has_chunks = db.query(func.count(DocumentChunk.id)).filter(DocumentChunk.document_id == int(document_id)).scalar() or 0
         derived = {'status': 'processing' if has_chunks else 'pending', 'progress_pct': 50 if has_chunks else 0, 'topic_count': 0}
 
+    derived['quality_gate'] = quality_gate
     return {'request_id': request.state.request_id, 'data': derived, 'error': None}
 
 
@@ -1502,6 +1551,7 @@ async def process_document_pipeline(
     try:
         upload_file = UploadFile(filename=filename, file=BytesIO(file_bytes), headers={'content-type': mime_type})
         full_text, chunks, pdf_report = await extract_and_chunk_with_report(upload_file)
+        quality_gate = _text_quality_gate(full_text)
 
         doc = db.query(Document).filter(Document.id == int(document_id)).first()
         if not doc:
@@ -1510,6 +1560,11 @@ async def process_document_pipeline(
         doc.title = title or filename or 'Untitled'
         doc.tags = tags
         doc.mime_type = mime_type or 'application/octet-stream'
+
+        if quality_gate.get('status') == 'NEED_CLEAN_TEXT':
+            _set_doc_status(document_id, status='need_clean_text', progress_pct=100, topic_count=0)
+            db.commit()
+            return
 
         chunk_models = []
         for idx, ch in enumerate(chunks):
@@ -1650,6 +1705,11 @@ async def upload_document(
             'filename': doc.filename,
             'page_count': int(page_count),
             'status': 'processing',
+            'quality_gate': {
+                'status': 'PROCESSING',
+                'instructions': [],
+                'next_actions': [],
+            },
         },
         'error': None,
     }
