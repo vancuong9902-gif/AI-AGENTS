@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { FiLogOut, FiMenu, FiX } from 'react-icons/fi';
+import { FiLogOut, FiMenu, FiMoon, FiSearch, FiSun, FiX } from 'react-icons/fi';
 import Navbar from './components/Navbar';
 import AppRoutes from './routes/AppRoutes';
 import NotificationBell from './components/NotificationBell';
@@ -23,9 +23,10 @@ const PAGE_META = [
 function App() {
   const { role, userId, fullName, logout } = useAuth();
   const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'system');
   const location = useLocation();
   const navigate = useNavigate();
-
 
   useEffect(() => {
     if (!open) return undefined;
@@ -46,12 +47,40 @@ function App() {
     };
   }, [open]);
 
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === 'system') {
+      root.removeAttribute('data-theme');
+      localStorage.removeItem('theme');
+      return;
+    }
+    root.setAttribute('data-theme', theme);
+    localStorage.setItem('theme', theme);
+  }, [theme]);
+
   const pageMeta = useMemo(
     () => PAGE_META.find((item) => item.match.test(location.pathname)) || { title: 'AI-AGENTS LMS', subtitle: 'Nền tảng học tập thông minh' },
     [location.pathname],
   );
 
   const displayName = fullName || `Người dùng #${userId ?? 1}`;
+
+  const handleGlobalSearch = (event) => {
+    event.preventDefault();
+    if (!search.trim()) return;
+    navigate(`/topic-selection?query=${encodeURIComponent(search.trim())}`);
+    setSearch('');
+  };
+
+  const handleThemeToggle = () => {
+    setTheme((prev) => {
+      if (prev === 'light') return 'dark';
+      if (prev === 'dark') return 'system';
+      return 'light';
+    });
+  };
+
+  const themeLabel = theme === 'dark' ? 'Chế độ tối' : theme === 'light' ? 'Chế độ sáng' : 'Theo hệ thống';
 
   return (
     <div className='app-shell'>
@@ -79,6 +108,19 @@ function App() {
               </div>
             </div>
             <div className='topbar-actions'>
+              <form className='global-search' onSubmit={handleGlobalSearch} role='search' aria-label='Tìm kiếm khóa học và tài liệu'>
+                <FiSearch aria-hidden='true' />
+                <input
+                  type='search'
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder='Tìm khóa học, bài học, tài liệu...'
+                />
+              </form>
+              <button type='button' className='theme-btn focus-ring' onClick={handleThemeToggle} title={themeLabel} aria-label={themeLabel}>
+                {theme === 'dark' ? <FiMoon /> : <FiSun />}
+                <span>{themeLabel}</span>
+              </button>
               <NotificationBell />
               <div className='user-pill'>
                 <strong>{displayName}</strong>
@@ -93,6 +135,12 @@ function App() {
         <main className='page-content'>
           <AppRoutes />
         </main>
+        <footer className='app-footer'>
+          <div className='container app-footer-inner'>
+            <p>© {new Date().getFullYear()} AI-AGENTS LMS · Học tập hiệu quả trên mọi thiết bị.</p>
+            <p>Chuẩn truy cập, tối ưu SEO cơ bản và trải nghiệm nhất quán Light/Dark mode.</p>
+          </div>
+        </footer>
       </div>
     </div>
   );

@@ -38,13 +38,15 @@
   border-radius: 12px;
   color: var(--muted);
   font-weight: 600;
+  transition: background-color .2s ease, color .2s ease, transform .2s ease;
 }
 .nav-item.active, .nav-item:hover, .nav-item:focus-visible {
   background: var(--primary-soft);
   color: var(--text);
+  transform: translateX(2px);
 }
 
-.main-wrap { display: grid; grid-template-rows: auto 1fr; min-width: 0; }
+.main-wrap { display: grid; grid-template-rows: auto 1fr auto; min-width: 0; }
 .topbar {
   background: color-mix(in srgb, var(--surface) 90%, transparent);
   border-bottom: 1px solid var(--border);
@@ -74,6 +76,26 @@
 }
 .page-content { padding: 22px 0 30px; }
 
+.global-search {
+  min-width: min(360px, 100%);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 12px;
+  background: var(--surface);
+  min-height: 42px;
+}
+
+.global-search input {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  outline: none;
+}
+
 .user-pill {
   display: grid;
   gap: 2px;
@@ -84,7 +106,7 @@
   font-size: var(--text-xs);
 }
 
-.logout-btn, .nav-toggle {
+.logout-btn, .nav-toggle, .theme-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -95,7 +117,11 @@
   padding: 9px 12px;
   font-weight: 600;
   cursor: pointer;
+  transition: transform .2s ease, border-color .2s ease;
 }
+
+.theme-btn span { font-size: var(--text-xs); }
+.logout-btn:hover, .theme-btn:hover { transform: translateY(-1px); border-color: var(--primary); }
 .nav-toggle { display: none; }
 
 .sidebar-overlay {
@@ -119,6 +145,21 @@
 .notification-item-title { font-weight: 600; margin-bottom: 4px; }
 .notification-item-message { color: var(--muted); font-size: 13px; }
 
+.app-footer {
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+}
+
+.app-footer-inner {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 14px 0 24px;
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
 @media (max-width: 960px) {
   .app-shell { grid-template-columns: 1fr; }
   .sidebar {
@@ -141,6 +182,8 @@
   }
   .topbar-title { font-size: clamp(1.2rem, 5vw, 1.5rem); }
   .topbar-actions { width: 100%; justify-content: space-between; }
+  .global-search { min-width: 0; width: 100%; order: 2; }
+  .theme-btn span { display: none; }
   .logout-btn { margin-left: auto; }
   .topbar-actions .user-pill { display: none; }
   .notification-dropdown { right: -6px; }
