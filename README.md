@@ -86,6 +86,14 @@ docker compose up --build -d worker
 docker compose up -d --build backend
 ```
 
+
+### 4.4 Auth router gate (`AUTH_ENABLED`)
+
+- `AUTH_ENABLED=true`: mount đầy đủ các endpoint `/api/auth/*` (ví dụ `/api/auth/login`, `/api/auth/register`).
+- `AUTH_ENABLED=false` (mặc định): **không mount** auth router, client gọi `/api/auth/*` sẽ nhận `404 Not Found`.
+
+Điều này cho phép chạy demo header mode mà không expose luồng JWT/email-password khi chưa cần.
+
 ## 5) Chạy dev local (không dùng container backend/frontend)
 ### 5.1 Chạy Backend
 
