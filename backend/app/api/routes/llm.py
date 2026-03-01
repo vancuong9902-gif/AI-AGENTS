@@ -98,3 +98,10 @@ def llm_status(request: Request):
 
     data["test_response"] = tests
     return {"request_id": request.state.request_id, "data": data, "error": None}
+
+
+@router.get("/llm/health")
+def llm_health(request: Request):
+    """Backward-compatible alias for clients that call /llm/health."""
+
+    return llm_status(request)
