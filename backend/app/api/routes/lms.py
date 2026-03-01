@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user_optional
 from app.db.session import get_db
 from app.models.attempt import Attempt
 from app.models.classroom import Classroom, ClassroomMember
@@ -35,6 +36,7 @@ from app.services.teacher_report_export_service import build_classroom_report_pd
 from app.services.analytics_service import build_classroom_final_report, export_classroom_final_report_pdf
 from app.tasks.report_tasks import task_export_teacher_report_pdf
 from app.services.lms_report_export_service import export_report_pdf, export_report_xlsx
+from app.services.export_xlsx_service import export_classroom_gradebook_xlsx
 from app.models.session import Session as UserSession
 from app.models.student_assignment import StudentAssignment
 from app.models.diagnostic_attempt import DiagnosticAttempt
@@ -2210,10 +2212,35 @@ def export_teacher_report(
     request: Request,
     classroom_id: int,
     format: str = Query("html"),
+    teacher_id: int | None = Query(default=None),
+    current_user: User | None = Depends(get_current_user_optional),
     db: Session = Depends(get_db),
 ):
+    classroom = db.query(Classroom).filter(Classroom.id == int(classroom_id)).first()
+    if not classroom:
+        raise HTTPException(status_code=404, detail="Classroom not found")
+
+    authorized = False
+    if current_user and str(getattr(current_user, "role", "")).lower() == "teacher":
+        authorized = int(getattr(current_user, "id", 0) or 0) == int(classroom.teacher_id)
+
+    if not authorized and teacher_id is not None:
+        authorized = int(teacher_id) == int(classroom.teacher_id)
+
+    if not authorized:
+        raise HTTPException(status_code=403, detail="Teacher access required")
+
     export_format = str(format or "html").strip().lower()
     classroom_id = int(classroom_id)
+
+    if export_format == "xlsx":
+        xlsx_path = export_classroom_gradebook_xlsx(db=db, classroom_id=classroom_id)
+        return FileResponse(
+            str(xlsx_path),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            filename=f"diem_lop_{classroom_id}.xlsx",
+        )
+
     if classroom_id in _report_cache and time.time() - _report_cache_time.get(classroom_id, 0) < 1800:
         report = _report_cache[classroom_id]
     else:
@@ -2224,10 +2251,6 @@ def export_teacher_report(
     if export_format == "pdf":
         pdf_path = export_report_pdf(report, name=f"teacher_classroom_{classroom_id}")
         return FileResponse(pdf_path, media_type="application/pdf", filename=f"classroom_{classroom_id}_report.pdf")
-
-    if export_format == "xlsx":
-        xlsx_path = export_report_xlsx(report, name=f"teacher_classroom_{classroom_id}")
-        return FileResponse(xlsx_path, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename=f"classroom_{classroom_id}_report.xlsx")
 
     if export_format == "html":
         template = _templates.get_template("teacher_report.html")
