@@ -13,6 +13,7 @@ export default function AssessmentTake() {
   const [answers, setAnswers] = useState({});
   const [deadlineAt, setDeadlineAt] = useState(null);
   const [timeLeftSec, setTimeLeftSec] = useState(null);
+  const [attemptLocked, setAttemptLocked] = useState(false);
   const [attemptId, setAttemptId] = useState(null);
   const [timedOutBanner, setTimedOutBanner] = useState(false);
   const [result, setResult] = useState(null);
@@ -253,6 +254,7 @@ export default function AssessmentTake() {
       setData(d);
       setAnswers({});
       setAttemptId(null);
+      setAttemptLocked(false);
       setTimedOutBanner(false);
       warningShownRef.current = { five: false, one: false };
 
@@ -268,14 +270,18 @@ export default function AssessmentTake() {
         session = fallback;
       }
 
-      const deadlineMs = Date.parse(session?.deadline || "");
-      if (Number.isFinite(deadlineMs) && deadlineMs > 0) {
-        setDeadlineAt(deadlineMs);
-        setTimeLeftSec(Math.max(0, Math.floor((deadlineMs - Date.now()) / 1000)));
-      } else {
-        setDeadlineAt(null);
-        const secs = Number(session?.time_limit_seconds || 0);
-        setTimeLeftSec(Number.isFinite(secs) && secs > 0 ? secs : null);
+      const startedAttemptId = Number(session?.attempt_id || 0) || null;
+      if (startedAttemptId) {
+        try {
+          const timer = await apiJson(`/attempts/${startedAttemptId}/timer-status`, { method: "GET" });
+          setTimeLeftSec(Number(timer?.remaining_seconds ?? timer?.time_left_seconds ?? 0));
+          setAttemptLocked(Boolean(timer?.locked));
+          setDeadlineAt(null);
+        } catch {
+          const secs = Number(session?.duration_seconds || session?.time_limit_seconds || 0);
+          setDeadlineAt(null);
+          setTimeLeftSec(Number.isFinite(secs) && secs > 0 ? secs : null);
+        }
       }
     } catch (e) {
       setError(e?.message || "Không load được bài tổng hợp");
@@ -294,6 +300,7 @@ export default function AssessmentTake() {
     if (timeLeftSec == null) return;
     if (result) return;
     if (submitting) return;
+    if (attemptLocked) return;
 
     const t = setInterval(() => {
       if (deadlineAt) {
@@ -307,7 +314,7 @@ export default function AssessmentTake() {
     }, 1000);
 
     return () => clearInterval(t);
-  }, [timeLeftSec == null, result, submitting, deadlineAt]);
+  }, [timeLeftSec == null, result, submitting, deadlineAt, attemptLocked]);
 
   useEffect(() => {
     if (timeLeftSec == null || result || submitting) return;
@@ -324,7 +331,7 @@ export default function AssessmentTake() {
 
   // Auto-submit when time is up
   useEffect(() => {
-    if (timeLeftSec !== 0) return;
+    if (timeLeftSec !== 0 && !attemptLocked) return;
     if (result) return;
     if (submitting) return;
     if (autoSubmittedRef.current) return;
@@ -340,6 +347,35 @@ export default function AssessmentTake() {
   const setEssay = (qid, txt) => {
     setAnswers((prev) => ({ ...prev, [qid]: { ...(prev[qid] || {}), answer_text: txt } }));
   };
+
+  useEffect(() => {
+    if (!attemptId || result || submitting) return undefined;
+
+    const buildAnswerList = () => (data?.questions || []).map((q) => ({
+      question_id: q.question_id,
+      answer_index: answers[q.question_id]?.answer_index ?? null,
+      answer_text: answers[q.question_id]?.answer_text ?? null,
+    }));
+
+    const tick = async () => {
+      try {
+        const hb = await apiJson(`/attempts/${attemptId}/heartbeat`, {
+          method: "POST",
+          body: { answers: buildAnswerList() },
+        });
+        const nextLeft = Number(hb?.time_left_seconds ?? 0);
+        if (Number.isFinite(nextLeft)) setTimeLeftSec(nextLeft);
+        setAttemptLocked(Boolean(hb?.locked));
+      } catch {
+        // keep local countdown as fallback
+      }
+    };
+
+    tick();
+    const id = setInterval(tick, 30000);
+    return () => clearInterval(id);
+  }, [attemptId, result, submitting, data, answers]);
+
 
   const submit = async (auto = false) => {
     if (!data?.assessment_id) return;
@@ -357,7 +393,7 @@ export default function AssessmentTake() {
       if (attemptId) {
         r = await apiJson(`/attempts/${attemptId}/submit`, {
           method: "POST",
-          body: { answers: answerList },
+          body: { answers: answerList, force: Boolean(auto) },
         });
       } else {
         r = await apiJson(`/assessments/quiz-sets/${data.assessment_id}/submit`, {
@@ -370,7 +406,8 @@ export default function AssessmentTake() {
       }
 
       setResult(r);
-      setTimedOutBanner(Boolean(auto || r?.timed_out));
+      setTimedOutBanner(Boolean(auto || r?.timed_out || r?.locked));
+      setAttemptLocked(Boolean(r?.locked));
 
       const attemptId = r?.attempt_id || r?.attemptId || r?.assessment_attempt_id;
       if (attemptId) {
@@ -478,7 +515,7 @@ export default function AssessmentTake() {
                 name={`q_${q.question_id}`}
                 checked={(answers[q.question_id]?.answer_index ?? null) === i}
                 onChange={() => setMcq(q.question_id, i)}
-                disabled={!!result}
+                disabled={!!result || attemptLocked}
               />
               <span>{op}</span>
             </label>
@@ -494,7 +531,7 @@ export default function AssessmentTake() {
             onChange={(e) => setEssay(q.question_id, e.target.value)}
             placeholder="Nhập câu trả lời tự luận..."
             style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd" }}
-            disabled={!!result}
+            disabled={!!result || attemptLocked}
           />
           <div style={{ color: "#666", marginTop: 6 }}>Thang điểm: {q.max_points || 10} (AI sẽ chấm theo rubric)</div>
         </div>
@@ -562,6 +599,12 @@ export default function AssessmentTake() {
           </button>
         </div>
       </div>
+
+      {attemptLocked && !result && (
+        <div style={{ marginTop: 12, background: "#fff1f0", border: "1px solid #ffccc7", padding: 12, borderRadius: 12, color: "#a8071a", fontWeight: 700 }}>
+          Bài làm đã bị khóa do hết thời gian. Hệ thống sẽ tự nộp bài.
+        </div>
+      )}
 
       {timedOutBanner && (
         <div style={{ marginTop: 12, background: "#fff1f0", border: "1px solid #ffccc7", padding: 12, borderRadius: 12, color: "#a8071a", fontWeight: 700 }}>
