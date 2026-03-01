@@ -789,6 +789,36 @@ def _learning_materials_for_level(*, level: str, weak_topics: list[str], teacher
     return materials
 
 
+
+
+def _build_study_materials_payload(*, level_key: str, weak_topics: list[str]) -> dict[str, Any]:
+    level = str(level_key or "trung_binh").lower()
+    if level not in {"yeu", "trung_binh", "kha", "gioi"}:
+        level = "trung_binh"
+    focus = [str(t) for t in (weak_topics or []) if str(t).strip()]
+    if not focus:
+        focus = ["kiến thức nền tảng"]
+
+    if level == "yeu":
+        est = 20
+    elif level == "trung_binh":
+        est = 25
+    elif level == "kha":
+        est = 30
+    else:
+        est = 35
+
+    docs = [
+        {"id": idx + 1, "title": f"Tài liệu {topic}", "focus_topics": [topic]}
+        for idx, topic in enumerate(focus[:4])
+    ]
+    exercises = [
+        {"quiz_id": idx + 1, "title": f"Bài luyện {topic}", "estimated_minutes": est}
+        for idx, topic in enumerate(focus[:4])
+    ]
+    return {"level": level, "documents": docs, "exercises": exercises}
+
+
 def _split_scores_from_breakdown(breakdown: list[dict]) -> dict:
     """Return mcq_percent, essay_percent, total_percent (70/30) and point details."""
     mcq_earned = mcq_total = 0
@@ -3479,6 +3509,8 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
 
     learning_plan_created = False
     student_level = None
+    weak_topics: list[str] = []
+    study_materials_payload: dict[str, Any] | None = None
     if assessment_kind == "diagnostic_pre":
         try:
             from app.services.lms_service import classify_student_level
@@ -3492,6 +3524,7 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
                 t = str(item.get("topic") or "").strip()
                 if t and t not in weak_topics:
                     weak_topics.append(t)
+            study_materials_payload = _build_study_materials_payload(level_key=str(student_level.get("level_key") if isinstance(student_level, dict) else student_level), weak_topics=weak_topics[:5])
             lp = create_learning_plan(
                 db,
                 user_id=int(user_id),
@@ -3565,6 +3598,7 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
         "synced_diagnostic": synced_diagnostic,
         "learning_plan_created": bool(learning_plan_created),
         "student_level": student_level,
+        "study_materials": study_materials_payload,
     }
     if _normalize_assessment_kind(getattr(quiz_set, "kind", None)) == "final_exam":
         result.update(_final_improvement_payload(db, user_id=int(user_id), final_attempt=attempt))

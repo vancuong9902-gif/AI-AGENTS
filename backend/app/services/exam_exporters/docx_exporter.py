@@ -8,6 +8,15 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from docx import Document
+from docx.oxml.ns import qn
+
+
+def _set_times_new_roman(doc: Document) -> None:
+    style = doc.styles["Normal"]
+    style.font.name = "Times New Roman"
+    style._element.rPr.rFonts.set(qn("w:ascii"), "Times New Roman")
+    style._element.rPr.rFonts.set(qn("w:hAnsi"), "Times New Roman")
+    style._element.rPr.rFonts.set(qn("w:cs"), "Times New Roman")
 
 
 def export_assessment_to_docx(assessment: Dict[str, Any], *, kind: str = "") -> Path:
@@ -16,6 +25,7 @@ def export_assessment_to_docx(assessment: Dict[str, Any], *, kind: str = "") -> 
     os.close(fd)
 
     doc = Document()
+    _set_times_new_roman(doc)
     doc.add_heading("ĐỀ KIỂM TRA", level=1)
 
     title = str(assessment.get("title") or "Assessment")
@@ -74,6 +84,46 @@ def export_assessment_to_docx(assessment: Dict[str, Any], *, kind: str = "") -> 
                     doc.add_paragraph(f"- {desc}: {pts}")
                 except Exception:
                     continue
+
+    doc.save(out_path)
+    return Path(out_path)
+
+
+def export_multi_variant_docx(*, variants: List[Dict[str, Any]], title: str = "Bộ đề") -> Path:
+    fd, out_path = tempfile.mkstemp(prefix="assessment_multi_", suffix=".docx")
+    os.close(fd)
+
+    doc = Document()
+    _set_times_new_roman(doc)
+    doc.add_heading(str(title or "Bộ đề"), level=1)
+
+    for idx, variant in enumerate(variants, start=1):
+        code = str(variant.get("paper_code") or f"{idx:02d}")
+        doc.add_heading(f"Đề {code}", level=2)
+        for q_idx, q in enumerate((variant.get("questions") or []), start=1):
+            stem = str(q.get("stem") or "")
+            qtype = str(q.get("type") or "").lower()
+            doc.add_paragraph(f"Câu {q_idx} ({qtype.upper()}): {stem}")
+            if qtype == "mcq":
+                for oi, opt in enumerate((q.get("options") or []), start=0):
+                    doc.add_paragraph(f"{chr(65 + oi)}. {opt}", style="List Bullet")
+        if idx < len(variants):
+            doc.add_page_break()
+
+    doc.add_page_break()
+    doc.add_heading("Đáp án tổng hợp", level=2)
+    for idx, variant in enumerate(variants, start=1):
+        code = str(variant.get("paper_code") or f"{idx:02d}")
+        doc.add_heading(f"Đề {code}", level=3)
+        for q_idx, q in enumerate((variant.get("questions") or []), start=1):
+            if str(q.get("type") or "").lower() == "mcq":
+                try:
+                    answer = chr(65 + int(q.get("correct_index")))
+                except Exception:
+                    answer = "?"
+                doc.add_paragraph(f"Câu {q_idx}: {answer}")
+            else:
+                doc.add_paragraph(f"Câu {q_idx}: Tự luận")
 
     doc.save(out_path)
     return Path(out_path)

@@ -185,6 +185,8 @@ function difficultyBadgeStyle(difficulty) {
   return { color: "#0958d9", bg: "#e6f4ff" };
 }
 
+const TOPIC_LIMIT_BY_LEVEL = { yeu: 3, trung_binh: 5, kha: 7, gioi: Number.POSITIVE_INFINITY };
+
 const PRACTICE_LEVELS = [
   { key: "easy", label: "Dễ", bloom: "Remember / Understand" },
   { key: "medium", label: "Trung bình", bloom: "Apply / Analyze" },
@@ -296,11 +298,11 @@ export default function LearningPath() {
   );
 
   const completedCount = useMemo(
-    () => timelineTasks.filter((t) => taskCompletion[`${t.dayIndex}-${t.taskIndex}`]).length,
-    [timelineTasks, taskCompletion]
+    () => filteredTimelineTasks.filter((t) => taskCompletion[`${t.dayIndex}-${t.taskIndex}`]).length,
+    [filteredTimelineTasks, taskCompletion]
   );
 
-  const allDone = timelineTasks.length > 0 && completedCount === timelineTasks.length;
+  const allDone = filteredTimelineTasks.length > 0 && completedCount === filteredTimelineTasks.length;
   const adaptiveItems = useMemo(() => (Array.isArray(currentPlan?.items) ? currentPlan.items : []), [currentPlan]);
   const groupedAdaptive = useMemo(() => ({
     study_material: adaptiveItems.filter((x) => x?.type === "study_material"),
@@ -317,6 +319,10 @@ export default function LearningPath() {
     return Object.entries(map).sort((a, b) => Number(a[0]) - Number(b[0]));
   }, [adaptiveItems]);
   const activeLevel = levelDetails || levelFromRaw(myPath?.student_level || plan?.student_level || "Khá");
+  const studentLevelKey = String(levelDetails?.level_key || myPath?.student_level?.level_key || myPath?.student_level || "kha").toLowerCase();
+  const maxTopics = TOPIC_LIMIT_BY_LEVEL[studentLevelKey] ?? 5;
+  const filteredTimelineTasks = useMemo(() => (Number.isFinite(maxTopics) ? timelineTasks.slice(0, maxTopics) : timelineTasks), [timelineTasks, maxTopics]);
+  const studyMaterials = myPath?.study_materials || currentPlan?.study_materials || null;
   useEffect(() => {
     if (!userId) return;
     loadTopicProgress();
@@ -744,6 +750,21 @@ export default function LearningPath() {
       )}
 
       {showGenerated && <div style={{ marginBottom: 12, padding: 10, border: "1px solid #b7eb8f", background: "#f6ffed", borderRadius: 10 }}>✅ Đã tạo và lưu plan mới.</div>}
+      {studyMaterials && (
+        <div style={{ ...card, marginBottom: 12 }}>
+          <h3 style={{ marginTop: 0 }}>Tài liệu được gợi ý</h3>
+          <div style={{ color: "#475569", marginBottom: 8 }}>Level: {studyMaterials.level}</div>
+          <div style={{ display: "grid", gap: 8 }}>
+            {(studyMaterials.documents || []).map((doc) => (
+              <div key={`doc-${doc.id}`} style={{ border: "1px solid #eee", borderRadius: 8, padding: 8 }}>
+                <div style={{ fontWeight: 700 }}>{doc.title}</div>
+                <div style={{ fontSize: 13, color: "#666" }}>Focus: {(doc.focus_topics || []).join(", ")}</div>
+                <button onClick={() => nav(`/documents/${doc.id}`)}>Mở tài liệu</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {error && <div style={{ marginBottom: 12, padding: 10, border: "1px solid #ffa39e", background: "#fff1f0", borderRadius: 10 }}>{error}</div>}
       {loading && <div style={{ color: "#666", marginBottom: 12 }}>Đang tải…</div>}
 
@@ -755,7 +776,7 @@ export default function LearningPath() {
             <h3 style={{ marginTop: 0 }}>📍 Timeline nhiệm vụ</h3>
             <div style={{ position: "relative", paddingLeft: 18 }}>
               <div style={{ position: "absolute", left: 6, top: 0, bottom: 0, width: 2, background: "#e5e7eb" }} />
-              {timelineTasks
+              {filteredTimelineTasks
                 .filter(({ task }) => !showOnlyMine || assignedTopicIds.has(Number(task?.topic_id)))
                 .map(({ dayIndex, taskIndex, dayTitle, task }) => {
                   const key = `${dayIndex}-${taskIndex}`;
