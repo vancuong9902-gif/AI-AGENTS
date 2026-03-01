@@ -34,7 +34,7 @@ from app.services.corrective_rag import corrective_retrieve_and_log
 from app.services.text_quality import filter_chunks_by_quality
 from app.services.user_service import ensure_user_exists
 from app.core.config import settings
-from app.services.llm_service import llm_available, chat_json, pack_chunks
+from app.services.llm_service import llm_available, chat_json, chat_text, pack_chunks
 from app.services.language_service import preferred_question_language, detect_language_heuristic
 from app.services.heuristic_grader import grade_essay_heuristic
 from app.services.quiz_service import (
@@ -101,6 +101,190 @@ def _fallback_mcq_explanation(*, stem: str, correct_text: str, chosen_text: str 
         f"Đáp án đúng là '{correct_text}'. "
         f"Hãy ôn lại ý chính liên quan đến: {topic or 'câu hỏi này'} và chú ý từ khóa then chốt trong đề."
     )
+
+
+def _generate_mcq_explanation_map(
+    db: Session,
+    *,
+    quiz_set: QuizSet,
+    questions_by_id: Dict[int, Question],
+    breakdown: List[Dict[str, Any]],
+    max_items: int = 5,
+) -> Dict[str, str]:
+    """Generate explanation text for wrong MCQ items and return a question_id -> explanation map."""
+    explanation_map: Dict[str, str] = {}
+    candidate_items: List[Dict[str, Any]] = []
+    quiz_doc_ids = _coerce_document_ids(getattr(quiz_set, "document_ids_json", None))
+
+    for item in (breakdown or []):
+        if str(item.get("type") or "").strip().lower() != "mcq":
+            continue
+        max_points = int(item.get("max_points") or 1)
+        score_points = int(item.get("score_points") or 0)
+        if score_points >= max_points:
+            continue
+        candidate_items.append(item)
+        if len(candidate_items) >= max(1, int(max_items)):
+            break
+
+    for item in candidate_items:
+        qid = int(item.get("question_id") or 0)
+        if qid <= 0:
+            continue
+        q_obj = questions_by_id.get(qid)
+        if not q_obj:
+            continue
+
+        options = list(getattr(q_obj, "options", None) or [])
+        correct_idx = int(item.get("correct") if item.get("correct") is not None else getattr(q_obj, "correct_index", -1))
+        chosen_idx = int(item.get("chosen") if item.get("chosen") is not None else -1)
+        correct_text = options[correct_idx] if 0 <= correct_idx < len(options) else f"phương án {correct_idx + 1}"
+        chosen_text = options[chosen_idx] if 0 <= chosen_idx < len(options) else "(không chọn)"
+
+        fallback = _fallback_mcq_explanation(
+            stem=str(getattr(q_obj, "stem", "") or ""),
+            correct_text=str(correct_text or ""),
+            chosen_text=str(chosen_text or "") or None,
+        )
+
+        chunks: List[Dict[str, Any]] = []
+        try:
+            source_chunk_ids: List[int] = []
+            for src in list(getattr(q_obj, "sources", None) or []):
+                if not isinstance(src, dict):
+                    continue
+                raw_chunk_id = src.get("chunk_id")
+                try:
+                    cid = int(raw_chunk_id)
+                except Exception:
+                    continue
+                if cid > 0 and cid not in source_chunk_ids:
+                    source_chunk_ids.append(cid)
+
+            if source_chunk_ids:
+                rows = (
+                    db.query(DocumentChunk, Document)
+                    .join(Document, Document.id == DocumentChunk.document_id)
+                    .filter(DocumentChunk.id.in_(source_chunk_ids))
+                    .limit(3)
+                    .all()
+                )
+                for ch, doc in rows:
+                    chunks.append(
+                        {
+                            "chunk_id": int(ch.id),
+                            "title": str(getattr(doc, "title", "") or "Tài liệu"),
+                            "text": str(getattr(ch, "text", "") or ""),
+                        }
+                    )
+
+            if not chunks:
+                retr_filters: Dict[str, Any] = {}
+                if quiz_doc_ids:
+                    retr_filters["document_ids"] = quiz_doc_ids
+                retrieval = retrieve_and_log(
+                    db,
+                    query=str(getattr(q_obj, "stem", "") or ""),
+                    top_k=3,
+                    filters=retr_filters,
+                )
+                chunks = list((retrieval or {}).get("chunks") or [])
+        except Exception:
+            chunks = []
+
+        packed = pack_chunks(
+            list(chunks or []),
+            max_chunks=3,
+            max_chars_per_chunk=350,
+            max_total_chars=900,
+        )
+
+        explanation_text = fallback
+        if packed and llm_available():
+            prompt_chunks = "\n\n".join(
+                [
+                    f"- Chunk #{c.get('chunk_id')} | {c.get('title') or 'Tài liệu'}\n{c.get('text') or ''}"
+                    for c in packed
+                ]
+            )
+            try:
+                llm_out = chat_text(
+                    messages=[
+                        {"role": "system", "content": "Bạn là trợ giảng, trả lời súc tích và bám sát tài liệu."},
+                        {
+                            "role": "user",
+                            "content": (
+                                "Giải thích ngắn 2-4 câu: vì sao đáp án đúng là X, vì sao phương án Y sai.\n"
+                                f"X = {correct_text}\n"
+                                f"Y = {chosen_text}\n"
+                                f"Câu hỏi: {str(getattr(q_obj, 'stem', '') or '')}\n\n"
+                                f"Chỉ dựa trên tài liệu trích dẫn sau: {prompt_chunks}. "
+                                "Nếu không đủ thông tin, nói rõ."
+                            ),
+                        },
+                    ],
+                    temperature=0.2,
+                    max_tokens=220,
+                )
+                improved = str(llm_out or "").strip()
+                if improved:
+                    explanation_text = improved
+            except Exception:
+                explanation_text = fallback
+
+        item["explanation"] = explanation_text
+        explanation_map[str(qid)] = explanation_text
+
+    return explanation_map
+
+
+def get_or_generate_attempt_explanations(
+    db: Session,
+    *,
+    assessment_id: int,
+    user_id: int,
+    attempt_id: int | None = None,
+) -> Dict[str, str]:
+    quiz_set = db.query(QuizSet).filter(QuizSet.id == int(assessment_id)).first()
+    if not quiz_set or not _is_assessment_kind(quiz_set.kind):
+        raise ValueError("Assessment not found")
+
+    query = db.query(Attempt).filter(Attempt.user_id == int(user_id), Attempt.quiz_set_id == int(assessment_id))
+    if attempt_id is not None:
+        query = query.filter(Attempt.id == int(attempt_id))
+    attempt = query.order_by(Attempt.created_at.desc()).first()
+    if not attempt:
+        raise ValueError("Attempt not found")
+
+    existing = dict(attempt.explanation_json or {})
+    if existing:
+        return {str(k): str(v) for k, v in existing.items() if str(v).strip()}
+
+    questions = (
+        db.query(Question)
+        .filter(Question.quiz_set_id == int(assessment_id))
+        .order_by(Question.order_no.asc())
+        .all()
+    )
+    questions_by_id: Dict[int, Question] = {int(q.id): q for q in questions}
+
+    breakdown = copy.deepcopy(list(attempt.breakdown_json or []))
+    explanation_map = _generate_mcq_explanation_map(
+        db,
+        quiz_set=quiz_set,
+        questions_by_id=questions_by_id,
+        breakdown=breakdown,
+        max_items=5,
+    )
+
+    attempt.breakdown_json = breakdown
+    attempt.explanation_json = explanation_map or None
+    flag_modified(attempt, "breakdown_json")
+    flag_modified(attempt, "explanation_json")
+    db.add(attempt)
+    db.commit()
+    db.refresh(attempt)
+    return {str(k): str(v) for k, v in (attempt.explanation_json or {}).items() if str(v).strip()}
 _KEYWORD_TOKEN_RE = re.compile(r"[\wÀ-ỹ]{4,}", re.UNICODE)
 
 _STOPWORDS_VI_EN = {
@@ -3085,8 +3269,6 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
     has_essay = False
 
     question_by_id: Dict[int, Question] = {int(q.id): q for q in questions}
-    quiz_doc_ids = _coerce_document_ids(getattr(quiz_set, "document_ids_json", None))
-
     def _difficulty_from_bloom(raw_bloom: Any) -> str:
         bloom = str(raw_bloom or "").strip().lower()
         if bloom in {"remember", "understand"}:
@@ -3160,93 +3342,13 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
                 "sources": q.sources or [],
             })
 
-    for item in breakdown:
-        if str(item.get("type") or "").strip().lower() != "mcq":
-            continue
-        if bool(item.get("is_correct")):
-            continue
-
-        raw_expl = str(item.get("explanation") or "").strip()
-        if len(raw_expl) >= 20:
-            continue
-
-        q_obj = question_by_id.get(int(item.get("question_id") or 0))
-        if not q_obj:
-            continue
-
-        options = list(getattr(q_obj, "options", None) or [])
-        correct_idx = int(item.get("correct") if item.get("correct") is not None else getattr(q_obj, "correct_index", -1))
-        chosen_idx = int(item.get("chosen") or -1)
-
-        correct_text = options[correct_idx] if 0 <= correct_idx < len(options) else f"phương án {correct_idx + 1}"
-        chosen_text = options[chosen_idx] if 0 <= chosen_idx < len(options) else None
-
-        item["explanation"] = _fallback_mcq_explanation(
-            stem=str(getattr(q_obj, "stem", "") or ""),
-            correct_text=str(correct_text or ""),
-            chosen_text=str(chosen_text or "") or None,
-        )
-
-        try:
-            retr_filters: Dict[str, Any] = {}
-            if quiz_doc_ids:
-                retr_filters["document_ids"] = quiz_doc_ids
-            retrieval = retrieve_and_log(
-                db,
-                query=str(getattr(q_obj, "stem", "") or ""),
-                top_k=3,
-                filters=retr_filters,
-            )
-            packed = pack_chunks(
-                list((retrieval or {}).get("chunks") or []),
-                max_chunks=3,
-                max_chars_per_chunk=300,
-                max_total_chars=800,
-            )
-            if not packed:
-                continue
-
-            if not llm_available():
-                continue
-
-            prompt_chunks = "\n\n".join(
-                [
-                    f"- Chunk #{c.get('chunk_id')} | {c.get('title') or 'Tài liệu'}\n{c.get('text') or ''}"
-                    for c in packed
-                ]
-            )
-            resp = chat_json(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "Bạn là trợ giảng. Viết giải thích ngắn, rõ ràng cho học sinh khi làm sai MCQ. "
-                            "Bắt buộc dựa trên ngữ cảnh tài liệu đã cho. "
-                            'Trả JSON: {"explanation": string, "key_concept": string}.'
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Câu hỏi: {str(getattr(q_obj, 'stem', '') or '')}\n"
-                            f"Đáp án học sinh chọn: {chosen_text or '(không chọn)'}\n"
-                            f"Đáp án đúng: {correct_text}\n\n"
-                            f"Ngữ cảnh tài liệu:\n{prompt_chunks}\n\n"
-                            "Yêu cầu: explanation 1-3 câu, tối đa 320 ký tự; key_concept tối đa 12 từ."
-                        ),
-                    },
-                ],
-                temperature=0.2,
-                max_tokens=300,
-            )
-            improved = str((resp or {}).get("explanation") or "").strip()
-            if improved:
-                item["explanation"] = improved
-            key_concept = str((resp or {}).get("key_concept") or "").strip()
-            if key_concept:
-                item["key_concept"] = key_concept
-        except Exception:
-            _LOGGER.warning("submit_assessment: failed to enrich MCQ explanation", exc_info=True)
+    explanation_map = _generate_mcq_explanation_map(
+        db,
+        quiz_set=quiz_set,
+        questions_by_id=question_by_id,
+        breakdown=breakdown,
+        max_items=5,
+    )
 
     session = (
         db.query(QuizSession)
@@ -3303,6 +3405,7 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
         duration_sec=actual_duration,
         answers_json=answers or [],
         breakdown_json=breakdown,
+        explanation_json=explanation_map or None,
         is_late=bool(time_exceeded),
         late_by_seconds=int(late_by_seconds),
     )

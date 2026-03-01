@@ -30,6 +30,69 @@ export default function AssessmentTake() {
   const [timeLeftSec, setTimeLeftSec] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [pathAssigned, setPathAssigned] = useState(false);
+  const [explanationsByQuestion, setExplanationsByQuestion] = useState({});
+  const [explanationsLoading, setExplanationsLoading] = useState(false);
+
+  const autoSubmittedRef = useRef(false);
+  const warningShownRef = useRef({ five: false, one: false });
+  const diagnosticBannerRef = useRef(null);
+
+  const learningPathBannerRef = useRef(null);
+  const answeredCount = useMemo(() => Object.keys(answers).length, [answers]);
+
+  const qMap = useMemo(() => {
+    const m = {};
+    for (const q of data?.questions || []) {
+      m[q.question_id] = q;
+    }
+    return m;
+  }, [data]);
+
+  const timeLimitSec = useMemo(() => {
+    const direct = Number(data?.duration_seconds || 0);
+    if (Number.isFinite(direct) && direct > 0) return Math.round(direct);
+    const mins = Number(data?.time_limit_minutes || 0);
+    return Number.isFinite(mins) && mins > 0 ? Math.round(mins * 60) : 0;
+  }, [data]);
+
+  const fmtTime = (sec) => {
+    if (sec == null) return "--:--";
+    const s = Math.max(0, Math.floor(sec));
+    const mm = String(Math.floor(s / 60)).padStart(2, "0");
+    const ss = String(s % 60).padStart(2, "0");
+    return `${mm}:${ss}`;
+  };
+
+  const levelLabel = (score) => {
+    const s = Number(score || 0);
+    if (s < 40) return "Yếu";
+    if (s < 60) return "Trung bình";
+    if (s < 80) return "Khá";
+    return "Giỏi";
+  };
+
+  const levelTheme = (score) => {
+    const s = Number(score || 0);
+    if (s < 40) return { label: "Yếu", color: "#cf1322", bg: "#fff1f0", track: "#ffccc7" };
+    if (s < 60) return { label: "Trung bình", color: "#d48806", bg: "#fff7e6", track: "#ffd591" };
+    if (s < 80) return { label: "Khá", color: "#096dd9", bg: "#e6f4ff", track: "#91caff" };
+    return { label: "Giỏi", color: "#722ed1", bg: "#f9f0ff", track: "#d3adf7" };
+  };
+
+  const levelBadgeTheme = (levelValue) => {
+    const level = String(levelValue || "").toLowerCase();
+    if (level.includes("yếu") || level.includes("yeu") || level.includes("beginner")) {
+      return { color: "#cf1322", bg: "#fff1f0", border: "#ffa39e" };
+    }
+    if (level.includes("trung bình") || level.includes("trung_binh") || level.includes("intermediate")) {
+      return { color: "#d48806", bg: "#fff7e6", border: "#ffd591" };
+    }
+    if (level.includes("khá") || level.includes("kha") || level.includes("proficient")) {
+      return { color: "#096dd9", bg: "#e6f4ff", border: "#91caff" };
+    }
+    return { color: "#722ed1", bg: "#f9f0ff", border: "#d3adf7" };
+  };
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
   const [progress, setProgress] = useState(null);
@@ -62,6 +125,85 @@ export default function AssessmentTake() {
       // optional panel only
     }
   };
+
+  const weakestTopic = useMemo(() => {
+    const topicMap = {};
+    for (const item of result?.answer_review || []) {
+      if (item?.is_correct) continue;
+      const key = String(item?.topic || "").trim();
+      if (!key) continue;
+      topicMap[key] = (topicMap[key] || 0) + 1;
+    }
+    let best = "";
+    let maxWrong = 0;
+    for (const [topic, cnt] of Object.entries(topicMap)) {
+      if (cnt > maxWrong) {
+        maxWrong = cnt;
+        best = topic;
+      }
+    }
+    return best;
+  }, [result]);
+
+  const topicBreakdown = useMemo(() => {
+    const topicMap = {};
+    for (const item of result?.answer_review || []) {
+      const topic = String(item?.topic || "Chưa phân loại").trim() || "Chưa phân loại";
+      if (!topicMap[topic]) {
+        topicMap[topic] = { topic, correct: 0, wrong: 0, score: 0, max: 0 };
+      }
+      if (item?.is_correct) topicMap[topic].correct += 1;
+      else topicMap[topic].wrong += 1;
+      topicMap[topic].score += Number(item?.score_points || 0);
+      topicMap[topic].max += Number(item?.max_points || 1);
+    }
+
+    return Object.values(topicMap)
+      .map((entry) => {
+        const percent = Math.round((entry.score / Math.max(1, entry.max)) * 100);
+        let remark = "Cần cải thiện";
+        if (percent >= 80) remark = "Nắm rất chắc";
+        else if (percent >= 60) remark = "Ổn, cần luyện thêm";
+        return { ...entry, percent, remark };
+      })
+      .sort((a, b) => a.percent - b.percent);
+  }, [result]);
+
+  const normalizedRecommendations = useMemo(() => {
+    if (Array.isArray(aiRecommendations)) return aiRecommendations;
+    if (Array.isArray(aiRecommendations?.recommendations)) return aiRecommendations.recommendations;
+    if (Array.isArray(aiRecommendations?.topics)) return aiRecommendations.topics;
+    return [];
+  }, [aiRecommendations]);
+
+  const recommendedTopics = useMemo(
+    () => normalizedRecommendations.map((it) => String(it?.topic || it?.name || it || "").trim()).filter(Boolean),
+    [normalizedRecommendations],
+  );
+
+  const resolvedScore = Number(result?.total_score_percent ?? result?.score_percent ?? 0);
+  const scoreTheme = levelTheme(resolvedScore);
+
+  useEffect(() => {
+    const loadExplanations = async () => {
+      if (!result?.attempt_id) return;
+      const rows = result?.answer_review || result?.breakdown || [];
+      const missingWrongExplanation = rows.some((b) => !b?.is_correct && !String(b?.explanation || "").trim());
+      if (!missingWrongExplanation) return;
+
+      setExplanationsLoading(true);
+      try {
+        const explanationMap = await apiJson(`/assessments/${assessmentId}/explanations?attempt_id=${Number(result.attempt_id)}`);
+        setExplanationsByQuestion(explanationMap || {});
+      } catch {
+        setExplanationsByQuestion({});
+      } finally {
+        setExplanationsLoading(false);
+      }
+    };
+
+    loadExplanations();
+  }, [assessmentId, result]);
 
   const load = async () => {
     if (!Number.isFinite(assessmentId)) return;
@@ -252,6 +394,296 @@ export default function AssessmentTake() {
           <div key={t.id} style={{ background: "#111827", color: "#fff", padding: "10px 12px", borderRadius: 10, boxShadow: "0 6px 20px rgba(0,0,0,0.25)" }}>
             {t.message}
           </div>
+
+          <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 12, padding: 12, overflowX: "auto" }}>
+            <div style={{ fontWeight: 900, marginBottom: 10 }}>Breakdown theo topic</div>
+            <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, minWidth: 620 }}>
+              <thead>
+                <tr>
+                  {["Topic", "Đúng", "Sai", "Điểm", "Nhận xét"].map((h) => (
+                    <th
+                      key={h}
+                      style={{ textAlign: "left", padding: "10px 8px", borderBottom: "1px solid #eee", background: "#fafafa", fontSize: 13 }}
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {topicBreakdown.map((topic) => {
+                  const isStrong = topic.percent >= 75;
+                  const isWeak = topic.percent < 50;
+                  return (
+                    <tr
+                      key={topic.topic}
+                      style={{
+                        background: isStrong ? "#f6ffed" : isWeak ? "#fff1f0" : "#fff",
+                      }}
+                    >
+                      <td style={{ padding: "10px 8px", borderBottom: "1px solid #f5f5f5", fontWeight: 700 }}>{topic.topic}</td>
+                      <td style={{ padding: "10px 8px", borderBottom: "1px solid #f5f5f5" }}>{topic.correct}</td>
+                      <td style={{ padding: "10px 8px", borderBottom: "1px solid #f5f5f5" }}>{topic.wrong}</td>
+                      <td style={{ padding: "10px 8px", borderBottom: "1px solid #f5f5f5" }}>
+                        {topic.score}/{topic.max} ({topic.percent}%)
+                      </td>
+                      <td
+                        style={{
+                          padding: "10px 8px",
+                          borderBottom: "1px solid #f5f5f5",
+                          color: isStrong ? "#166534" : isWeak ? "#b91c1c" : "#6b7280",
+                          fontWeight: 600,
+                        }}
+                      >
+                        {topic.remark}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
+            <div style={{ fontWeight: 900, marginBottom: 10 }}>Breakdown theo độ khó</div>
+            {[ ["easy", "Dễ"], ["medium", "Trung bình"], ["hard", "Khó"] ].map(([name, label]) => {
+              const stats = difficultyStats[name];
+              const pct = stats.total > 0 ? Math.round((stats.correct / stats.total) * 100) : 0;
+              return (
+                <div key={name} style={{ marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span>{label}</span>
+                    <span>{stats.correct}/{stats.total} ({pct}%)</span>
+                  </div>
+                  <div style={{ height: 10, borderRadius: 999, background: "#f0f0f0", overflow: "hidden" }}>
+                    <div style={{ height: 10, width: `${pct}%`, background: pct >= 70 ? "#52c41a" : pct >= 40 ? "#faad14" : "#ff4d4f" }} />
+                  </div>
+                </div>
+              );
+            })}
+            {!!weakestTopic && (
+              <button
+                style={{ marginTop: 8, padding: "8px 12px" }}
+                onClick={() => navigate(`/learning-path?topic=${encodeURIComponent(weakestTopic)}`)}
+              >
+                Ôn lại topic yếu: {weakestTopic}
+              </button>
+            )}
+          </div>
+
+          <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
+            <div style={{ fontWeight: 900, marginBottom: 8 }}>AI Recommendation</div>
+            {recLoading ? (
+              <div style={{ color: "#666" }}>Đang lấy gợi ý từ AI…</div>
+            ) : recError ? (
+              <div style={{ color: "#b91c1c" }}>{recError}</div>
+            ) : (
+              <>
+                <div style={{ color: "#333" }}>
+                  Dựa trên kết quả, AI đề xuất bạn tập trung vào:{" "}
+                  <b>{recommendedTopics.length ? recommendedTopics.join(", ") : "các topic có tỷ lệ đúng thấp."}</b>
+                </div>
+                <button
+                  style={{ marginTop: 10, padding: "10px 14px", fontWeight: 700 }}
+                  onClick={() => navigate("/learning-path")}
+                >
+                  Bắt đầu học theo lộ trình được đề xuất →
+                </button>
+              </>
+            )}
+          </div>
+
+          <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
+            <div style={{ fontWeight: 900, marginBottom: 8 }}>Đáp án & giải thích chi tiết</div>
+
+            <div style={{ display: "grid", gap: 12 }}>
+              {(result.answer_review || result.breakdown || []).map((b, i) => {
+                const q = qMap[b.question_id];
+                const isMcq = typeof b.correct_answer_index !== "undefined" || (b.type || "").toLowerCase() === "mcq";
+                const isEssay = !isMcq;
+
+                return (
+                  <div
+                    key={`${b.question_id}_${i}`}
+                    style={{
+                      border: `1px solid ${b.is_correct ? "#b7eb8f" : "#ffccc7"}`,
+                      borderRadius: 12,
+                      padding: 12,
+                      background: b.is_correct ? "#f6ffed" : "#fff2f0",
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                      <div style={{ fontWeight: 800 }}>{b.is_correct ? "✅" : "❌"} Câu {i + 1}</div>
+                      <div style={{ color: "#333" }}>
+                        <b>{b.score_points ?? 0}</b> / <b>{b.max_points ?? (isMcq ? 1 : q?.max_points ?? 10)}</b>
+                      </div>
+                    </div>
+
+                    <div style={{ marginTop: 6, whiteSpace: "pre-wrap" }}>{q?.stem || "(Không có nội dung câu hỏi)"}</div>
+
+                    {isMcq && (
+                      <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                        {(q?.options || []).map((op, idx2) => {
+                          const chosen = Number(b.your_answer_index ?? b.chosen);
+                          const correct = Number(b.correct_answer_index ?? b.correct);
+                          const chosenThis = chosen === idx2;
+                          const correctThis = correct === idx2;
+
+                          const bg = correctThis
+                            ? "#f6ffed"
+                            : chosenThis && !correctThis
+                              ? "#fff2f0"
+                              : "#fff";
+
+                          const border = correctThis
+                            ? "1px solid #b7eb8f"
+                            : chosenThis && !correctThis
+                              ? "1px solid #ffccc7"
+                              : "1px solid #eee";
+
+                          return (
+                            <div key={idx2} style={{ border, background: bg, borderRadius: 10, padding: "8px 10px" }}>
+                              <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                                <div style={{ width: 22, fontWeight: 800 }}>{String.fromCharCode(65 + idx2)}.</div>
+                                <div style={{ flex: 1 }}>{op}</div>
+                                <div style={{ width: 110, textAlign: "right", fontSize: 13, color: "#555" }}>
+                                  {correctThis ? "✅ Đáp án" : chosenThis ? "🧑‍🎓 Bạn chọn" : ""}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        <div
+                          style={{
+                            marginTop: 6,
+                            padding: 10,
+                            borderRadius: 12,
+                            background: b.is_correct ? "#f6ffed" : "#fff2f0",
+                            border: b.is_correct ? "1px solid #b7eb8f" : "1px solid #ffccc7",
+                          }}
+                        >
+                          <div style={{ fontWeight: 900 }}>{b.is_correct ? "✅ Chính xác" : "❌ Chưa đúng"}</div>
+                          {!b.is_correct && (
+                            <details style={{ marginTop: 8 }}>
+                              <summary style={{ cursor: "pointer", fontWeight: 700 }}>💡 Xem giải thích</summary>
+                              <div style={{ marginTop: 6, whiteSpace: "pre-wrap", color: "#333" }}>
+                                <b>Giải thích:</b>{" "}
+                                {b.explanation || explanationsByQuestion?.[String(b.question_id)] || (explanationsLoading ? "Đang tải..." : "(Chưa có giải thích)")}
+                              </div>
+                            </details>
+                          )}
+                          {b.key_concept ? (
+                            <div style={{ marginTop: 4, color: "#555" }}>
+                              <b>Khái niệm chính:</b> {b.key_concept}
+                            </div>
+                          ) : null}
+                          {!b.is_correct && (
+                            <div style={{ marginTop: 6, color: "#333" }}>
+                              Bạn chọn: <b>{Number.isInteger(b.your_answer_index) && b.your_answer_index >= 0 ? String.fromCharCode(65 + Number(b.your_answer_index)) : "(không chọn)"}</b>
+                              {" · "}
+                              Đáp án đúng: <b>{Number.isInteger(b.correct_answer_index) && b.correct_answer_index >= 0 ? String.fromCharCode(65 + Number(b.correct_answer_index)) : "?"}</b>
+                            </div>
+                          )}
+                          <button
+                            type="button"
+                            style={{ marginTop: 8, padding: "6px 10px", borderRadius: 8, border: "1px solid #d9d9d9", background: "#fff", cursor: "pointer" }}
+                            onClick={() => {
+                              const stem = q?.stem || b?.stem || "";
+                              navigate(`/tutor?question=${encodeURIComponent(stem)}`);
+                            }}
+                          >
+                            Hỏi Tutor
+                          </button>
+                          {renderSources(b.sources)}
+                        </div>
+                      </div>
+                    )}
+
+                    {isEssay && (
+                      <div style={{ marginTop: 10 }}>
+                        <div style={{ fontWeight: 800, marginBottom: 6 }}>Bài làm của bạn</div>
+                        <div
+                          style={{
+                            whiteSpace: "pre-wrap",
+                            background: "#fff",
+                            border: "1px solid #eee",
+                            borderRadius: 12,
+                            padding: 10,
+                          }}
+                        >
+                          {b.your_answer || b.answer_text || "(Bạn chưa nhập câu trả lời)"}
+                        </div>
+
+                        <details style={{ marginTop: 10 }}>
+                          <summary style={{ cursor: "pointer", fontWeight: 700 }}>Xem giải thích chi tiết</summary>
+                          <div
+                            style={{
+                              marginTop: 10,
+                              background: "#fff",
+                              border: "1px solid #e6f4ff",
+                              borderRadius: 12,
+                              padding: 10,
+                            }}
+                          >
+                            <div style={{ whiteSpace: "pre-wrap", color: "#333" }}>{b.explanation || "(Chưa có giải thích)"}</div>
+                          </div>
+                        </details>
+
+                        {b.explanation ? (
+                          <div
+                            style={{
+                              marginTop: 10,
+                              background: "#fff",
+                              border: "1px solid #e6f4ff",
+                              borderRadius: 12,
+                              padding: 10,
+                            }}
+                          >
+                            <div style={{ fontWeight: 800, marginBottom: 4 }}>Gợi ý / hướng dẫn</div>
+                            <div style={{ whiteSpace: "pre-wrap", color: "#333" }}>{b.explanation}</div>
+                          </div>
+                        ) : null}
+
+                        <div style={{ marginTop: 10 }}>
+                          <div style={{ fontWeight: 800 }}>Chấm điểm</div>
+                          {!b.graded ? (
+                            <div style={{ marginTop: 6, color: "#666" }}>
+                              (Bài tự luận đang chờ chấm theo rubric — giáo viên hoặc AI sẽ cập nhật sau.)
+                            </div>
+                          ) : (
+                            <>
+                              <div style={{ marginTop: 6, color: "#333" }}>{b.comment || ""}</div>
+                              {Array.isArray(b.rubric_breakdown) && b.rubric_breakdown.length > 0 && (
+                                <details style={{ marginTop: 8 }}>
+                                  <summary style={{ cursor: "pointer" }}>Xem rubric breakdown</summary>
+                                  <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
+                                    {b.rubric_breakdown.map((rb, j) => (
+                                      <div key={j} style={{ background: "#fff", border: "1px solid #eee", borderRadius: 10, padding: 10 }}>
+                                        <div style={{ fontWeight: 800 }}>{rb.criterion}</div>
+                                        <div style={{ marginTop: 4, color: "#333" }}>
+                                          {rb.points_awarded} / {rb.max_points}
+                                        </div>
+                                        {rb.comment ? <div style={{ marginTop: 4, color: "#555" }}>{rb.comment}</div> : null}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </details>
+                              )}
+                            </>
+                          )}
+                        </div>
+
+                        {renderSources(b.sources)}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
         ))}
       </div>
     </div>
