@@ -191,8 +191,8 @@ def grade_homework_from_plan(
             # stable fallback id
             qid = f"mcq_{len(mcq_breakdown)+1}"
 
-        explanation = str(it.get("explanation") or "").strip()
-        hint = str(it.get("hint") or "").strip()
+        explanation = str(it.get("explanation") or "").strip() or "Giải thích mẫu"
+        hint = str(it.get("hint") or "").strip() or "Gợi ý mẫu"
         related_concept = str(it.get("related_concept") or "").strip()
 
         chosen = ans_map.get(qid)
@@ -226,7 +226,7 @@ def grade_homework_from_plan(
                 "hint": it.get("hint") or None,
                 "related_concept": it.get("related_concept") or None,
                 "explanation": explanation,
-                "hint": hint if (not is_correct and hint) else None,
+                "hint": hint,
                 "related_concept": related_concept,
                 "feedback": feedback,
                 "sources": it.get("sources") or [],

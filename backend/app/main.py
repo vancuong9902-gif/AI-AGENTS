@@ -184,7 +184,18 @@ async def request_id_middleware(request: Request, call_next):
                 ),
             )
 
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception("Unhandled exception in request pipeline", exc_info=True)
+        response = JSONResponse(
+            status_code=500,
+            content=envelope(
+                request_id=req_id,
+                data=None,
+                error={"code": "INTERNAL_ERROR", "message": "Internal server error"},
+            ),
+        )
     latency_ms = round((time.perf_counter() - start) * 1000, 2)
     response.headers["X-Request-ID"] = req_id
     logger.info(
@@ -263,15 +274,12 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
             ensure_ascii=False,
         )
     )
-    message = "Internal server error"
-    if settings.ENV.lower() not in {"prod", "production"}:
-        message = str(exc)
     return JSONResponse(
         status_code=500,
         content=envelope(
             request_id=req_id,
             data=None,
-            error={"code": "INTERNAL_ERROR", "message": message},
+            error={"code": "INTERNAL_ERROR", "message": "Internal server error"},
         ),
     )
 

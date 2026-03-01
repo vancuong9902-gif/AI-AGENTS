@@ -1,6 +1,6 @@
-/* eslint-env node */
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import process from 'node:process'
 
 // Proxy /api -> backend container to avoid browser CORS issues in Docker.
 // Browser calls: http://localhost:5173/api/...

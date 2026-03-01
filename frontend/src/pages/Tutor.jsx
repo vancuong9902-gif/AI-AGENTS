@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { apiJson } from '../lib/api';
 import { useAuth } from '../context/useAuth';
 import PageContainer from '../ui/PageContainer';
@@ -23,7 +23,6 @@ export default function Tutor() {
   const [docsLoading, setDocsLoading] = useState(true);
   const [error, setError] = useState('');
   const [learningPlan, setLearningPlan] = useState(null);
-  const questionInputRef = useRef(null);
 
   const storageKey = useMemo(() => `tutor_conv_${userId ?? 1}_${docId || 'auto'}`, [userId, docId]);
 

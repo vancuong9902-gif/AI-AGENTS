@@ -38,8 +38,7 @@ export default function TeacherStudentReport() {
   }, [sid]);
 
   const latest = reports[0] || null;
-  const payload = latest?.payload || {};
-  const analytics = useMemo(() => payload?.analytics || {}, [payload]);
+  const analytics = useMemo(() => latest?.payload?.analytics || {}, [latest]);
 
   const topicData = useMemo(() => {
     const byTopic = analytics?.by_topic || {};

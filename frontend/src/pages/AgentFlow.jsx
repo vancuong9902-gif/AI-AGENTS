@@ -85,7 +85,6 @@ export default function AgentFlow() {
     return out;
   }, [learningPlan]);
 
-  const completedCount = Object.values(topicProgress || {}).filter((x) => !!x?.completed).length;
 
   useEffect(() => {
     (async () => {
