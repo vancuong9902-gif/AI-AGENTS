@@ -18,49 +18,21 @@ Khung project cho đề tài _Cá nhân hoá chương trình học dựa trên A
 └─ README.md
 ```
 
-## 2) Chạy nhanh (khuyến nghị) — Docker Compose (DB + Backend + Frontend)
+## 2) Prerequisites
+
+- Docker Engine + Docker Compose plugin (`docker compose version`)
+- (Khuyến nghị) Git, Bash/Zsh
+- Port trống: `5432` (Postgres), `6379` (Redis), `8000` (Backend), `5173` (Frontend)
+
+## 3) Quickstart (clone là chạy)
 
 Tại thư mục root:
 
 ```bash
-cp .env.example .env
-# ✅ Default: OpenAI GPT-oss 20B (openai-gpt-oss-20b)
-# Mở file .env và chọn 1 trong các cấu hình dưới đây:
-#
-# --- (A) OpenAI Cloud ---
-#   OPENAI_API_KEY=<sk-...>
-#   OPENAI_BASE_URL=
-#   OPENAI_CHAT_MODEL=openai-gpt-oss-20b
-#   OPENAI_REASONING_EFFORT=none
-#   SEMANTIC_RAG_ENABLED=false  # bật true nếu muốn dùng embeddings + FAISS
-#
-# --- (B) Azure OpenAI ---
-#   AZURE_OPENAI_ENDPOINT=https://<resource-name>.openai.azure.com/
-#   AZURE_OPENAI_API_KEY=<your azure key>
-#   AZURE_OPENAI_API_VERSION=2024-02-15-preview
-#   OPENAI_CHAT_MODEL=<azure deployment name>  # ví dụ: openai-gpt-oss-20b
-#
-# --- (C) MegaLLM (OpenAI-compatible gateway) ---
-#   OPENAI_API_KEY=<sk-mega-...>
-#   OPENAI_BASE_URL=https://ai.megallm.io/v1
-#   OPENAI_CHAT_MODEL=claude-opus-4-5-20251101
-#   SEMANTIC_RAG_ENABLED=false  # MegaLLM thường không có embeddings endpoint công khai
-#
-# --- (D) Alibaba Cloud Model Studio (DashScope) / Qwen (OpenAI-compatible) ---
-#   OPENAI_API_KEY=<DASHSCOPE_API_KEY>
-#   OPENAI_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-#   OPENAI_CHAT_MODEL=qwen-plus
-#   # Qwen3/Qwen3.5 hybrid-thinking models: tắt thinking để ổn định JSON
-#   QWEN_ENABLE_THINKING=false
-#   # (tuỳ chọn) Nếu muốn dùng embeddings + FAISS
-#   SEMANTIC_RAG_ENABLED=true
-#   OPENAI_EMBEDDING_MODEL=text-embedding-v3
-#
-# (tuỳ chọn) Có thể điều khiển:
-# - QUIZ_GEN_MODE=auto|llm|offline
-# - LESSON_GEN_MODE=auto|llm|offline
-
-docker compose up --build
+cp .env.example backend/.env
+docker compose up --build -d
+docker compose ps
+docker compose logs -f backend
 ```
 
 Mở:
@@ -69,26 +41,55 @@ Mở:
 - Swagger: http://localhost:8000/docs
 - Health: http://localhost:8000/api/health
 
-Frontend có sẵn UI demo:
-- **Login giả lập** (chọn Student/Teacher)
-- Teacher: **Upload** tài liệu
-- Student: **Generate Quiz** → làm bài → xem **Result**
-- **Thư viện tài liệu** (list document từ DB)
+> Lưu ý về env:
+> - `docker-compose.yml` đang load biến app từ `backend/.env` (`env_file: ./backend/.env`).
+> - Vì vậy quickstart copy từ **root/.env.example** sang **backend/.env** để chạy đúng ngay sau khi clone.
 
-✅ **B6+ (Learning Path kiểu giáo viên) — có lưu tiến độ**
+## 4) Troubleshooting
 
-- Ở trang **Learning Path**, bạn có thể bấm **"Lưu / Tạo plan mới"** để lưu kế hoạch 7 ngày vào DB.
-- Checklist nhiệm vụ (✅) và điểm chấm **bài tập tự luận** sẽ **không mất khi refresh**.
-- API mới:
-  - `GET /api/learning-plans/{user_id}/latest`
-  - `POST /api/learning-plans/{plan_id}/tasks/complete`
-  - `POST /api/learning-plans/{plan_id}/homework/grade`
+### 4.1 DB migrate chưa chạy / lỗi thiếu bảng
 
-> DB mặc định: user/pass `postgres/postgres`, database `ai_agent`, port `5432`.
+```bash
+docker compose exec backend alembic upgrade head
+```
 
-## 3) Chạy dev local (không dùng container backend/frontend)
+Nếu backend đã chạy lâu và đổi schema, có thể restart lại backend/worker:
 
-### 3.1. Chạy Backend
+```bash
+docker compose restart backend worker
+```
+
+### 4.2 Redis/worker không xử lý job
+
+Kiểm tra trạng thái:
+
+```bash
+docker compose ps
+docker compose logs --tail=200 redis
+docker compose logs --tail=200 worker
+```
+
+Nếu worker die do env cũ, copy lại env rồi dựng lại:
+
+```bash
+cp .env.example backend/.env
+docker compose up --build -d worker
+```
+
+### 4.3 CORS khi frontend gọi backend
+
+- Mặc định Compose đã set:
+  - `BACKEND_CORS_ORIGINS=["http://localhost:5173","http://127.0.0.1:5173"]`
+- Nếu bạn chạy frontend ở port/domain khác, thêm origin mới vào biến `BACKEND_CORS_ORIGINS` trong `docker-compose.yml`, rồi restart backend:
+
+```bash
+docker compose up -d --build backend
+```
+
+## 5) Chạy dev local (không dùng container backend/frontend)
+### 5.1 Chạy Backend
+
+
 
 ```bash
 cd backend
@@ -116,7 +117,7 @@ Health check:
 
 - http://localhost:8000/api/health
 
-### 3.2. Chạy Frontend
+### 5.2 Chạy Frontend
 
 ```bash
 cd ../frontend
@@ -128,7 +129,6 @@ npm run dev
 Mở web:
 
 - http://localhost:5173
-
 
 ### 3.3. Lint/Format/Test tối thiểu
 
@@ -153,11 +153,12 @@ make test
 CI dùng workflow `.github/workflows/ci.yml` để chạy đúng 2 luồng trên (frontend lint+build, backend lint+format-check+pytest).
 
 ## 4) Chạy local (không dùng Docker)
+## 6) Chạy local (không dùng Docker)
 
 - Cài Postgres local và tạo DB `ai_agent`
 - Sửa `DATABASE_URL` trong `backend/.env` cho đúng máy bạn
 
-## 5) Quy ước làm việc nhóm
+## 7) Quy ước làm việc nhóm
 
 Xem:
 
@@ -165,15 +166,15 @@ Xem:
 - `docs/reports/weekly_template.md`
 - `.github/pull_request_template.md`
 
-## 6) Luồng demo tuần 2 (Postman/Swagger)
+## 8) Luồng demo tuần 2 (Postman/Swagger)
 ### 6.0 Semantic RAG (FAISS) — ghép nối từ Week1
 
 Mặc định, RAG sẽ **fallback keyword** (chạy được ngay, không cần thêm deps).
 
 Nếu bạn muốn **semantic search giống Week1** (FAISS + OpenAI embeddings):
-- **Docker Compose:** deps semantic đã được cài sẵn trong image backend. Chỉ cần set `OPENAI_API_KEY` trong file `.env` (ở root) rồi `docker compose up --build`.
+- **Docker Compose:** deps semantic đã được cài sẵn trong image backend. Chỉ cần set `OPENAI_API_KEY` trong `backend/.env` (có thể copy từ `root/.env.example`) rồi `docker compose up --build`.
 - **Chạy local (venv):** cài thêm deps: `pip install -r backend/requirements.semantic.txt`.
-- Set `OPENAI_API_KEY` trong file `.env` (nằm tại thư mục bạn chạy uvicorn).
+- Set `OPENAI_API_KEY` trong `backend/.env` (khi chạy uvicorn từ thư mục `backend`).
 - Upload tài liệu (server sẽ cố gắng index ngay)
 - Nếu bạn upload lúc chưa có key, sau khi set key hãy gọi: `POST /api/rag/rebuild` để index lại
 
