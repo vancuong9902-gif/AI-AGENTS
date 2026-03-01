@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import unicodedata
 from io import BytesIO
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from typing import Optional, Any
 
@@ -20,6 +20,7 @@ from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
 from app.models.document_topic import DocumentTopic
 from app.models.quiz import QuizLegacy
+from app.models.topic_material_cache import TopicMaterialCache
 from app.models.quiz_set import QuizSet
 from app.models.question import Question
 from app.core.config import settings
@@ -47,6 +48,7 @@ from app.tasks.index_tasks import task_index_document, task_rebuild_vector_index
 from app.services.user_service import ensure_user_exists
 from app.services.quiz_service import generate_quiz_with_rag
 from app.services.vietnamese_font_fix import detect_broken_vn_font, fix_vietnamese_encoding
+from app.services.topic_material_service import build_topic_material_with_llm
 from app.services.text_quality import quality_score
 from app.services.text_repair import repair_ocr_spacing_text
 
@@ -935,6 +937,7 @@ def get_document_topic_detail(
     db: Session = Depends(get_db),
     current_user: Optional[User] = Depends(get_current_user_optional),
     include_content: int = 1,
+    include_material: int = 0,
 ):
     t = (
         db.query(DocumentTopic)
@@ -988,6 +991,10 @@ def get_document_topic_detail(
         body = "\n\n".join([c.text or '' for c in chs]).strip()
         included_chunk_ids = [c.id for c in chs]
         item["included_chunk_ids"] = included_chunk_ids
+        item["chunk_previews"] = [
+            {"chunk_id": int(c.id), "chunk_index": int(c.chunk_index), "text_preview": " ".join(str(c.text or "").split())[:260]}
+            for c in chs
+        ]
 
     body_view = clean_topic_text_for_display(body)
 
@@ -1013,6 +1020,48 @@ def get_document_topic_detail(
         item["content"] = study_view
         if practice_view:
             item["practice"] = practice_view
+
+    if int(include_material) == 1:
+        cache = (
+            db.query(TopicMaterialCache)
+            .filter(TopicMaterialCache.topic_id == int(topic_id))
+            .filter(TopicMaterialCache.document_id == int(document_id))
+            .first()
+        )
+        now = datetime.now(timezone.utc)
+        if cache and cache.updated_at and cache.updated_at >= (now - timedelta(hours=24)):
+            item["material"] = cache.payload_json or {}
+            item["material_cache"] = {"hit": True, "updated_at": cache.updated_at.isoformat()}
+        else:
+            context_with_markers = "\n\n".join([f"[chunk:{c.id}]\n{(c.text or '').strip()}" for c in chs]) if 'chs' in locals() else ""
+            material_payload, warnings = build_topic_material_with_llm(
+                title=item.get("effective_title") or item.get("title") or "",
+                context_with_markers=context_with_markers,
+                included_chunk_ids=included_chunk_ids,
+            )
+            material_payload.setdefault("theory", {})
+            material_payload["theory"].setdefault("content_md", item.get("study_guide_md") or "")
+            material_payload["theory"].setdefault("summary", item.get("summary") or "")
+            material_payload["theory"].setdefault("key_concepts", item.get("keywords") or [])
+            item["material"] = material_payload
+            if warnings:
+                item["material_warning"] = warnings
+
+            if cache:
+                cache.payload_json = material_payload
+                cache.updated_at = now
+                db.add(cache)
+            else:
+                db.add(
+                    TopicMaterialCache(
+                        topic_id=int(topic_id),
+                        document_id=int(document_id),
+                        payload_json=material_payload,
+                        updated_at=now,
+                    )
+                )
+            db.commit()
+            item["material_cache"] = {"hit": False, "updated_at": now.isoformat()}
 
     return {"request_id": request.state.request_id, "data": item, "error": None}
 
