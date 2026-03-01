@@ -24,8 +24,8 @@ export default function Login() {
     setUserId(parsedId);
     setRole(localRole);
     setFullName((localName || '').trim() || null);
-    if (localRole === 'teacher') navigate('/teacher/classrooms');
-    else navigate('/classrooms');
+    if (localRole === 'teacher') navigate('/home');
+    else navigate('/home');
   };
 
   return (
