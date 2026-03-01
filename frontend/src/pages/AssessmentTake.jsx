@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import { apiJson } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 
@@ -7,6 +7,7 @@ export default function AssessmentTake() {
   const { id, quizSetId } = useParams();
   const assessmentId = Number(quizSetId || id);
   const { userId } = useAuth();
+  const navigate = useNavigate();
 
   const [data, setData] = useState(null);
   const [answers, setAnswers] = useState({});
@@ -25,6 +26,7 @@ export default function AssessmentTake() {
 
   const autoSubmittedRef = useRef(false);
   const warningShownRef = useRef({ five: false, one: false });
+  const learningPathBannerRef = useRef(null);
 
   const answeredCount = useMemo(() => Object.keys(answers).length, [answers]);
 
@@ -64,7 +66,21 @@ export default function AssessmentTake() {
     if (s < 40) return { label: "Yếu", color: "#cf1322", bg: "#fff1f0", track: "#ffccc7" };
     if (s < 60) return { label: "Trung bình", color: "#d48806", bg: "#fff7e6", track: "#ffd591" };
     if (s < 80) return { label: "Khá", color: "#096dd9", bg: "#e6f4ff", track: "#91caff" };
-    return { label: "Giỏi", color: "#389e0d", bg: "#f6ffed", track: "#b7eb8f" };
+    return { label: "Giỏi", color: "#722ed1", bg: "#f9f0ff", track: "#d3adf7" };
+  };
+
+  const levelBadgeTheme = (levelValue) => {
+    const level = String(levelValue || "").toLowerCase();
+    if (level.includes("yếu") || level.includes("yeu") || level.includes("beginner")) {
+      return { color: "#cf1322", bg: "#fff1f0", border: "#ffa39e" };
+    }
+    if (level.includes("trung bình") || level.includes("trung_binh") || level.includes("intermediate")) {
+      return { color: "#d48806", bg: "#fff7e6", border: "#ffd591" };
+    }
+    if (level.includes("khá") || level.includes("kha") || level.includes("proficient")) {
+      return { color: "#096dd9", bg: "#e6f4ff", border: "#91caff" };
+    }
+    return { color: "#722ed1", bg: "#f9f0ff", border: "#d3adf7" };
   };
 
   const formatDuration = (sec) => {
@@ -89,6 +105,12 @@ export default function AssessmentTake() {
       if (item?.is_correct) buckets[key].correct += 1;
     }
     return buckets;
+  }, [result]);
+
+  useEffect(() => {
+    if (result?.synced_diagnostic?.stage === "pre" && result?.synced_diagnostic?.plan_id) {
+      learningPathBannerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
   }, [result]);
 
   const groupedQuestions = useMemo(() => {
@@ -728,6 +750,7 @@ export default function AssessmentTake() {
 
             {result?.synced_diagnostic?.stage === "pre" && (
               <div
+                ref={learningPathBannerRef}
                 style={{
                   marginTop: 10,
                   background: "#fff",
@@ -737,8 +760,23 @@ export default function AssessmentTake() {
                 }}
               >
                 <div style={{ fontWeight: 800 }}>🎯 Placement test đã cập nhật trình độ</div>
-                <div style={{ marginTop: 6, color: "#333" }}>
-                  Level mới: <b>{result.synced_diagnostic.level}</b>
+                <div style={{ marginTop: 6, color: "#333", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span>Level mới:</span>
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      padding: "2px 10px",
+                      borderRadius: 999,
+                      fontWeight: 700,
+                      fontSize: 13,
+                      border: `1px solid ${levelBadgeTheme(result.synced_diagnostic.level).border}`,
+                      color: levelBadgeTheme(result.synced_diagnostic.level).color,
+                      background: levelBadgeTheme(result.synced_diagnostic.level).bg,
+                    }}
+                  >
+                    {result.synced_diagnostic.level || "Chưa xác định"}
+                  </span>
                 </div>
                 {result.synced_diagnostic.teacher_topic ? (
                   <div style={{ marginTop: 4, color: "#666" }}>
@@ -747,11 +785,11 @@ export default function AssessmentTake() {
                 ) : null}
                 {result.synced_diagnostic.plan_id ? (
                   <div style={{ marginTop: 8 }}>
-                    ✅ Máy đã tự tạo Learning Path & giao bài tập theo trình độ.
+                    <div style={{ fontWeight: 700, color: "#166534" }}>✅ AI đã tạo lộ trình 7 ngày phù hợp với bạn</div>
                     <div style={{ marginTop: 8 }}>
-                      <Link to="/learning-path" style={{ textDecoration: "none" }}>
-                        <button style={{ padding: "8px 12px" }}>Mở Learning Path</button>
-                      </Link>
+                      <button style={{ padding: "8px 12px" }} onClick={() => navigate('/learning-path')}>
+                        Xem Learning Path
+                      </button>
                     </div>
                   </div>
                 ) : (
