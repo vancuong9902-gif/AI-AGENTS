@@ -1,5 +1,6 @@
 import { Routes, Route } from "react-router-dom";
 import Login from "../pages/Login";
+import Home from "../pages/Home";
 import Upload from "../pages/Upload";
 import Health from "../pages/Health";
 import Quiz from "../pages/Quiz";
@@ -44,7 +45,7 @@ export default function AppRoutes() {
       <Route
         path="/upload"
         element={
-          <ProtectedRoute allow={["teacher"]}>
+          <ProtectedRoute allow={["student", "teacher"]}>
             <Upload />
           </ProtectedRoute>
         }
@@ -60,6 +61,15 @@ export default function AppRoutes() {
       />
 
       <Route path="/health" element={<Health />} />
+
+      <Route
+        path="/home"
+        element={
+          <ProtectedRoute allow={["student", "teacher"]}>
+            <Home />
+          </ProtectedRoute>
+        }
+      />
 
       <Route
         path="/quiz"
@@ -128,7 +138,7 @@ export default function AppRoutes() {
       <Route
         path="/progress"
         element={
-          <ProtectedRoute allow={["teacher"]}>
+          <ProtectedRoute allow={["student", "teacher"]}>
             <Progress />
           </ProtectedRoute>
         }
@@ -281,7 +291,7 @@ export default function AppRoutes() {
       <Route
         path="/teacher/progress/:studentId?"
         element={
-          <ProtectedRoute allow={["teacher"]}>
+          <ProtectedRoute allow={["student", "teacher"]}>
             <Progress />
           </ProtectedRoute>
         }

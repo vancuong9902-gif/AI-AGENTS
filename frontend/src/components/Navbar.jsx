@@ -3,21 +3,23 @@ import { FiActivity, FiBarChart2, FiBookOpen, FiClipboard, FiFolder, FiHome, FiL
 import { useAuth } from '../context/useAuth';
 
 const student = [
-  { to: '/classrooms', label: 'Lớp học', icon: FiUsers },
-  { to: '/assessments', label: 'Bài đánh giá', icon: FiClipboard },
+  { to: '/home', label: 'Trang chủ', icon: FiHome },
   { to: '/learning-path', label: 'Lộ trình học', icon: FiLayers },
-  { to: '/quiz', label: 'Bài kiểm tra đầu vào', icon: FiBookOpen },
-  { to: '/tutor', label: 'Trợ giảng AI', icon: FiHome },
-  { to: '/analytics', label: 'Phân tích học tập', icon: FiBarChart2 },
+  { to: '/assessments', label: 'Kiểm tra & Quiz', icon: FiClipboard },
+  { to: '/progress', label: 'Tiến độ học tập', icon: FiBookOpen },
+  { to: '/result/1', label: 'Kết quả học tập', icon: FiFolder },
+  { to: '/analytics', label: 'Phân tích', icon: FiBarChart2 },
+  { to: '/upload', label: 'Tải lên tài liệu', icon: FiUploadCloud },
 ];
 
 const teacher = [
+  { to: '/home', label: 'Trang chủ', icon: FiHome },
+  { to: '/teacher/classrooms', label: 'Quản lý lớp học', icon: FiUsers },
+  { to: '/teacher/assessments', label: 'Kiểm tra & Quiz', icon: FiClipboard },
+  { to: '/teacher/progress', label: 'Tiến độ học tập', icon: FiBookOpen },
+  { to: '/teacher/analytics', label: 'Dashboard phân tích', icon: FiBarChart2 },
   { to: '/upload', label: 'Tải lên tài liệu', icon: FiUploadCloud },
   { to: '/teacher/files', label: 'Thư viện tài liệu', icon: FiFolder },
-  { to: '/teacher/classrooms', label: 'Lớp học', icon: FiUsers },
-  { to: '/teacher/assessments', label: 'Bài đánh giá', icon: FiClipboard },
-  { to: '/teacher/progress', label: 'Tiến độ', icon: FiBookOpen },
-  { to: '/teacher/analytics', label: 'Phân tích học tập', icon: FiBarChart2 },
   { to: '/teacher/infra', label: 'Hạ tầng', icon: FiActivity },
 ];
 

@@ -9,11 +9,12 @@ import './App.css';
 
 const PAGE_META = [
   { match: /^\/$/, title: 'Đăng nhập', subtitle: 'Thiết lập vai trò và bắt đầu phiên làm việc' },
+  { match: /^\/home/, title: 'Trang chủ', subtitle: 'Tổng quan khóa học, tiến độ và tác vụ quan trọng' },
   { match: /^\/classrooms/, title: 'Lớp học', subtitle: 'Theo dõi lớp học và bài tập hiện có' },
-  { match: /^\/assessments/, title: 'Bài đánh giá', subtitle: 'Thực hiện và theo dõi kết quả đánh giá' },
+  { match: /^\/assessments/, title: 'Kiểm tra & Quiz', subtitle: 'Thực hiện bài kiểm tra trực tuyến và theo dõi kết quả' },
   { match: /^\/learning-path/, title: 'Lộ trình học', subtitle: 'Lộ trình học cá nhân hóa theo năng lực' },
   { match: /^\/tutor/, title: 'Trợ giảng AI', subtitle: 'Hỏi đáp học tập nhanh và rõ ràng' },
-  { match: /^\/analytics/, title: 'Phân tích học tập', subtitle: 'Tổng quan tiến độ và mức độ thành thạo' },
+  { match: /^\/analytics/, title: 'Dashboard phân tích', subtitle: 'Biểu đồ điểm số, tiến độ và mức độ tham gia học tập' },
   { match: /^\/teacher\//, title: 'Không gian giáo viên', subtitle: 'Quản lý lớp học, tài liệu và phân tích' },
   { match: /^\/upload/, title: 'Tải lên tài liệu', subtitle: 'Đưa tài liệu vào hệ thống để xử lý' },
   { match: /^\/health/, title: 'Trạng thái hệ thống', subtitle: 'Kiểm tra nhanh dịch vụ đang hoạt động' },
