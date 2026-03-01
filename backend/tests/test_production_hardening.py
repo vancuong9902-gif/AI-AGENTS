@@ -58,6 +58,7 @@ def test_rate_limit_heavy_endpoint():
     # endpoint may return non-200 on first call depending on fixtures, but second should be rate-limited
     assert second.status_code == 429
     assert second.json()["error"]["code"] == "RATE_LIMITED"
+    assert second.headers.get("Retry-After") == "60"
     assert first.headers.get("X-Request-ID")
 
 

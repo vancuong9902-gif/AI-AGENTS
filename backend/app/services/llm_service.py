@@ -2,15 +2,56 @@ from __future__ import annotations
 
 import ast
 import json
+import logging as _logging
 import re
+import threading as _threading
 import time
 import urllib.request
 from typing import Any, Dict, List, Optional
 
 from app.core.config import settings
 
+from tenacity import before_sleep_log, retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+
 
 _client = None
+_tenacity_logger = _logging.getLogger("app.llm.retry")
+
+
+class _CircuitBreaker:
+    FAILURE_THRESHOLD = 5
+    RECOVERY_TIMEOUT = 60.0
+
+    def __init__(self) -> None:
+        self._failures = 0
+        self._opened_at: float | None = None
+        self._lock = _threading.Lock()
+
+    @property
+    def is_open(self) -> bool:
+        with self._lock:
+            if self._opened_at is None:
+                return False
+            if time.monotonic() - self._opened_at > self.RECOVERY_TIMEOUT:
+                self._opened_at = None
+                self._failures = 0
+                return False
+            return True
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._failures = 0
+            self._opened_at = None
+
+    def record_failure(self) -> None:
+        with self._lock:
+            self._failures += 1
+            if self._failures >= self.FAILURE_THRESHOLD:
+                self._opened_at = time.monotonic()
+                _tenacity_logger.error("LLM circuit breaker OPENED after %d failures", self._failures)
+
+
+_llm_circuit_breaker = _CircuitBreaker()
 
 
 
@@ -843,6 +884,16 @@ def chat_json(
         # fall back to chat.completions
         pass
 
+    @retry(
+        retry=retry_if_exception_type(Exception),
+        stop=stop_after_attempt(4),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        before_sleep=before_sleep_log(_tenacity_logger, _logging.WARNING),
+        reraise=True,
+    )
+    def _call_chat_with_retry(_messages: List[Dict[str, str]], _max_tokens: int, _temp: float):
+        return _call_chat(_messages, _max_tokens, _temp)
+
     # 2) Fallback: Chat Completions API
     # Some OpenAI-compatible providers (including certain gateways) may reject "response_format".
     # We'll try JSON mode first, then retry without it (still expecting JSON by instruction).
@@ -873,11 +924,17 @@ def chat_json(
             return client.chat.completions.create(**base_kwargs)
 
     # First attempt
-    res = _call_chat(guarded_messages, int(max_tokens), float(temperature))
+    if _llm_circuit_breaker.is_open:
+        raise RuntimeError("LLM service temporarily unavailable (circuit open). Retry in 60s.")
+
+    res = _call_chat_with_retry(guarded_messages, int(max_tokens), float(temperature))
     content = (_extract_chat_completion_text(res) or "").strip()
     try:
-        return _safe_json_loads(content)
+        parsed = _safe_json_loads(content)
+        _llm_circuit_breaker.record_success()
+        return parsed
     except Exception:
+        _llm_circuit_breaker.record_failure()
         # Retry once with stronger guard + more tokens (useful for <think> models)
         guard = {
             "role": "system",
@@ -887,11 +944,17 @@ def chat_json(
             ),
         }
         retry_tokens = min(int(max_tokens) * 2, 4096)
-        res2 = _call_chat([guard] + guarded_messages, retry_tokens, 0.0)
+        if _llm_circuit_breaker.is_open:
+            raise RuntimeError("LLM service temporarily unavailable (circuit open). Retry in 60s.")
+
+        res2 = _call_chat_with_retry([guard] + guarded_messages, retry_tokens, 0.0)
         content2 = (_extract_chat_completion_text(res2) or "").strip()
         try:
-            return _safe_json_loads(content2)
+            parsed2 = _safe_json_loads(content2)
+            _llm_circuit_breaker.record_success()
+            return parsed2
         except Exception:
+            _llm_circuit_breaker.record_failure()
             # Final fallback: formatter model
             if formatter_model and formatter_model != m:
                 return _format_to_json(

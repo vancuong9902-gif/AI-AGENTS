@@ -4,6 +4,7 @@ import json
 import logging
 import time
 import uuid
+from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, Request
@@ -50,36 +51,38 @@ def envelope(request_id: str, data: Any = None, error: Optional[Dict[str, Any]] 
     return {"request_id": request_id, "data": data, "error": error}
 
 
-class InMemoryTokenBucket:
-    def __init__(self, rate_per_minute: int):
-        self.rate = max(1, int(rate_per_minute))
-        self._buckets: dict[str, dict[str, float]] = {}
+class _RedisRateLimiter:
+    def __init__(self, redis_url: str, rate_per_minute: int) -> None:
+        self._rate = max(1, int(rate_per_minute))
+        self._client = None
+        try:
+            import redis as _redis
+
+            c = _redis.from_url(redis_url, decode_responses=True, socket_connect_timeout=1)
+            c.ping()
+            self._client = c
+        except Exception:
+            logger.warning("Redis unavailable – rate limiter disabled (allow-all)")
 
     def allow(self, key: str, rate_per_minute: int | None = None) -> bool:
-        capacity = max(1, int(rate_per_minute)) if rate_per_minute is not None else self.rate
-        now = time.monotonic()
-        bucket = self._buckets.get(key)
-        if bucket is None:
-            self._buckets[key] = {"tokens": float(capacity - 1), "ts": now}
+        if self._client is None:
+            return True
+        capacity = max(1, int(rate_per_minute)) if rate_per_minute else self._rate
+        now = time.time()
+        rkey = f"rl:{key}"
+        try:
+            pipe = self._client.pipeline()
+            pipe.zremrangebyscore(rkey, 0, now - 60)
+            pipe.zcard(rkey)
+            pipe.zadd(rkey, {f"{now:.6f}": now})
+            pipe.expire(rkey, 65)
+            results = pipe.execute()
+            return results[1] < capacity
+        except Exception:
             return True
 
-        refill_per_sec = capacity / 60.0
-        elapsed = max(0.0, now - bucket["ts"])
-        bucket["tokens"] = min(float(capacity), bucket["tokens"] + elapsed * refill_per_sec)
-        bucket["ts"] = now
-        if bucket["tokens"] < 1.0:
-            return False
-        bucket["tokens"] -= 1.0
-        return True
 
-
-rate_limiter = InMemoryTokenBucket(settings.RATE_LIMIT_REQUESTS_PER_MINUTE)
-
-
-app = FastAPI(
-    title=settings.APP_NAME,
-    version="0.3.0",
-)
+rate_limiter = _RedisRateLimiter(settings.REDIS_URL, settings.RATE_LIMIT_REQUESTS_PER_MINUTE)
 def _include_api_routers(fastapi_app: FastAPI, auth_enabled: bool) -> None:
     fastapi_app.include_router(health_router, prefix="/api")
     fastapi_app.include_router(health_router)
@@ -115,10 +118,82 @@ def _resolve_cors_origins() -> list[str]:
     return [o for o in settings.BACKEND_CORS_ORIGINS if o != "*"]
 
 
+def _bootstrap_demo_users() -> None:
+    """Create demo users/classroom (safe to run repeatedly).
+
+    Mode A UX expects:
+      - Teacher: user_id=1
+      - Students: user_id=2,3,...
+    """
+    db = SessionLocal()
+    try:
+        # Ensure teacher id=1
+        t = db.query(User).filter(User.id == 1).first()
+        if not t:
+            t = User(id=1, email="teacher1@demo.local", full_name="Teacher 1", role="teacher", is_active=True)
+            db.add(t)
+            db.commit()
+        else:
+            changed = False
+            if getattr(t, "role", "") != "teacher":
+                t.role = "teacher"
+                changed = True
+            if not getattr(t, "email", None):
+                t.email = "teacher1@demo.local"
+                changed = True
+            if changed:
+                db.commit()
+
+        # Ensure demo students exist (one teacher, one class, many students)
+        try:
+            from app.services.user_service import ensure_user_exists
+
+            for sid in range(2, 11):
+                ensure_user_exists(db, sid, role="student")
+        except Exception:
+            pass
+
+        # Optional: create a demo classroom if none
+        try:
+            from app.models.classroom import Classroom, ClassroomMember
+
+            c = db.query(Classroom).order_by(Classroom.created_at.desc()).first()
+            if not c:
+                c = Classroom(teacher_id=1, name="Lớp Demo", join_code="DEMO123")
+                db.add(c)
+                db.commit()
+                db.refresh(c)
+
+            # Join demo students into the demo class (idempotent)
+            for sid in range(2, 11):
+                exists = (
+                    db.query(ClassroomMember)
+                    .filter(ClassroomMember.classroom_id == int(c.id), ClassroomMember.user_id == int(sid))
+                    .first()
+                )
+                if not exists:
+                    db.add(ClassroomMember(classroom_id=int(c.id), user_id=int(sid)))
+            db.commit()
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    vector_store.load_if_exists()
+    _bootstrap_demo_users()
+    if not settings.AUTH_ENABLED and settings.ENV.lower() not in {"prod", "production"}:
+        logger.warning("⚠️ AUTH_ENABLED=false – Set true before deploying to production!")
+    yield
+
+
 def create_app(auth_enabled: Optional[bool] = None) -> FastAPI:
     app = FastAPI(
         title=settings.APP_NAME,
         version="0.4.0",
+        lifespan=_lifespan,
         openapi_url="/api/v1/openapi.json",
         docs_url="/api/v1/docs",
         redoc_url="/api/v1/redoc",
@@ -177,7 +252,7 @@ async def request_id_middleware(request: Request, call_next):
         client_key = request.client.host if request.client else "unknown"
         bucket_key = f"{request.url.path}:{client_key}"
         if not rate_limiter.allow(bucket_key, settings.RATE_LIMIT_REQUESTS_PER_MINUTE):
-            return JSONResponse(
+            resp_429 = JSONResponse(
                 status_code=429,
                 content=envelope(
                     request_id=req_id,
@@ -188,6 +263,8 @@ async def request_id_middleware(request: Request, call_next):
                     },
                 ),
             )
+            resp_429.headers["Retry-After"] = "60"
+            return resp_429
 
     try:
         response = await call_next(request)
@@ -218,6 +295,17 @@ async def request_id_middleware(request: Request, call_next):
             ensure_ascii=False,
         )
     )
+    return response
+
+
+@app.middleware("http")
+async def _security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.pop("server", None)
     return response
 
 
@@ -290,66 +378,3 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
         ),
     )
 
-
-@app.on_event("startup")
-def bootstrap_demo_user():
-    """Create demo users/classroom (safe to run repeatedly).
-
-    Mode A UX expects:
-      - Teacher: user_id=1
-      - Students: user_id=2,3,...
-    """
-    vector_store.load_if_exists()  # load FAISS index if present
-    db = SessionLocal()
-    try:
-        # Ensure teacher id=1
-        t = db.query(User).filter(User.id == 1).first()
-        if not t:
-            t = User(id=1, email="teacher1@demo.local", full_name="Teacher 1", role="teacher", is_active=True)
-            db.add(t)
-            db.commit()
-        else:
-            changed = False
-            if getattr(t, "role", "") != "teacher":
-                t.role = "teacher"
-                changed = True
-            if not getattr(t, "email", None):
-                t.email = "teacher1@demo.local"
-                changed = True
-            if changed:
-                db.commit()
-
-        # Ensure demo students exist (one teacher, one class, many students)
-        try:
-            from app.services.user_service import ensure_user_exists
-
-            for sid in range(2, 11):
-                ensure_user_exists(db, sid, role="student")
-        except Exception:
-            pass
-
-        # Optional: create a demo classroom if none
-        try:
-            from app.models.classroom import Classroom, ClassroomMember
-
-            c = db.query(Classroom).order_by(Classroom.created_at.desc()).first()
-            if not c:
-                c = Classroom(teacher_id=1, name="Lớp Demo", join_code="DEMO123")
-                db.add(c)
-                db.commit()
-                db.refresh(c)
-
-            # Join demo students into the demo class (idempotent)
-            for sid in range(2, 11):
-                exists = (
-                    db.query(ClassroomMember)
-                    .filter(ClassroomMember.classroom_id == int(c.id), ClassroomMember.user_id == int(sid))
-                    .first()
-                )
-                if not exists:
-                    db.add(ClassroomMember(classroom_id=int(c.id), user_id=int(sid)))
-            db.commit()
-        except Exception:
-            pass
-    finally:
-        db.close()

@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional
 
+from pydantic import BaseModel, field_validator
+
 
 EventType = Literal[
     "DOC_UPLOADED",
@@ -14,8 +16,7 @@ EventType = Literal[
 ]
 
 
-@dataclass
-class Event:
+class Event(BaseModel):
     """A minimal event contract used by the MAS orchestrator.
 
     The system can be run in either:
@@ -23,10 +24,17 @@ class Event:
       - event-driven mode: events are appended to a log/queue and consumed asynchronously.
     """
 
-    type: EventType
-    user_id: int
-    payload: Dict[str, Any]
+    type: str
+    payload: Dict[str, Any] = {}
+    user_id: Optional[int] = None
     trace_id: Optional[str] = None
+
+    @field_validator("type")
+    @classmethod
+    def type_must_not_be_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Event type cannot be empty")
+        return v.upper().strip()
 
 
 @dataclass
