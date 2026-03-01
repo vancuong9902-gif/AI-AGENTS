@@ -2760,7 +2760,7 @@ def get_assessment(db: Session, *, assessment_id: int) -> Dict[str, Any]:
     )
 
     duration_seconds = resolve_duration_seconds(quiz_set)
-    total_minutes = max(0, int(duration_seconds // 60))
+    total_minutes = max(0, int(math.ceil(duration_seconds / 60.0))) if duration_seconds > 0 else 0
 
     # Backfill for older assessments that were created before we stored estimated_minutes.
     if total_minutes <= 0 and questions:

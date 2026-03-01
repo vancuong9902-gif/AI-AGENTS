@@ -16,6 +16,7 @@ export default function AssessmentTake() {
   const [attemptId, setAttemptId] = useState(null);
   const [serverOffsetMs, setServerOffsetMs] = useState(0);
   const [timedOutBanner, setTimedOutBanner] = useState(false);
+  const [attemptLocked, setAttemptLocked] = useState(false);
   const [result, setResult] = useState(null);
   const [aiRecommendations, setAiRecommendations] = useState([]);
   const [recLoading, setRecLoading] = useState(false);
@@ -255,12 +256,14 @@ export default function AssessmentTake() {
       setAnswers({});
       setAttemptId(null);
       setTimedOutBanner(false);
+      setAttemptLocked(false);
       warningShownRef.current = { five: false, one: false };
 
       const session = await apiJson(`/attempts/start`, {
         method: "POST",
         body: { quiz_id: Number(d?.assessment_id || assessmentId), student_id: Number(userId ?? 0) },
       });
+      setAttemptId(Number(session?.attempt_id || 0) || null);
 
       const currentAttemptId = Number(session?.attempt_id || 0) || null;
       setAttemptId(currentAttemptId);
@@ -269,12 +272,14 @@ export default function AssessmentTake() {
       const offsetMs = Number.isFinite(serverNowMs) && serverNowMs > 0 ? serverNowMs - Date.now() : 0;
       setServerOffsetMs(offsetMs);
 
-      const deadlineMs = Date.parse(session?.deadline || "");
+      const deadlineMs = Date.parse(session?.deadline_utc || "");
       if (Number.isFinite(deadlineMs) && deadlineMs > 0) {
         setDeadlineAt(deadlineMs);
         setTimeLeftSec(Math.max(0, Math.floor((deadlineMs - (Date.now() + offsetMs)) / 1000)));
       } else {
         setDeadlineAt(null);
+        const secs = Number(session?.duration_seconds || 0);
+
         const secs = Number(session?.remaining_seconds ?? session?.duration_seconds || 0);
         setTimeLeftSec(Number.isFinite(secs) && secs > 0 ? secs : null);
       }
@@ -290,11 +295,9 @@ export default function AssessmentTake() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assessmentId]);
 
-  // Countdown timer
+  // Server-synced countdown timer tick
   useEffect(() => {
-    if (timeLeftSec == null) return;
-    if (result) return;
-    if (submitting) return;
+    if (timeLeftSec == null || result || submitting) return;
 
     const t = setInterval(() => {
       if (deadlineAt) {
@@ -308,6 +311,7 @@ export default function AssessmentTake() {
     }, 1000);
 
     return () => clearInterval(t);
+  }, [timeLeftSec == null, result, submitting]);
   }, [timeLeftSec == null, result, submitting, deadlineAt, serverOffsetMs]);
 
 
@@ -354,16 +358,46 @@ export default function AssessmentTake() {
     }
   }, [timeLeftSec, result, submitting]);
 
-  // Auto-submit when time is up
+  // Heartbeat every 30s: autosave + lock sync from server truth.
   useEffect(() => {
-    if (timeLeftSec !== 0) return;
-    if (result) return;
-    if (submitting) return;
-    if (autoSubmittedRef.current) return;
-    autoSubmittedRef.current = true;
-    submit(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timeLeftSec, result, submitting]);
+    if (!attemptId || result || submitting || !data?.questions?.length) return;
+
+    const buildAnswers = () =>
+      (data.questions || []).map((q) => ({
+        question_id: q.question_id,
+        answer_index: answers[q.question_id]?.answer_index ?? null,
+        answer_text: answers[q.question_id]?.answer_text ?? null,
+      }));
+
+    const sendHeartbeat = async () => {
+      try {
+        const hb = await apiJson(`/attempts/${attemptId}/heartbeat`, {
+          method: "POST",
+          body: { answers: buildAnswers() },
+        });
+
+        if (Number.isFinite(Number(hb?.time_left_seconds))) {
+          setTimeLeftSec(Math.max(0, Number(hb.time_left_seconds)));
+        }
+
+        if (hb?.locked) {
+          setAttemptLocked(true);
+          if (!autoSubmittedRef.current) {
+            autoSubmittedRef.current = true;
+            setTimedOutBanner(true);
+            setError("Hết giờ, hệ thống đã khóa bài và đang tự nộp.");
+            submit(true);
+          }
+        }
+      } catch {
+        // keep UI timer; heartbeat sẽ thử lại ở lần sau
+      }
+    };
+
+    sendHeartbeat();
+    const hbTimer = setInterval(sendHeartbeat, 30000);
+    return () => clearInterval(hbTimer);
+  }, [attemptId, answers, data?.questions, result, submitting]);
 
   const setMcq = (qid, idx) => {
     setAnswers((prev) => ({ ...prev, [qid]: { ...(prev[qid] || {}), answer_index: idx } }));
@@ -386,8 +420,14 @@ export default function AssessmentTake() {
       }));
 
       if (!attemptId) {
+        throw new Error("Không tìm thấy attempt để nộp bài.");
+
         throw new Error("Không tìm thấy attempt hợp lệ. Vui lòng tải lại bài làm.");
       }
+      const r = await apiJson(`/attempts/${attemptId}/submit`, {
+        method: "POST",
+        body: { answers: answerList },
+      });
 
       const r = await apiJson(`/attempts/${attemptId}/submit`, {
         method: "POST",
@@ -503,7 +543,7 @@ export default function AssessmentTake() {
                 name={`q_${q.question_id}`}
                 checked={(answers[q.question_id]?.answer_index ?? null) === i}
                 onChange={() => setMcq(q.question_id, i)}
-                disabled={!!result}
+                disabled={!!result || attemptLocked}
               />
               <span>{op}</span>
             </label>
@@ -519,7 +559,7 @@ export default function AssessmentTake() {
             onChange={(e) => setEssay(q.question_id, e.target.value)}
             placeholder="Nhập câu trả lời tự luận..."
             style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd" }}
-            disabled={!!result}
+            disabled={!!result || attemptLocked}
           />
           <div style={{ color: "#666", marginTop: 6 }}>Thang điểm: {q.max_points || 10} (AI sẽ chấm theo rubric)</div>
         </div>
@@ -713,7 +753,7 @@ export default function AssessmentTake() {
       </div>
 
       <div style={{ marginTop: 16, display: "flex", gap: 10, alignItems: "center" }}>
-        <button onClick={() => submit(false)} disabled={submitting || !!result} style={{ padding: "10px 14px" }}>
+        <button onClick={() => submit(false)} disabled={submitting || !!result || attemptLocked} style={{ padding: "10px 14px" }}>
           Nộp bài
         </button>
         {submitting && <span style={{ color: "#666" }}>Đang nộp…</span>}

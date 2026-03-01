@@ -118,6 +118,8 @@ class SubmitAttemptByIdIn(BaseModel):
     answers: list[dict] = Field(default_factory=list)
 
 
+class HeartbeatAttemptIn(BaseModel):
+    answers: list[dict] = Field(default_factory=list)
 def _attempt_status_payload(*, started: UserSession, duration_seconds: int) -> dict:
     now = datetime.now(timezone.utc)
     started_at = started.started_at or now
@@ -141,7 +143,6 @@ def _attempt_status_payload(*, started: UserSession, duration_seconds: int) -> d
         "remaining_seconds": remaining_seconds,
         "timed_out": bool(remaining_seconds is not None and remaining_seconds <= 0),
     }
-
 
 def _normalize_synced_diagnostic(base: dict) -> dict:
     """Ensure submit responses expose synced diagnostic payload consistently."""
@@ -635,6 +636,47 @@ def _quiz_duration_map(quiz: QuizSet) -> int:
         return 1800
 
 
+def _attempt_quiz_id(session: UserSession) -> int:
+    raw = str(getattr(session, "type", "") or "")
+    if not raw.startswith("quiz_attempt:"):
+        raise HTTPException(status_code=404, detail="Attempt not found")
+    try:
+        return int(raw.split(":", 1)[1])
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail="Attempt not found") from exc
+
+
+def _normalize_started_at_utc(session: UserSession, now: datetime) -> datetime:
+    started_at = session.started_at or now
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    return started_at
+
+
+def _build_answer_list_from_questions(*, questions: list[Question], answers: list[dict]) -> list[dict]:
+    by_qid: dict[int, dict] = {}
+    for item in answers or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            qid = int(item.get("question_id"))
+        except Exception:
+            continue
+        by_qid[qid] = item
+
+    normalized: list[dict] = []
+    for q in questions or []:
+        src = by_qid.get(int(q.id), {})
+        normalized.append(
+            {
+                "question_id": int(q.id),
+                "answer_index": src.get("answer_index"),
+                "answer_text": src.get("answer_text"),
+            }
+        )
+    return normalized
+
+
 def _publish_mas_event_non_blocking(db: Session, *, event: Event) -> None:
     """Phát event MAS theo cơ chế non-blocking để không ảnh hưởng luồng nộp bài."""
 
@@ -805,13 +847,74 @@ def start_attempt(request: Request, payload: StartAttemptIn, db: Session = Depen
     quiz = db.query(QuizSet).filter(QuizSet.id == quiz_id).first()
     duration_seconds = _quiz_duration_map(quiz) if quiz else 0
 
+    server_now = datetime.now(timezone.utc)
+    started_at = _normalize_started_at_utc(session, server_now)
+    deadline_utc = started_at
+    if int(duration_seconds or 0) > 0:
+        deadline_utc = started_at + timedelta(seconds=int(duration_seconds))
+
     return {
         "request_id": request.state.request_id,
+        "data": {
+            "attempt_id": int(session.id),
+            "quiz_id": quiz_id,
+            "student_id": student_id,
+            "start_time": started_at.isoformat(),
+            "duration_seconds": int(duration_seconds or 0),
+            "server_now": server_now.isoformat(),
+            "deadline_utc": deadline_utc.isoformat(),
+        },
         "data": _attempt_status_payload(started=session, duration_seconds=int(duration_seconds or 0)),
         "error": None,
     }
 
 
+@router.post("/attempts/{attempt_id}/heartbeat")
+def heartbeat_attempt(request: Request, attempt_id: int, payload: HeartbeatAttemptIn, db: Session = Depends(get_db)):
+    started = db.query(UserSession).filter(UserSession.id == int(attempt_id)).first()
+    if not started:
+        raise HTTPException(status_code=404, detail="Attempt not found")
+
+    quiz_id = _attempt_quiz_id(started)
+    quiz = db.query(QuizSet).filter(QuizSet.id == int(quiz_id)).first()
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    now = datetime.now(timezone.utc)
+    started_at = _normalize_started_at_utc(started, now)
+    elapsed = max(0, int((now - started_at).total_seconds()))
+    duration_seconds = int(_quiz_duration_map(quiz) or 0)
+
+    locked = False
+    if duration_seconds > 0 and elapsed >= duration_seconds:
+        locked = True
+        if started.locked_at is None:
+            started.locked_at = now
+        if started.ended_at is None:
+            started.ended_at = now
+    elif started.locked_at is not None:
+        locked = True
+
+    started.last_heartbeat_at = now
+    if not locked:
+        started.answers_snapshot_json = payload.answers or []
+
+    db.add(started)
+    db.commit()
+
+    elapsed_seconds = max(0, int((now - started_at).total_seconds()))
+    time_left_seconds = max(0, int(duration_seconds) - elapsed_seconds) if duration_seconds > 0 else 0
+
+    return {
+        "request_id": request.state.request_id,
+        "data": {
+            "attempt_id": int(started.id),
+            "server_now": now.isoformat(),
+            "duration_seconds": int(duration_seconds),
+            "elapsed_seconds": int(elapsed_seconds),
+            "time_left_seconds": int(time_left_seconds),
+            "locked": bool(locked),
+        },
 
 @router.get("/attempts/{attempt_id}/status")
 def get_attempt_status(request: Request, attempt_id: int, db: Session = Depends(get_db)):
@@ -835,11 +938,11 @@ def get_attempt_status(request: Request, attempt_id: int, db: Session = Depends(
 
 @router.post("/attempts/{attempt_id}/submit")
 def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttemptByIdIn, db: Session = Depends(get_db)):
-    started = db.query(UserSession).filter(
-        UserSession.id == int(attempt_id)).first()
-    if not started or not str(started.type or "").startswith("quiz_attempt:"):
+    started = db.query(UserSession).filter(UserSession.id == int(attempt_id)).first()
+    if not started:
         raise HTTPException(status_code=404, detail="Attempt not found")
-    quiz_id = int(str(started.type).split(":", 1)[1])
+
+    quiz_id = _attempt_quiz_id(started)
     quiz = db.query(QuizSet).filter(QuizSet.id == quiz_id).first()
     if not quiz:
         raise HTTPException(status_code=404, detail="Quiz not found")
@@ -856,21 +959,57 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
     if not allowed:
         raise HTTPException(status_code=404, detail="Attempt not found")
 
-    duration_seconds = _quiz_duration_map(quiz)
+    duration_seconds = int(_quiz_duration_map(quiz) or 0)
     now = datetime.now(timezone.utc)
-    started_at = (started.started_at or now)
-    if started_at.tzinfo is None:
-        started_at = started_at.replace(tzinfo=timezone.utc)
+    started_at = _normalize_started_at_utc(started, now)
     spent = max(0, int((now - started_at).total_seconds()))
-    timed_out = bool(duration_seconds and spent > int(duration_seconds))
+    grace_seconds = 30
+    timed_out = bool(duration_seconds and spent > duration_seconds)
+
+    lock_due_to_timeout = bool(duration_seconds and spent >= duration_seconds)
+    if lock_due_to_timeout and started.locked_at is None:
+        started.locked_at = now
+    if lock_due_to_timeout and started.ended_at is None:
+        started.ended_at = now
+
+    late_by_seconds = max(0, spent - duration_seconds)
+    is_late = bool(started.locked_at is not None or (duration_seconds and spent > (duration_seconds + grace_seconds)))
+
+    snapshot_answers = started.answers_snapshot_json or []
+    snapshot_non_empty = isinstance(snapshot_answers, list) and len(snapshot_answers) > 0
+    used_snapshot = bool(is_late and snapshot_non_empty)
+
+    answers_for_scoring = payload.answers
+    late_note = None
+    if used_snapshot:
+        answers_for_scoring = snapshot_answers
+    elif is_late and not snapshot_non_empty:
+        late_note = "late_no_snapshot"
+
+    questions = (
+        db.query(Question)
+        .filter(Question.quiz_set_id == int(quiz_id))
+        .order_by(Question.order_no.asc())
+        .all()
+    )
+    normalized_answers_for_event = _build_answer_list_from_questions(questions=questions, answers=answers_for_scoring)
 
     base = submit_assessment(
         db,
         assessment_id=quiz_id,
         user_id=int(started.user_id),
-        duration_sec=spent,
-        answers=payload.answers,
+        duration_sec=min(spent, duration_seconds) if duration_seconds > 0 else spent,
+        answers=answers_for_scoring,
     )
+
+    attempt_id_created = int(base.get("attempt_id") or 0)
+    if attempt_id_created > 0:
+        attempt_row = db.query(Attempt).filter(Attempt.id == attempt_id_created).first()
+        if attempt_row:
+            attempt_row.is_late = bool(is_late)
+            attempt_row.deadline_seconds = int(duration_seconds or 0)
+            db.add(attempt_row)
+            db.commit()
 
     # Auto-trigger learning plan generation for diagnostic entry test submissions.
     try:
@@ -924,14 +1063,21 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
     recommendations = build_recommendations(
         breakdown=breakdown, document_topics=topics, multidim_profile=multidim_profile)
 
-    if timed_out:
+    if timed_out or is_late:
         base["is_late_submission"] = True
-        base["late_by_seconds"] = max(0, spent - int(duration_seconds or 0))
-        base["notes"] = (
-            f"⚠️ Bài nộp trễ {spent - int(duration_seconds)} giây. "
-            f"Điểm được tính theo câu trả lời tại thời điểm hết giờ. "
-            f"Kết quả có thể ảnh hưởng đến xếp loại."
-        )
+        base["late_by_seconds"] = int(late_by_seconds)
+        if late_note:
+            base["notes"] = "late_no_snapshot"
+        elif used_snapshot:
+            base["notes"] = (
+                f"⚠️ Bài nộp trễ {int(late_by_seconds)} giây. "
+                "Điểm được chấm theo snapshot tự động lưu trước deadline."
+            )
+        else:
+            base["notes"] = (
+                f"⚠️ Bài nộp trễ {int(late_by_seconds)} giây. "
+                "Không có snapshot trước deadline, hệ thống chấm theo bài nộp hiện tại."
+            )
     else:
         base["is_late_submission"] = False
         base["notes"] = "Bài nộp đúng hạn."
@@ -995,7 +1141,7 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
             payload={
                 "quiz_id": int(quiz_id),
                 "user_id": int(started.user_id),
-                "answers": payload.answers,
+                "answers": normalized_answers_for_event,
                 "duration_sec": int(spent),
                 "classroom_id": int(getattr(quiz, "classroom_id", 0) or 0),
             },
@@ -1011,6 +1157,8 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
             "time_spent_seconds": spent,
             "duration_seconds": duration_seconds,
             "timed_out": timed_out,
+            "is_late": bool(is_late),
+            "used_snapshot": bool(used_snapshot),
             "score_breakdown": breakdown,
             "classification": level,
             "recommendations": recommendations,
