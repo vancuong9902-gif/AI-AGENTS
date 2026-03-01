@@ -239,6 +239,34 @@ def _cosine_similarity(a: List[float], b: List[float]) -> float:
     return float(dot / (na * nb))
 
 
+def _build_semantic_exclusion_vectors(stems: list[str]) -> list[list[float]] | None:
+    """Build embeddings for excluded stems; return None when unavailable."""
+    texts = [str(x or "").strip() for x in (stems or []) if str(x or "").strip()]
+    if not texts:
+        return None
+    try:
+        vectors = embed_texts(texts)
+    except Exception:
+        return None
+    if not isinstance(vectors, list) or len(vectors) != len(texts):
+        return None
+    return [list(v or []) for v in vectors]
+
+
+def _is_semantic_dup(
+    stem: str,
+    excluded_vectors: list[list[float]] | None,
+    *,
+    threshold: float,
+) -> bool:
+    if not stem or not excluded_vectors:
+        return False
+    try:
+        vec = embed_texts([str(stem)])[0]
+    except Exception:
+        return False
+    for ex in excluded_vectors:
+        if _cosine_similarity(list(vec or []), list(ex or [])) > float(threshold):
 def _is_dup_semantic(stem: str, excluded_embeddings: list[list[float]] | None, threshold: float = 0.85) -> bool:
     if not stem or not excluded_embeddings:
         return False
@@ -1977,6 +2005,10 @@ def generate_assessment(
                         semantic_dedup_enabled = False
 
     final_exam_llm_system_hint = (
+        "Đây là bài kiểm tra cuối kỳ tổng hợp. Câu hỏi phải đánh giá khả năng VẬN DỤNG và "
+        "TỔNG HỢP kiến thức từ nhiều chủ đề, không phải chỉ ghi nhớ đơn thuần. Mức độ khó "
+        "phải cao hơn bài kiểm tra đầu vào. Bắt buộc xây dựng scenario mới, mỗi câu nên tổng hợp "
+        "ít nhất 2 khái niệm, và ưu tiên Bloom apply/analyze/evaluate."
         "Đây là bài kiểm tra cuối kỳ tổng hợp. Mỗi câu hỏi bắt buộc dùng scenario/tình huống MỚI, "
         "không lặp hoặc diễn đạt lại ví dụ placement. Câu hỏi phải tổng hợp ít nhất 2 ý hoặc 2 khái niệm "
         "trong cùng một ngữ cảnh và ưu tiên Bloom mức apply/analyze/evaluate (chỉ hạn chế nhớ lại đơn thuần)."
@@ -2047,9 +2079,12 @@ def generate_assessment(
                         topic_seen.add(tt)
         dedup_topics_from_entry = sorted(topic_seen)
 
+    semantic_excluded_vectors = _build_semantic_exclusion_vectors(sorted(_excluded_stems))
+
     def _is_dup_local(stem: str) -> bool:
         if _is_dup(stem, _excluded_stems, dedup_similarity_threshold):
             return True
+        return _is_semantic_dup(stem, semantic_excluded_vectors, threshold=0.85)
         if semantic_dedup_enabled and _is_dup_semantic(stem, excluded_embeddings, threshold=0.85):
             return True
         return False

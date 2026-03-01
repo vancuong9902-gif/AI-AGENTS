@@ -529,6 +529,73 @@ def _collect_quiz_ids_from_learning_plan_json(plan_json: dict | None) -> set[int
 
 def collect_excluded_quiz_ids_for_classroom_final(db: Session, classroom_id: int) -> list[int]:
     cid = int(classroom_id)
+    assigned_ids = {
+        int(r[0])
+        for r in (
+            db.query(ClassroomAssessment.assessment_id)
+            .filter(ClassroomAssessment.classroom_id == cid)
+            .distinct()
+            .all()
+        )
+        if r and r[0] is not None
+    }
+
+    placement_ids = {
+        int(r[0])
+        for r in (
+            db.query(ClassroomAssessment.assessment_id)
+            .join(QuizSet, QuizSet.id == ClassroomAssessment.assessment_id)
+            .filter(
+                ClassroomAssessment.classroom_id == cid,
+                QuizSet.kind == "diagnostic_pre",
+            )
+            .distinct()
+            .all()
+        )
+        if r and r[0] is not None
+    }
+
+    excluded = assigned_ids | placement_ids
+    return sorted(excluded)
+
+
+def build_classroom_final_exclude_quiz_ids(
+    db: Session,
+    *,
+    classroom_id: int,
+    current_quiz_id: int | None = None,
+) -> list[int]:
+    cid = int(classroom_id)
+    placement_ids = {
+        int(r[0])
+        for r in (
+            db.query(ClassroomAssessment.assessment_id)
+            .join(QuizSet, QuizSet.id == ClassroomAssessment.assessment_id)
+            .filter(
+                ClassroomAssessment.classroom_id == cid,
+                QuizSet.kind == "diagnostic_pre",
+            )
+            .distinct()
+            .all()
+        )
+        if r and r[0] is not None
+    }
+
+    extra_exclude_ids = {
+        int(r[0])
+        for r in (
+            db.query(ClassroomAssessment.assessment_id)
+            .filter(ClassroomAssessment.classroom_id == cid)
+            .distinct()
+            .all()
+        )
+        if r and r[0] is not None
+    }
+
+    if current_quiz_id is not None:
+        extra_exclude_ids.discard(int(current_quiz_id))
+
+    return sorted(placement_ids | extra_exclude_ids)
     excluded: set[int] = set(_placement_quiz_ids_by_classroom(db, classroom_id=cid))
 
     assigned_ids = (
@@ -677,7 +744,10 @@ def lms_generate_placement(request: Request, payload: GenerateLmsQuizIn, db: Ses
 @router.post("/lms/final/generate")
 def lms_generate_final(request: Request, payload: GenerateLmsQuizIn, db: Session = Depends(get_db)):
     payload.title = payload.title or "Final Test"
-    exclude_ids = collect_excluded_quiz_ids_for_classroom_final(db, classroom_id=int(payload.classroom_id))
+    exclude_ids = build_classroom_final_exclude_quiz_ids(
+        db,
+        classroom_id=int(payload.classroom_id),
+    )
 
     data = generate_assessment(
         db,
@@ -774,7 +844,10 @@ def create_final_quiz(request: Request, payload: PlacementQuizIn, db: Session = 
         medium_count=int(payload.difficulty_settings.get("medium", 4)),
         hard_count=int(payload.difficulty_settings.get("hard", 2)),
     )
-    exclude_ids = collect_excluded_quiz_ids_for_classroom_final(db, classroom_id=int(payload.classroom_id))
+    exclude_ids = build_classroom_final_exclude_quiz_ids(
+        db,
+        classroom_id=int(payload.classroom_id),
+    )
     response = _generate_assessment_lms(
         request=request,
         db=db,
