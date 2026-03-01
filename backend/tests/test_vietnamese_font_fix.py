@@ -1,6 +1,12 @@
+from unittest.mock import patch
+
 from app.services.vietnamese_font_fix import (
+    convert_vni_typing_to_unicode,
     detect_broken_vn_font,
+    detect_vni_typing,
     fix_vietnamese_font_encoding,
+    llm_repair_title_if_needed,
+    looks_garbled_short_title,
 )
 
 
@@ -51,3 +57,30 @@ def test_detect_broken_returns_true_for_broken_text():
 def test_detect_broken_returns_false_for_normal_text():
     text = "Phương trình bậc hai có nghiệm khi delta không âm."
     assert detect_broken_vn_font(text) is False
+
+
+def test_convert_vni_typing_to_unicode_title():
+    text = "Toa1n ho5c cơ ba3n"
+    fixed = fix_vietnamese_font_encoding(text)
+    assert "Toán học" in fixed
+
+
+def test_detect_vni_typing_threshold_guard_for_formula():
+    formula = "x2 + y2 = z2"
+    assert detect_vni_typing(formula) is False
+    assert fix_vietnamese_font_encoding(formula) == formula
+
+
+def test_convert_vni_typing_longest_first_modifiers():
+    assert convert_vni_typing_to_unicode("a61n") == "ấn"
+
+
+@patch("app.services.llm_service.chat_text", return_value="Toán học cơ bản")
+@patch("app.services.llm_service.llm_available", return_value=True)
+def test_llm_repair_short_garbled_title(mock_llm_available, mock_chat_text):
+    garbled = "Toa?n ho□ co? ba?n"
+    assert looks_garbled_short_title(garbled) is True
+    fixed = llm_repair_title_if_needed(garbled)
+    assert fixed == "Toán học cơ bản"
+    mock_llm_available.assert_called_once()
+    mock_chat_text.assert_called_once()

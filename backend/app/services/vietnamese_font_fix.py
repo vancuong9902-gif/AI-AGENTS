@@ -24,6 +24,8 @@ NOTO_SANS_CANDIDATES = (
     "/usr/share/fonts/opentype/noto/NotoSans-Regular.ttf",
 )
 
+_VNI_TYPING_RX = re.compile(r"(?i)(?:a|e|i|o|u|y|d)[0-9]")
+
 
 def _build_256_map(overrides: dict[int, str]) -> dict[int, str]:
     """Build a complete 256-entry byte mapping table."""
@@ -106,6 +108,125 @@ def detect_broken_vn_font(text: str) -> bool:
     return ratio < 0.70
 
 
+def detect_vni_typing(text: str) -> bool:
+    """Detect VNI typing-number patterns such as 'Toa1n ho5c'."""
+    if not text:
+        return False
+    sample = text[:80]
+    return len(_VNI_TYPING_RX.findall(sample)) >= 3
+
+
+_VNI_BASE_MAP: dict[str, str] = {
+    "a": "a", "e": "e", "i": "i", "o": "o", "u": "u", "y": "y",
+    "A": "A", "E": "E", "I": "I", "O": "O", "U": "U", "Y": "Y",
+}
+_VNI_MODIFIER_MAP: dict[str, dict[str, str]] = {
+    "a": {"6": "â", "7": "ă"},
+    "A": {"6": "Â", "7": "Ă"},
+    "e": {"6": "ê"},
+    "E": {"6": "Ê"},
+    "o": {"6": "ô", "7": "ơ"},
+    "O": {"6": "Ô", "7": "Ơ"},
+    "u": {"7": "ư"},
+    "U": {"7": "Ư"},
+}
+_VNI_TONE_MAP: dict[str, int] = {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5}
+_VNI_TONE_COMBINING: dict[str, str] = {
+    "1": "\u0301",  # sắc
+    "2": "\u0300",  # huyền
+    "3": "\u0309",  # hỏi
+    "4": "\u0303",  # ngã
+    "5": "\u0323",  # nặng
+}
+
+
+def _apply_tone(base_char: str, tone_digit: str) -> str:
+    mark = _VNI_TONE_COMBINING.get(tone_digit)
+    if not mark:
+        return base_char
+    return unicodedata.normalize("NFC", f"{base_char}{mark}")
+
+
+def _build_vni_replacement_map() -> dict[str, str]:
+    replacements: dict[str, str] = {"d9": "đ", "D9": "Đ"}
+
+    for base, plain in _VNI_BASE_MAP.items():
+        for tone in _VNI_TONE_MAP:
+            replacements[f"{base}{tone}"] = _apply_tone(plain, tone)
+
+    for base, mod_map in _VNI_MODIFIER_MAP.items():
+        for mod, modded in mod_map.items():
+            replacements[f"{base}{mod}"] = modded
+            for tone in _VNI_TONE_MAP:
+                replacements[f"{base}{mod}{tone}"] = _apply_tone(modded, tone)
+
+    return replacements
+
+
+_VNI_REPLACEMENTS = _build_vni_replacement_map()
+_VNI_KEYS_SORTED = sorted(_VNI_REPLACEMENTS.keys(), key=len, reverse=True)
+_VNI_CONVERT_RX = re.compile("|".join(re.escape(k) for k in _VNI_KEYS_SORTED))
+
+
+def convert_vni_typing_to_unicode(text: str) -> str:
+    """Convert common VNI numeric typing to Unicode Vietnamese (longest-first)."""
+    if not text:
+        return ""
+    converted = _VNI_CONVERT_RX.sub(lambda m: _VNI_REPLACEMENTS.get(m.group(0), m.group(0)), text)
+    return unicodedata.normalize("NFC", converted)
+
+
+def looks_garbled_short_title(text: str) -> bool:
+    """Heuristic for short garbled titles containing tofu/unknown/suspicious chars."""
+    if not text:
+        return False
+    s = str(text).strip()
+    if not s or len(s) >= 150:
+        return False
+
+    total = len(s)
+    hard_suspects = sum(1 for ch in s if ch in {"?", "□", "�"})
+    odd_chars = 0
+    for ch in s:
+        if ch.isspace() or ch.isalnum() or ch in "-–—:;,.()/%&+[]'\"_":
+            continue
+        if unicodedata.category(ch).startswith("P"):
+            continue
+        if any(lo <= ord(ch) <= hi for lo, hi in VALID_RANGES):
+            continue
+        odd_chars += 1
+
+    suspicious = hard_suspects + odd_chars
+    ratio = suspicious / max(1, total)
+    return suspicious >= 2 and ratio >= 0.08
+
+
+def llm_repair_title_if_needed(title: str) -> str:
+    """Attempt LLM-only repair for short garbled titles; fallback to original text."""
+    source = str(title or "")
+    if not source or not looks_garbled_short_title(source):
+        return source
+
+    try:
+        from app.services.llm_service import chat_text, llm_available
+
+        if not llm_available():
+            return source
+        repaired = chat_text(
+            (
+                "Sửa tiêu đề tiếng Việt bị lỗi encoding/mất dấu bên dưới. "
+                "Chỉ trả về đúng một tiêu đề đã sửa, không giải thích, không thêm tiền tố.\n\n"
+                f"Tiêu đề lỗi: {source}"
+            ),
+            temperature=0.0,
+            max_tokens=60,
+        )
+        repaired_text = str(repaired or "").strip()
+        return unicodedata.normalize("NFC", repaired_text) if repaired_text else source
+    except Exception:
+        return source
+
+
 def _map_with_table(text: str, table: dict[int, str]) -> str:
     mapped_chars: list[str] = []
     for ch in text:
@@ -152,7 +273,12 @@ def fix_vietnamese_font_encoding(text: str) -> str:
         return ""
 
     if not detect_broken_vn_font(text):
-        return text
+        result = text
+        if detect_vni_typing(result):
+            result = convert_vni_typing_to_unicode(result)
+        if len(result) < 150 and looks_garbled_short_title(result):
+            result = llm_repair_title_if_needed(result)
+        return unicodedata.normalize("NFC", result)
 
     result = text
 
@@ -169,6 +295,10 @@ def fix_vietnamese_font_encoding(text: str) -> str:
         return unicodedata.normalize("NFC", result)
 
     result = _fallback_tesseract(result)
+    if detect_vni_typing(result):
+        result = convert_vni_typing_to_unicode(result)
+    if len(result) < 150 and looks_garbled_short_title(result):
+        result = llm_repair_title_if_needed(result)
     return unicodedata.normalize("NFC", result)
 
 

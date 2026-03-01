@@ -1468,13 +1468,13 @@ def _clean_line(line: str) -> str:
     except Exception:
         pass
 
-    # Nếu line có vẻ lỗi font, thử fix trước khi dùng làm heading
+    # Nếu line có vẻ lỗi font/VNI typing, thử fix trước khi dùng làm heading
     try:
-        from app.services.vietnamese_font_fix import detect_broken_vn_font, fix_vietnamese_font_encoding, fix_vietnamese_encoding
+        from app.services.vietnamese_font_fix import detect_broken_vn_font, detect_vni_typing, fix_vietnamese_font_encoding
 
-        if detect_broken_vn_font(s):
+        if detect_broken_vn_font(s) or detect_vni_typing(s):
             fixed = fix_vietnamese_font_encoding(s)
-            if fixed and not detect_broken_vn_font(fixed):
+            if fixed and (not detect_broken_vn_font(fixed) or detect_vni_typing(s)):
                 s = fixed
     except Exception:
         pass
@@ -3702,14 +3702,15 @@ def extract_topics(
         has_more = len(body_norm) > int(max_body_preview)
 
         clean_title, title_warnings = validate_and_clean_topic_title(title)
+        safe_title = fix_vietnamese_font_encoding(clean_title or title).strip() or (clean_title or title)
         needs_review = bool(title_warnings)
-        conf = _topic_confidence_score(clean_title or title, body_for_summary)
+        conf = _topic_confidence_score(safe_title, body_for_summary)
         if conf < 0.5 or len(re.sub(r"\s+", " ", body_for_summary).strip()) < 120:
             needs_review = True
 
         item: Dict[str, Any] = {
-            "title": clean_title or title,
-            "display_title": clean_title or title,
+            "title": safe_title,
+            "display_title": safe_title,
             "needs_review": bool(needs_review),
             "title_warnings": title_warnings,
             "extraction_confidence": conf,
