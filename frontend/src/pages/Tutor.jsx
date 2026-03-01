@@ -25,7 +25,7 @@ export default function Tutor() {
   useEffect(() => {
     (async () => {
       try {
-        const data = await apiJson("/documents");
+        const data = await apiJson("/documents?limit=100&offset=0");
         const arr = data?.documents || [];
         setDocs(arr);
         if (!docId && arr.length > 0) {

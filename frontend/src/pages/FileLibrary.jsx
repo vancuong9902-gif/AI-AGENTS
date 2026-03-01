@@ -21,7 +21,7 @@ export default function FileLibrary() {
   const refresh = async () => {
     setLoading(true);
     try {
-      setDocs((await apiJson('/documents'))?.documents || []);
+      setDocs((await apiJson('/documents?limit=100&offset=0'))?.documents || []);
       setError('');
     } catch (e) {
       setError(e?.message || 'Lỗi tải tài liệu');

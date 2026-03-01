@@ -22,7 +22,7 @@ export default function PersonalizedMaterials({ studentLevel, recommendations = 
     setLoading(true);
     setError("");
     try {
-      const res = await apiJson(`/documents/${documentId}/topics?detail=1`, { method: "GET" });
+      const res = await apiJson(`/documents/${documentId}/topics?detail=1&limit=100&offset=0`, { method: "GET" });
       const list = Array.isArray(res?.topics) ? res.topics : Array.isArray(res) ? res : [];
       setTopics(list);
     } catch (e) {

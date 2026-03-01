@@ -14,7 +14,7 @@ export default function LibraryPage() {
   const [status, setStatus] = useState(null);
 
   const loadFiles = async () => {
-    const data = await apiJson("/documents");
+    const data = await apiJson("/documents?limit=100&offset=0");
     setDocs(data?.documents || []);
   };
 

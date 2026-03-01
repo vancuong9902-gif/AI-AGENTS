@@ -55,6 +55,27 @@ from app.services.text_repair import repair_ocr_spacing_text
 router = APIRouter(tags=['documents'])
 
 DOCUMENT_PROCESS_STATUS: dict[int, dict[str, Any]] = {}
+DEFAULT_LIST_LIMIT = 20
+MAX_LIST_LIMIT = 100
+CHUNK_PREVIEW_CHARS = 320
+
+
+def _sanitize_pagination(limit: int, offset: int) -> tuple[int, int]:
+    safe_limit = max(1, min(int(limit or DEFAULT_LIST_LIMIT), MAX_LIST_LIMIT))
+    safe_offset = max(0, int(offset or 0))
+    return safe_limit, safe_offset
+
+
+def _paginate_query(query, *, limit: int, offset: int) -> tuple[list[Any], int, int, int]:
+    safe_limit, safe_offset = _sanitize_pagination(limit, offset)
+    total = int(query.order_by(None).count())
+    items = query.limit(safe_limit).offset(safe_offset).all()
+    return items, total, safe_limit, safe_offset
+
+
+def _text_preview(raw_text: str | None, *, size: int = CHUNK_PREVIEW_CHARS) -> str:
+    normalized = " ".join(str(raw_text or "").split())
+    return normalized[:size]
 
 
 def _normalize_topic_field(text: str) -> str:
@@ -363,6 +384,8 @@ def list_documents(
     db: Session = Depends(get_db),
     user_id: int = 1,
     user: Optional[User] = Depends(get_current_user_optional),
+    limit: int = Query(DEFAULT_LIST_LIMIT, ge=1, le=MAX_LIST_LIMIT),
+    offset: int = Query(0, ge=0),
 ):
     """List uploaded documents.
 
@@ -382,12 +405,12 @@ def list_documents(
         .all()
     )
 
-    docs = (
+    docs_q = (
         db.query(Document)
         .filter(Document.user_id == user_id)
         .order_by(Document.created_at.desc())
-        .all()
     )
+    docs, total, limit, offset = _paginate_query(docs_q, limit=limit, offset=offset)
 
     # Fetch auto-extracted topic titles for quick UI display (avoid showing full bodies).
     doc_ids = [d.id for d in docs]
@@ -424,19 +447,80 @@ def list_documents(
             }
         )
 
-    return {'request_id': request.state.request_id, 'data': {'documents': out}, 'error': None}
+    return {
+        'request_id': request.state.request_id,
+        'data': {
+            'items': out,
+            'total': total,
+            'limit': limit,
+            'offset': offset,
+            # backward-compatible alias
+            'documents': out,
+        },
+        'error': None,
+    }
 
 
 @router.get('/documents/{document_id}/chunks')
-def list_document_chunks(request: Request, document_id: int, db: Session = Depends(get_db)):
-    chunks = (
+def list_document_chunks(
+    request: Request,
+    document_id: int,
+    db: Session = Depends(get_db),
+    limit: int = Query(DEFAULT_LIST_LIMIT, ge=1, le=MAX_LIST_LIMIT),
+    offset: int = Query(0, ge=0),
+):
+    chunks_q = (
         db.query(DocumentChunk)
         .filter(DocumentChunk.document_id == document_id)
         .order_by(DocumentChunk.chunk_index.asc())
-        .all()
     )
-    out = [{'chunk_id': c.id, 'chunk_index': c.chunk_index, 'text': c.text, 'meta': c.meta} for c in chunks]
-    return {'request_id': request.state.request_id, 'data': {'document_id': document_id, 'chunks': out}, 'error': None}
+    chunks, total, limit, offset = _paginate_query(chunks_q, limit=limit, offset=offset)
+    out = [
+        {
+            'chunk_id': c.id,
+            'chunk_index': c.chunk_index,
+            'text_preview': _text_preview(c.text),
+            'text_len': len(str(c.text or "")),
+            'has_full_text': bool(c.text),
+            'meta': c.meta,
+        }
+        for c in chunks
+    ]
+    return {
+        'request_id': request.state.request_id,
+        'data': {
+            'document_id': document_id,
+            'items': out,
+            'total': total,
+            'limit': limit,
+            'offset': offset,
+            # backward-compatible alias
+            'chunks': out,
+        },
+        'error': None,
+    }
+
+
+@router.get('/documents/{document_id}/chunks/{chunk_id}')
+def get_document_chunk_detail(request: Request, document_id: int, chunk_id: int, db: Session = Depends(get_db)):
+    chunk = (
+        db.query(DocumentChunk)
+        .filter(DocumentChunk.document_id == int(document_id), DocumentChunk.id == int(chunk_id))
+        .first()
+    )
+    if not chunk:
+        raise HTTPException(status_code=404, detail='Chunk not found')
+    return {
+        'request_id': request.state.request_id,
+        'data': {
+            'document_id': document_id,
+            'chunk_id': chunk.id,
+            'chunk_index': chunk.chunk_index,
+            'text': chunk.text,
+            'meta': chunk.meta,
+        },
+        'error': None,
+    }
 
 
 @router.get('/documents/{document_id}/topics')
@@ -448,6 +532,8 @@ def list_document_topics(
     detail: int = 0,
     filter: str | None = None,
     status: str | None = None,
+    limit: int = Query(DEFAULT_LIST_LIMIT, ge=1, le=MAX_LIST_LIMIT),
+    offset: int = Query(0, ge=0),
 ):
     user_role = str(getattr(current_user, 'role', '') or '').strip().lower()
     is_teacher = user_role == 'teacher'
@@ -478,7 +564,8 @@ def list_document_topics(
     status_norm = (status or '').strip().lower()
     if status_norm in {'draft', 'published', 'rejected', 'pending_review', 'approved', 'edited'}:
         topics_q = topics_q.filter(DocumentTopic.status == status_norm)
-    topics = topics_q.order_by(func.coalesce(DocumentTopic.page_start, 10**9).asc(), DocumentTopic.topic_index.asc()).all()
+    topics_q = topics_q.order_by(func.coalesce(DocumentTopic.page_start, 10**9).asc(), DocumentTopic.topic_index.asc())
+    topics, total, limit, offset = _paginate_query(topics_q, limit=limit, offset=offset)
 
     # Preload chunk lengths for fast "quiz_ready" stats (no extra heavy per-topic queries).
     chunk_rows = (
@@ -623,6 +710,11 @@ def list_document_topics(
         'request_id': request.state.request_id,
         'data': {
             'document_id': document_id,
+            'items': out,
+            'total': total,
+            'limit': limit,
+            'offset': offset,
+            # backward-compatible alias
             'topics': out,
             'needs_review_count': needs_review_count,
             'font_quality_score': round(font_quality_score, 4),

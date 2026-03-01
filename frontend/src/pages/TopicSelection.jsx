@@ -16,7 +16,7 @@ const FILTER_OPTIONS = [
 ];
 
 function normalizeTopics(payload) {
-  const raw = Array.isArray(payload) ? payload : payload?.topics || payload?.items || [];
+  const raw = Array.isArray(payload) ? payload : payload?.items || payload?.topics || [];
   return (Array.isArray(raw) ? raw : []).map((topic, index) => {
     const title = String(topic?.display_title || topic?.title || topic?.name || `Topic ${index + 1}`).trim();
     const chunkSpan = String(topic?.chunk_span || topic?.chunk_range || '-').trim();
@@ -45,6 +45,8 @@ export default function TopicSelection() {
   const [search, setSearch] = useState('');
   const [filterMode, setFilterMode] = useState('all');
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [pagination, setPagination] = useState({ total: 0, limit: 20, offset: 0 });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -58,9 +60,14 @@ export default function TopicSelection() {
       setLoading(true);
       setError('');
       try {
-        const data = await apiJson(`/documents/${documentId}/topics?detail=1`);
+        const data = await apiJson(`/documents/${documentId}/topics?detail=1&limit=20&offset=0`);
         const normalized = normalizeTopics(data);
         setTopics(normalized);
+        setPagination({
+          total: Number(data?.total || normalized.length),
+          limit: Number(data?.limit || 20),
+          offset: Number(data?.offset || 0),
+        });
 
         const cachedRaw = localStorage.getItem(storageKey);
         if (!cachedRaw) {
@@ -79,6 +86,27 @@ export default function TopicSelection() {
 
     loadTopics();
   }, [documentId, storageKey]);
+
+  const loadMore = async () => {
+    if (!documentId) return;
+    setLoadingMore(true);
+    setError('');
+    try {
+      const nextOffset = pagination.offset + pagination.limit;
+      const data = await apiJson(`/documents/${documentId}/topics?detail=1&limit=${pagination.limit}&offset=${nextOffset}`);
+      const incoming = normalizeTopics(data);
+      setTopics((prev) => [...prev, ...incoming]);
+      setPagination({
+        total: Number(data?.total || pagination.total),
+        limit: Number(data?.limit || pagination.limit),
+        offset: Number(data?.offset || nextOffset),
+      });
+    } catch (e) {
+      setError(e?.message || 'Không tải thêm topic.');
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const visibleTopics = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -226,6 +254,18 @@ export default function TopicSelection() {
                 </div>
               </Card>
             ))}
+          </div>
+        ) : null}
+
+
+        {!loading && topics.length < pagination.total ? (
+          <div className='row' style={{ justifyContent: 'center' }}>
+            <Button onClick={loadMore} disabled={loadingMore}>
+              {loadingMore ? 'Đang tải thêm...' : 'Load more'}
+            </Button>
+            <span style={{ color: 'var(--muted)', fontSize: 13 }}>
+              {topics.length}/{pagination.total}
+            </span>
           </div>
         ) : null}
 
