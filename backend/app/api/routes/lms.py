@@ -35,6 +35,7 @@ from app.services.teacher_report_export_service import build_classroom_report_pd
 from app.services.analytics_service import build_classroom_final_report, export_classroom_final_report_pdf
 from app.tasks.report_tasks import task_export_teacher_report_pdf
 from app.services.lms_report_export_service import export_report_pdf, export_report_xlsx
+from app.services.report_pdf_service import generate_classroom_report_pdf, generate_student_report_pdf
 from app.models.session import Session as UserSession
 from app.models.student_assignment import StudentAssignment
 from app.models.diagnostic_attempt import DiagnosticAttempt
@@ -2222,7 +2223,7 @@ def export_teacher_report(
         _report_cache_time[classroom_id] = time.time()
 
     if export_format == "pdf":
-        pdf_path = export_report_pdf(report, name=f"teacher_classroom_{classroom_id}")
+        pdf_path = generate_classroom_report_pdf(db=db, classroom_id=classroom_id)
         return FileResponse(pdf_path, media_type="application/pdf", filename=f"classroom_{classroom_id}_report.pdf")
 
     if export_format == "xlsx":
@@ -2242,6 +2243,26 @@ def export_teacher_report(
         }
 
     raise HTTPException(status_code=400, detail="Supported formats: pdf, xlsx, html, json")
+
+
+@router.get("/lms/teacher/report/{classroom_id}/student/{student_id}/export")
+@router.get("/v1/lms/teacher/report/{classroom_id}/student/{student_id}/export")
+def export_teacher_student_report(
+    classroom_id: int,
+    student_id: int,
+    format: str = Query("pdf"),
+    db: Session = Depends(get_db),
+):
+    export_format = str(format or "pdf").strip().lower()
+    if export_format != "pdf":
+        raise HTTPException(status_code=400, detail="Supported formats: pdf")
+
+    pdf_path = generate_student_report_pdf(db=db, classroom_id=int(classroom_id), student_id=int(student_id))
+    return FileResponse(
+        pdf_path,
+        media_type="application/pdf",
+        filename=f"classroom_{int(classroom_id)}_student_{int(student_id)}_report.pdf",
+    )
 
 
 @router.get("/lms/student/{user_id}/report/export")
