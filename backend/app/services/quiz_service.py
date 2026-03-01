@@ -19,6 +19,7 @@ from app.models.attempt import Attempt
 from app.models.learner_profile import LearnerProfile
 from app.models.document_topic import DocumentTopic
 from app.models.document_chunk import DocumentChunk
+from app.models.learning_plan import LearningPlan, LearningPlanTaskCompletion
 from app.services.rag_service import retrieve_and_log, auto_document_ids_for_query
 from app.services.corrective_rag import corrective_retrieve_and_log
 from app.services.text_quality import filter_chunks_by_quality
@@ -1847,7 +1848,7 @@ def _practice_level_to_generator_level(level: str) -> str:
 def _build_practice_questions(*, topic: str, level: str, question_count: int, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     bloom_targets = _practice_bloom_targets(level)
     gen_level = _practice_level_to_generator_level(level)
-    count = max(3, min(5, int(question_count or 0) or 5))
+    count = max(1, min(30, int(question_count or 0) or 10))
 
     prompt = (
         f"Generate {count} practice questions for topic [{topic}] at [{level}] difficulty. "
@@ -1890,6 +1891,90 @@ def _build_practice_questions(*, topic: str, level: str, question_count: int, ch
         )
     return out
 
+
+
+def generate_practice_quiz(*, db: Session, classroom_id: int, student_id: int, document_ids: list[int], topic: str, difficulty: str, count: int) -> dict[str, Any]:
+    ensure_user_exists(db, int(student_id), role="student")
+    lvl = (difficulty or "").strip().lower()
+    if lvl not in {"easy", "medium", "hard"}:
+        raise HTTPException(status_code=422, detail="difficulty must be easy|medium|hard")
+
+    doc_ids = [int(x) for x in (document_ids or []) if str(x).isdigit() and int(x) > 0]
+    if not doc_ids:
+        raise HTTPException(status_code=422, detail="document_ids is required")
+
+    rows = (
+        db.query(DocumentChunk)
+        .filter(DocumentChunk.document_id.in_(doc_ids))
+        .order_by(DocumentChunk.document_id.asc(), DocumentChunk.chunk_index.asc())
+        .limit(max(20, min(260, int(count) * 8)))
+        .all()
+    )
+    chunk_payload = [
+        {"chunk_id": int(r.id), "text": str(r.text or ""), "document_id": int(r.document_id), "score": 1.0}
+        for r in rows
+        if str(r.text or "").strip()
+    ]
+    if not chunk_payload:
+        raise HTTPException(status_code=422, detail="Không có nội dung tài liệu để tạo bài luyện")
+
+    q_count = max(1, min(30, int(count or 10)))
+    questions = _build_practice_questions(topic=str(topic or "Practice"), level=lvl, question_count=q_count, chunks=chunk_payload)
+
+    quiz_set = QuizSet(
+        user_id=int(student_id),
+        kind="topic_practice",
+        topic=str(topic or "Practice"),
+        level=lvl,
+        duration_seconds=0,
+        metadata_json={
+            "classroom_id": int(classroom_id),
+            "difficulty": lvl,
+            "mode": "generate_practice",
+            "document_ids": doc_ids,
+            "topic": str(topic or "Practice"),
+        },
+    )
+    db.add(quiz_set)
+    db.flush()
+
+    q_models: list[Question] = []
+    for order_no, q in enumerate(questions[:q_count]):
+        q_models.append(
+            Question(
+                quiz_set_id=int(quiz_set.id),
+                order_no=int(order_no),
+                type="mcq",
+                bloom_level=normalize_bloom_level(q.get("bloom_level")),
+                stem=str(q.get("stem") or ""),
+                options=list(q.get("options") or []),
+                correct_index=int(q.get("correct_index") or 0),
+                explanation=str(q.get("explanation") or ""),
+                sources=list(q.get("sources") or []),
+            )
+        )
+    db.add_all(q_models)
+    db.commit()
+
+    return {
+        "quiz_set_id": int(quiz_set.id),
+        "classroom_id": int(classroom_id),
+        "student_id": int(student_id),
+        "topic": str(topic or "Practice"),
+        "difficulty": lvl,
+        "questions": [
+            {
+                "question_id": int(q.id),
+                "type": q.type,
+                "bloom_level": normalize_bloom_level(q.bloom_level),
+                "stem": q.stem,
+                "options": q.options,
+                "correct_index": int(q.correct_index),
+                "explanation": q.explanation,
+            }
+            for q in q_models
+        ],
+    }
 
 def get_or_create_practice_quiz_set_by_topic(*, db: Session, topic_id: int, level: str, user_id: int) -> dict[str, Any]:
     ensure_user_exists(db, int(user_id), role="student")

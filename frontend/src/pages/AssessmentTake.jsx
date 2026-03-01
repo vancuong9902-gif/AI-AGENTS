@@ -26,6 +26,7 @@ export default function AssessmentTake() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [pathAssigned, setPathAssigned] = useState(false);
+  const [citationMap, setCitationMap] = useState({});
 
   const autoSubmittedRef = useRef(false);
   const warningShownRef = useRef({ five: false, one: false });
@@ -241,6 +242,47 @@ export default function AssessmentTake() {
 
   const resolvedScore = Number(result?.total_score_percent ?? result?.score_percent ?? 0);
   const scoreTheme = levelTheme(resolvedScore);
+
+
+  useEffect(() => {
+    const allSources = [];
+    (result?.answer_review || []).forEach((row) => {
+      if (Array.isArray(row?.sources)) allSources.push(...row.sources);
+    });
+    const chunkIds = [...new Set(allSources.map((src) => Number(src?.chunk_id)).filter((id) => Number.isInteger(id) && id > 0))];
+    if (chunkIds.length === 0) {
+      setCitationMap({});
+      return;
+    }
+
+    let ignore = false;
+    (async () => {
+      try {
+        const data = await apiJson(`/documents/chunks/citations?chunk_ids=${chunkIds.join(",")}`);
+        if (ignore) return;
+        const map = {};
+        (Array.isArray(data) ? data : []).forEach((item) => {
+          if (Number.isInteger(item?.chunk_id)) map[item.chunk_id] = item;
+        });
+        setCitationMap(map);
+      } catch {
+        if (!ignore) setCitationMap({});
+      }
+    })();
+
+    return () => {
+      ignore = true;
+    };
+  }, [result]);
+
+  const pageLabel = (cite) => {
+    if (!cite) return "";
+    const start = Number(cite?.page_start);
+    const end = Number(cite?.page_end);
+    if (Number.isInteger(start) && Number.isInteger(end)) return start === end ? `Trang ${start}` : `Trang ${start}–${end}`;
+    if (Number.isInteger(start)) return `Trang ${start}`;
+    return "";
+  };
 
   const load = async () => {
     setLoading(true);
@@ -554,7 +596,7 @@ export default function AssessmentTake() {
                 padding: "4px 10px",
               }}
             >
-              chunk #{s?.chunk_id ?? "?"}
+              chunk #{s?.chunk_id ?? "?"}{citationMap?.[s?.chunk_id] ? ` · ${pageLabel(citationMap[s.chunk_id])}` : ""}
             </span>
           ))}
         </div>

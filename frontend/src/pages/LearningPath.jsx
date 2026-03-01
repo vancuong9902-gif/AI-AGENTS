@@ -280,6 +280,8 @@ export default function LearningPath() {
   const [currentPlan, setCurrentPlan] = useState(null);
   const [planView, setPlanView] = useState("sections");
   const [comparison, setComparison] = useState(null);
+  const [practiceDifficulty, setPracticeDifficulty] = useState("medium");
+  const [topicProgress, setTopicProgress] = useState({});
 
   const currentDay = useMemo(() => {
     return (planDays || []).find((d) => Number(d.day_index) === Number(selectedDay)) || null;
@@ -315,6 +317,12 @@ export default function LearningPath() {
     return Object.entries(map).sort((a, b) => Number(a[0]) - Number(b[0]));
   }, [adaptiveItems]);
   const activeLevel = levelDetails || levelFromRaw(myPath?.student_level || plan?.student_level || "Khá");
+  useEffect(() => {
+    if (!userId) return;
+    loadTopicProgress();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
+
   const planStats = useMemo(() => {
     const tasks = timelineTasks.map((x) => x.task || {});
     const materials = tasks.filter((t) => ["lesson", "material", "study"].includes(String(t.type || "").toLowerCase())).length || (planDays || []).length;
@@ -472,6 +480,7 @@ export default function LearningPath() {
         method: "POST",
         body: JSON.stringify({ user_id: userId, day_index: dayIndex, task_index: taskIndex, completed: !!completed }),
       });
+      loadTopicProgress();
     } catch (e) {
       setError(String(e?.message || e));
     }
@@ -515,10 +524,30 @@ export default function LearningPath() {
       const dayObj = (planDays || []).find((d) => Number(d.day_index) === Number(dayIndex));
       const hwTaskIndex = (dayObj?.tasks || []).findIndex((t) => (t?.type || "").toLowerCase() === "homework");
       if (hwTaskIndex >= 0) await toggleTask(dayIndex, hwTaskIndex, true);
+      else loadTopicProgress();
     } catch (e) {
       setError(String(e?.message || e));
     } finally {
       setLoading(false);
+    }
+  }
+
+
+
+  async function loadTopicProgress() {
+    try {
+      const cidRaw = localStorage.getItem("active_classroom_id");
+      const cid = cidRaw && String(cidRaw).trim() ? Number(cidRaw) : null;
+      const q = Number.isFinite(cid) && cid > 0 ? `?classroom_id=${cid}` : "";
+      const data = await apiJson(`/lms/student/${userId}/topic-progress${q}`);
+      const map = {};
+      (Array.isArray(data?.topics) ? data.topics : []).forEach((row) => {
+        const key = String(row?.topic || "").toLowerCase();
+        if (key) map[key] = row;
+      });
+      setTopicProgress(map);
+    } catch {
+      setTopicProgress({});
     }
   }
 
@@ -597,10 +626,22 @@ export default function LearningPath() {
 
       {!!assignedTasks.length && (
         <div style={{ ...card, marginBottom: 12 }}>
-          <h3 style={{ marginTop: 0 }}>📌 Nhiệm vụ được giao</h3>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <h3 style={{ margin: 0 }}>📌 Nhiệm vụ được giao</h3>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <span style={{ fontSize: 13, color: "#555" }}>Độ khó luyện tập:</span>
+              {PRACTICE_LEVELS.map((lv) => (
+                <button key={`assign-${lv.key}`} type="button" onClick={() => setPracticeDifficulty(lv.key)} style={{ border: "1px solid #dbeafe", borderRadius: 999, background: practiceDifficulty === lv.key ? "#1d4ed8" : "#eff6ff", color: practiceDifficulty === lv.key ? "#fff" : "#1e3a8a", padding: "4px 10px", fontSize: 13 }}>
+                  {lv.label}
+                </button>
+              ))}
+            </div>
+          </div>
           <div style={{ display: "grid", gap: 8 }}>
             {assignedTasks.map((task, idx) => {
               const isWeak = weakTopics.has(String(task?.topic_title || "").toLowerCase());
+              const p = topicProgress[String(task?.topic_title || "").toLowerCase()] || null;
+              const pct = Math.max(0, Math.min(100, Number(p?.percent) || 0));
               return (
                 <div key={`${task?.topic_id || "t"}-${idx}`} style={{ border: "1px solid #eee", borderRadius: 10, padding: 10, display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
                   <div>
@@ -610,9 +651,14 @@ export default function LearningPath() {
                         Priority: {isWeak ? "high" : "normal"}
                       </span>
                     </div>
+                    <div style={{ marginTop: 8, fontSize: 12, color: "#555" }}>Tiến độ chủ đề: {p ? `${p.completed_tasks}/${p.total_tasks} (${pct}%)` : "0%"}</div>
+                    <div style={{ marginTop: 4, width: 220, height: 8, borderRadius: 999, background: "#f0f0f0", overflow: "hidden" }}>
+                      <div style={{ width: `${pct}%`, height: "100%", background: pct >= 80 ? "#52c41a" : "#1677ff" }} />
+                    </div>
                   </div>
                   <div style={{ display: "flex", gap: 8 }}>
                     <button onClick={() => nav(`/topics/${task?.topic_id || ""}`)} disabled={!task?.topic_id}>Học ngay</button>
+                    <button onClick={() => nav(`/practice/${task?.topic_id || ""}?level=${practiceDifficulty}`)} disabled={!task?.topic_id}>Luyện tập</button>
                     <button onClick={() => nav(`/assessments/${task?.quiz_id || ""}`)} disabled={!task?.quiz_id}>Làm quiz</button>
                   </div>
                 </div>
