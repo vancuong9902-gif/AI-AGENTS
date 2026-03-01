@@ -1,167 +1,109 @@
-import { useState, useEffect, useRef } from "react";
-import { useNavigate, useLocation, useParams } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { apiJson } from "../lib/api";
+import { useAuth } from "../context/AuthContext";
 
 export default function FinalExam() {
   const navigate = useNavigate();
-  const location = useLocation();
-  const params = useParams();
+  const { userId } = useAuth();
 
-  const quizIdFromState = location.state?.quizId;
-  const quizIdFromQuery = new URLSearchParams(location.search).get("quizId");
-  const quizId = quizIdFromState || quizIdFromQuery;
-  const studentId = location.state?.studentId || JSON.parse(localStorage.getItem("user") || "{}").id || localStorage.getItem("user_id") || 1;
-  const classroomId = params.classroomId;
-
-  const [questions, setQuestions] = useState([]);
-  const [answers, setAnswers] = useState({});
-  const [timeLeft, setTimeLeft] = useState(null);
-  const [attemptId, setAttemptId] = useState(null);
-  const [submitted, setSubmitted] = useState(false);
-  const [result, setResult] = useState(null);
+  const classroomId = Number(localStorage.getItem("active_classroom_id") || 0);
+  const [assessments, setAssessments] = useState([]);
+  const [progress, setProgress] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const timerRef = useRef(null);
-  const autoSubmittedRef = useRef(false);
 
-  useEffect(() => {
-    (async () => {
-      setLoading(true);
-      setError("");
-      try {
-        let targetQuizId = quizId;
-        if (!targetQuizId && classroomId) {
-          const uid = Number(studentId || 1);
-          const gen = await apiJson(`/v1/lms/final-exam/generate?classroomId=${classroomId}&userId=${uid}`, { method: "POST" });
-          const status = await apiJson(`/v1/lms/final-exam/status?jobId=${gen.jobId}`);
-          targetQuizId = status?.result?.quiz_id;
-        }
-        if (!targetQuizId) throw new Error("Thiếu quizId cho bài thi cuối kỳ.");
+  const latestFinal = useMemo(() => {
+    return [...assessments]
+      .filter((a) => String(a?.kind || "").toLowerCase() === "diagnostic_post")
+      .sort((a, b) => new Date(b?.created_at || 0).getTime() - new Date(a?.created_at || 0).getTime())[0];
+  }, [assessments]);
 
-        const started = await apiJson("/attempts/start", {
-          method: "POST",
-          body: { quiz_id: parseInt(targetQuizId, 10), student_id: parseInt(studentId, 10) },
-        });
-        setAttemptId(started.attempt_id);
-
-        const data = await apiJson(`/assessments/${targetQuizId}`);
-        setQuestions(data.questions || []);
-        setTimeLeft(data.duration_seconds || 3600);
-      } catch (e) {
-        setError(e?.message || "Không tải được đề thi cuối kỳ.");
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, [quizId, classroomId, studentId]);
-
-  useEffect(() => {
-    if (timeLeft === null || submitted) return;
-    if (timeLeft <= 0) {
-      if (!autoSubmittedRef.current) {
-        autoSubmittedRef.current = true;
-        handleSubmit(true);
-      }
-      return;
-    }
-    timerRef.current = setTimeout(() => setTimeLeft((t) => t - 1), 1000);
-    return () => clearTimeout(timerRef.current);
-  }, [timeLeft, submitted]);
-
-  const handleSubmit = async (autoSubmit = false) => {
-    if (submitted || !attemptId) return;
-    setSubmitted(true);
-    const answersArr = Object.entries(answers).map(([qid, choice]) => ({
-      question_id: parseInt(qid, 10),
-      selected: choice,
-    }));
+  const load = async () => {
+    setLoading(true);
+    setError("");
     try {
-      const data = await apiJson(`/attempts/${attemptId}/submit`, {
-        method: "POST",
-        body: { answers: answersArr },
-      });
-      setResult({ ...data, autoSubmit });
+      if (!classroomId) {
+        setAssessments([]);
+        setProgress(null);
+        return;
+      }
+      const [assessmentRows, progressRow] = await Promise.all([
+        apiJson(`/assessments?classroom_id=${classroomId}`),
+        apiJson(`/lms/student/${Number(userId || 0)}/progress?classroom_id=${classroomId}`),
+      ]);
+      setAssessments(Array.isArray(assessmentRows) ? assessmentRows : []);
+      setProgress(progressRow || null);
     } catch (e) {
-      alert("Lỗi nộp bài: " + (e?.message || "Unknown error"));
-      setSubmitted(false);
+      setError(e?.message || "Không tải được thông tin cuối kỳ.");
+    } finally {
+      setLoading(false);
     }
   };
 
-  const formatTime = (sec) => {
-    const m = Math.floor(sec / 60)
-      .toString()
-      .padStart(2, "0");
-    const s = (sec % 60).toString().padStart(2, "0");
-    return `${m}:${s}`;
-  };
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [classroomId, userId]);
 
-  if (loading) return <div className="p-8 text-center">Đang tải đề thi cuối kỳ...</div>;
-  if (error) return <div className="p-8 text-center text-red-600">{error}</div>;
-
-  if (result) {
-    return (
-      <div className="max-w-2xl mx-auto p-8">
-        <h1 className="text-2xl font-bold text-green-700 mb-4">🎓 Kết Quả Bài Thi Cuối Kỳ</h1>
-        {result.autoSubmit && <div className="bg-yellow-100 border border-yellow-400 p-3 rounded mb-4">⚠️ Bài thi đã được tự động nộp khi hết giờ.</div>}
-        {result.is_late_submission && <div className="bg-red-100 border border-red-400 p-3 rounded mb-4">🚨 {result.notes}</div>}
-        <div className="bg-white shadow rounded p-6 mb-4">
-          <p className="text-4xl font-bold text-center text-blue-700 mb-2">{Number(result.score_breakdown?.overall?.percent || 0).toFixed(1)}%</p>
-          <p className="text-center text-gray-600">
-            Xếp loại: <strong className="capitalize">{String(result.classification?.level_label || result.classification?.level_key || "").replace("_", " ")}</strong>
-          </p>
-          <p className="text-center text-gray-500 text-sm mt-1">Thời gian làm bài: {Math.round(Number(result.time_spent_seconds || 0) / 60)} phút</p>
-        </div>
-        <button onClick={() => navigate("/classrooms")} className="w-full bg-blue-600 text-white py-3 rounded font-semibold hover:bg-blue-700">
-          Về Trang Lớp Học
-        </button>
-      </div>
-    );
-  }
+  const delta = Number(progress?.delta ?? 0);
 
   return (
-    <div className="max-w-3xl mx-auto p-6">
-      <div className="flex justify-between items-center mb-6 bg-red-50 p-4 rounded-lg border border-red-200">
-        <h1 className="text-xl font-bold text-red-800">🏁 Bài Kiểm Tra Cuối Kỳ</h1>
-        <div className={`text-2xl font-mono font-bold ${timeLeft <= 300 ? "text-red-600 animate-pulse" : "text-gray-700"}`}>
-          ⏱ {timeLeft !== null ? formatTime(timeLeft) : "--:--"}
-        </div>
+    <div style={{ maxWidth: 980, margin: "0 auto", padding: 16 }}>
+      <div style={{ background: "linear-gradient(120deg, #312e81 0%, #2563eb 100%)", color: "white", borderRadius: 16, padding: 20, boxShadow: "0 12px 28px rgba(37,99,235,0.35)" }}>
+        <div style={{ fontSize: 28, fontWeight: 900, letterSpacing: 0.3 }}>🎓 BÀI KIỂM TRA CUỐI KỲ</div>
+        <div style={{ opacity: 0.9, marginTop: 6 }}>Đây là bài đánh giá cuối kỳ, khác với bài kiểm tra đầu vào (diagnostic_pre).</div>
       </div>
 
-      <div className="mb-4 text-sm text-gray-500">Đã trả lời: {Object.keys(answers).length}/{questions.length} câu</div>
-
-      {questions.map((q, idx) => (
-        <div key={q.id || q.question_id || idx} className="bg-white shadow rounded-lg p-5 mb-4 border-l-4 border-blue-400">
-          <p className="font-medium mb-1 text-xs text-blue-500 uppercase">Câu {idx + 1}</p>
-          <p className="font-semibold mb-3">{q.stem}</p>
-          <div className="space-y-2">
-            {(q.choices || q.options || []).map((choice, ci) => (
-              <label key={ci} className={`flex items-center p-3 rounded cursor-pointer border transition ${answers[q.id || q.question_id] === choice ? "bg-blue-100 border-blue-400" : "bg-gray-50 border-gray-200 hover:bg-gray-100"}`}>
-                <input
-                  type="radio"
-                  name={`q-${q.id || q.question_id}`}
-                  value={choice}
-                  checked={answers[q.id || q.question_id] === choice}
-                  onChange={() => setAnswers((a) => ({ ...a, [q.id || q.question_id]: choice }))}
-                  className="mr-3"
-                />
-                {choice}
-              </label>
-            ))}
-          </div>
+      {!classroomId && (
+        <div style={{ marginTop: 12, padding: 12, borderRadius: 12, border: "1px solid #fecaca", background: "#fff1f2", color: "#9f1239" }}>
+          Chưa có lớp học đang hoạt động. Hãy vào danh sách lớp và chọn lớp trước khi làm bài cuối kỳ.
         </div>
-      ))}
+      )}
 
-      <button
-        onClick={() => {
-          if (window.confirm(`Bạn đã trả lời ${Object.keys(answers).length}/${questions.length} câu. Xác nhận nộp bài?`)) {
-            handleSubmit();
-          }
-        }}
-        disabled={submitted}
-        className="w-full bg-red-600 text-white py-4 rounded-lg font-bold text-lg hover:bg-red-700 disabled:opacity-50 mt-4"
-      >
-        📤 Nộp Bài Thi Cuối Kỳ
-      </button>
+      {error ? <div style={{ marginTop: 12, color: "#b42318" }}>{error}</div> : null}
+      {loading ? <div style={{ marginTop: 12, color: "#6b7280" }}>Đang tải dữ liệu cuối kỳ…</div> : null}
+
+      {!loading && (
+        <>
+          <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
+            <div style={{ background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 12, padding: 12 }}>
+              <div style={{ color: "#4338ca", fontSize: 12 }}>Điểm đầu vào</div>
+              <div style={{ fontSize: 26, fontWeight: 800 }}>{progress?.pre_score != null ? `${Number(progress.pre_score).toFixed(1)}%` : "--"}</div>
+            </div>
+            <div style={{ background: "#eff6ff", border: "1px solid #93c5fd", borderRadius: 12, padding: 12 }}>
+              <div style={{ color: "#1d4ed8", fontSize: 12 }}>Điểm cuối kỳ</div>
+              <div style={{ fontSize: 26, fontWeight: 800 }}>{progress?.post_score != null ? `${Number(progress.post_score).toFixed(1)}%` : "--"}</div>
+            </div>
+            <div style={{ background: "#f5f3ff", border: "1px solid #c4b5fd", borderRadius: 12, padding: 12 }}>
+              <div style={{ color: "#6d28d9", fontSize: 12 }}>Chênh lệch</div>
+              <div style={{ fontSize: 26, fontWeight: 800, color: delta >= 0 ? "#166534" : "#b91c1c" }}>
+                {progress?.delta != null ? `${delta >= 0 ? "+" : ""}${delta.toFixed(1)}%` : "--"}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 12, background: "white", border: "1px solid #e5e7eb", borderRadius: 12, padding: 16 }}>
+            <div style={{ fontWeight: 800, marginBottom: 4 }}>Bài cuối kỳ hiện tại</div>
+            {latestFinal ? (
+              <>
+                <div>{latestFinal.title}</div>
+                <div style={{ color: "#6b7280", fontSize: 14, marginTop: 4 }}>
+                  Tạo lúc: {latestFinal.created_at || "--"} • Cấp độ: {latestFinal.level || "--"}
+                </div>
+                <button
+                  style={{ marginTop: 12, padding: "10px 14px", borderRadius: 10, border: "none", background: "#4f46e5", color: "white", fontWeight: 700 }}
+                  onClick={() => navigate(`/assessments/${latestFinal.assessment_id}?mode=final`, { state: { examMode: "final" } })}
+                >
+                  Bắt đầu thi
+                </button>
+              </>
+            ) : (
+              <div style={{ color: "#6b7280" }}>Chưa có bài cuối kỳ (diagnostic_post) cho lớp này.</div>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }

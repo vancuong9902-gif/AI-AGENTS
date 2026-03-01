@@ -1,29 +1,34 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams, Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { apiJson } from "../lib/api";
 import { useAuth } from "../context/AuthContext";
 
+const kindLabelMap = {
+  diagnostic_pre: "Đầu vào",
+  midterm: "Bài tổng hợp",
+  diagnostic_post: "Cuối kỳ",
+};
+
+function fmtTime(sec) {
+  if (sec == null) return "--:--";
+  const total = Math.max(0, Number(sec) || 0);
+  const mm = String(Math.floor(total / 60)).padStart(2, "0");
+  const ss = String(total % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
+}
+
 export default function AssessmentTake() {
-  const { id, quizSetId } = useParams();
-  const assessmentId = Number(quizSetId || id);
-  const { userId } = useAuth();
+  const { id } = useParams();
+  const location = useLocation();
   const navigate = useNavigate();
+  const { userId } = useAuth();
+  const assessmentId = Number(id);
 
   const [data, setData] = useState(null);
-  const [answers, setAnswers] = useState({});
-  const [deadlineAt, setDeadlineAt] = useState(null);
-  const [timeLeftSec, setTimeLeftSec] = useState(null);
-  const [attemptLocked, setAttemptLocked] = useState(false);
   const [attemptId, setAttemptId] = useState(null);
-  const [serverOffsetMs, setServerOffsetMs] = useState(0);
-  const [timedOutBanner, setTimedOutBanner] = useState(false);
-  const [attemptLocked, setAttemptLocked] = useState(false);
-  const [result, setResult] = useState(null);
-  const [aiRecommendations, setAiRecommendations] = useState([]);
-  const [recLoading, setRecLoading] = useState(false);
-  const [recError, setRecError] = useState("");
+  const [answers, setAnswers] = useState({});
+  const [timeLeftSec, setTimeLeftSec] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [pathAssigned, setPathAssigned] = useState(false);
   const [explanationsByQuestion, setExplanationsByQuestion] = useState({});
@@ -88,102 +93,37 @@ export default function AssessmentTake() {
     }
     return { color: "#722ed1", bg: "#f9f0ff", border: "#d3adf7" };
   };
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState(null);
+  const [progress, setProgress] = useState(null);
+  const [toasts, setToasts] = useState([]);
 
+  const warnedRef = useRef({ five: false, one: false });
+  const autoSubmitRef = useRef(false);
 
-  const diagnosticLevelTheme = (levelValue) => {
-    const raw = String(levelValue || "").toLowerCase();
-    if (["yeu", "yếu", "beginner"].some((x) => raw.includes(x))) {
-      return { label: "Yếu", color: "#cf1322", bg: "#fff1f0", border: "#ffccc7" };
-    }
-    if (["trung", "tb", "intermediate"].some((x) => raw.includes(x))) {
-      return { label: "Trung bình", color: "#ad6800", bg: "#fffbe6", border: "#ffe58f" };
-    }
-    if (["kha", "khá"].some((x) => raw.includes(x))) {
-      return { label: "Khá", color: "#096dd9", bg: "#e6f4ff", border: "#91caff" };
-    }
-    if (["gioi", "giỏi", "advanced"].some((x) => raw.includes(x))) {
-      return { label: "Giỏi", color: "#531dab", bg: "#f9f0ff", border: "#d3adf7" };
-    }
-    return { label: String(levelValue || "Chưa rõ"), color: "#595959", bg: "#fafafa", border: "#d9d9d9" };
+  const examMode = location.state?.examMode || new URLSearchParams(location.search).get("mode");
+  const classroomId = Number(localStorage.getItem("active_classroom_id") || 0);
+
+  const questions = data?.questions || [];
+  const answeredCount = useMemo(() => Object.keys(answers).length, [answers]);
+  const isFinalExam = String(data?.kind || "").toLowerCase() === "diagnostic_post";
+
+  const pushToast = (message) => {
+    const id = `${Date.now()}-${Math.random()}`;
+    setToasts((prev) => [...prev, { id, message }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 3000);
   };
 
-  const formatDuration = (sec) => {
-    const s = Math.max(0, Math.floor(Number(sec || 0)));
-    const hh = Math.floor(s / 3600);
-    const mm = Math.floor((s % 3600) / 60);
-    const ss = s % 60;
-    if (hh > 0) return `${hh}h ${String(mm).padStart(2, "0")}m ${String(ss).padStart(2, "0")}s`;
-    return `${mm}m ${String(ss).padStart(2, "0")}s`;
-  };
-
-  useEffect(() => {
-    if (result?.synced_diagnostic?.stage === "pre" && result?.synced_diagnostic?.plan_id) {
-      diagnosticBannerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  const loadProgress = async () => {
+    if (!classroomId || !userId) return;
+    try {
+      const row = await apiJson(`/lms/student/${Number(userId)}/progress?classroom_id=${classroomId}`);
+      setProgress(row || null);
+    } catch {
+      // optional panel only
     }
-  }, [result]);
-
-  const difficultyStats = useMemo(() => {
-    const buckets = {
-      easy: { total: 0, correct: 0 },
-      medium: { total: 0, correct: 0 },
-      hard: { total: 0, correct: 0 },
-    };
-    for (const item of result?.answer_review || []) {
-      const key = String(item?.difficulty || "medium").toLowerCase();
-      if (!buckets[key]) continue;
-      buckets[key].total += 1;
-      if (item?.is_correct) buckets[key].correct += 1;
-    }
-    return buckets;
-  }, [result]);
-
-  useEffect(() => {
-    if (result?.synced_diagnostic?.stage === "pre" && result?.synced_diagnostic?.plan_id) {
-      learningPathBannerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-  }, [result]);
-
-  const groupedQuestions = useMemo(() => {
-    const questions = data?.questions || [];
-
-    const classifyByPoints = (q) => {
-      const points = Number(q?.max_points || 0);
-      if (points <= 2) return "easy";
-      if (points <= 5) return "medium";
-      return "hard";
-    };
-
-    const classify = (q) => {
-      const bloom = String(q?.bloom_level || "").toLowerCase();
-
-      if (["remember", "understand"].includes(bloom)) return "easy";
-      if (["apply", "analyze"].includes(bloom)) return "medium";
-      if (["evaluate", "create"].includes(bloom) || q?.type === "essay") return "hard";
-
-      return classifyByPoints(q);
-    };
-
-    const easy = [];
-    const medium = [];
-    const hard = [];
-
-    for (const q of questions) {
-      const bucket = classify(q);
-      if (bucket === "easy") easy.push(q);
-      else if (bucket === "medium") medium.push(q);
-      else hard.push(q);
-    }
-
-    return { easy, medium, hard };
-  }, [data]);
-
-
-  const detectDifficulty = (q) => {
-    const bloom = String(q?.bloom_level || "").toLowerCase();
-    if (["remember", "understand"].includes(bloom)) return "Easy";
-    if (["apply", "analyze"].includes(bloom)) return "Medium";
-    if (["evaluate", "create"].includes(bloom) || q?.type === "essay") return "Hard";
-    return "Medium";
   };
 
   const weakestTopic = useMemo(() => {
@@ -266,434 +206,119 @@ export default function AssessmentTake() {
   }, [assessmentId, result]);
 
   const load = async () => {
+    if (!Number.isFinite(assessmentId)) return;
     setLoading(true);
     setError("");
     setResult(null);
-    setAiRecommendations([]);
-    setRecError("");
-    setRecLoading(false);
-    setPathAssigned(false);
-    autoSubmittedRef.current = false;
+    warnedRef.current = { five: false, one: false };
+    autoSubmitRef.current = false;
+
     try {
-      const d = await apiJson(`/assessments/${assessmentId}`, { method: "GET" });
-      setData(d);
-      setAnswers({});
-      setAttemptId(null);
-      setAttemptLocked(false);
-      setTimedOutBanner(false);
-      setAttemptLocked(false);
-      warningShownRef.current = { five: false, one: false };
-
-      const session = await apiJson(`/attempts/start`, {
+      const assessment = await apiJson(`/assessments/${assessmentId}`);
+      setData(assessment || null);
+      const started = await apiJson("/attempts/start", {
         method: "POST",
-        body: { quiz_id: Number(d?.assessment_id || assessmentId), student_id: Number(userId ?? 0) },
+        body: { quiz_id: Number(assessment?.assessment_id || assessmentId), student_id: Number(userId || 0) },
       });
-      setAttemptId(Number(session?.attempt_id || 0) || null);
-
-      const currentAttemptId = Number(session?.attempt_id || 0) || null;
-      setAttemptId(currentAttemptId);
-
-      const startedAttemptId = Number(session?.attempt_id || 0) || null;
-      if (startedAttemptId) {
-        try {
-          const timer = await apiJson(`/attempts/${startedAttemptId}/timer-status`, { method: "GET" });
-          setTimeLeftSec(Number(timer?.remaining_seconds ?? timer?.time_left_seconds ?? 0));
-          setAttemptLocked(Boolean(timer?.locked));
-          setDeadlineAt(null);
-        } catch {
-          const secs = Number(session?.duration_seconds || session?.time_limit_seconds || 0);
-          setDeadlineAt(null);
-          setTimeLeftSec(Number.isFinite(secs) && secs > 0 ? secs : null);
-        }
-      const serverNowMs = Date.parse(session?.server_time || "");
-      const offsetMs = Number.isFinite(serverNowMs) && serverNowMs > 0 ? serverNowMs - Date.now() : 0;
-      setServerOffsetMs(offsetMs);
-
-      const deadlineMs = Date.parse(session?.deadline_utc || "");
-      if (Number.isFinite(deadlineMs) && deadlineMs > 0) {
-        setDeadlineAt(deadlineMs);
-        setTimeLeftSec(Math.max(0, Math.floor((deadlineMs - (Date.now() + offsetMs)) / 1000)));
-      } else {
-        setDeadlineAt(null);
-        const secs = Number(session?.duration_seconds || 0);
-
-        const secs = Number(session?.remaining_seconds ?? session?.duration_seconds || 0);
-        setTimeLeftSec(Number.isFinite(secs) && secs > 0 ? secs : null);
+      setAttemptId(Number(started?.attempt_id || 0) || null);
+      const initialSec = Number(started?.remaining_seconds || assessment?.duration_seconds || 0);
+      setTimeLeftSec(Number.isFinite(initialSec) && initialSec > 0 ? initialSec : null);
+      if (String(assessment?.kind || "").toLowerCase() === "diagnostic_post") {
+        loadProgress();
       }
     } catch (e) {
-      setError(e?.message || "Không load được bài tổng hợp");
+      setError(e?.message || "Không tải được bài kiểm tra.");
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    if (Number.isFinite(assessmentId)) load();
+    load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assessmentId]);
 
-  // Server-synced countdown timer tick
   useEffect(() => {
-    if (timeLeftSec == null) return;
-    if (result) return;
-    if (submitting) return;
-    if (attemptLocked) return;
     if (timeLeftSec == null || result || submitting) return;
-
     const t = setInterval(() => {
-      if (deadlineAt) {
-        setTimeLeftSec(Math.max(0, Math.floor((deadlineAt - (Date.now() + serverOffsetMs)) / 1000)));
-        return;
-      }
-      setTimeLeftSec((prev) => {
-        if (prev == null) return prev;
-        return Math.max(0, prev - 1);
-      });
+      setTimeLeftSec((prev) => (prev == null ? prev : Math.max(0, prev - 1)));
     }, 1000);
-
     return () => clearInterval(t);
-  }, [timeLeftSec == null, result, submitting, deadlineAt, attemptLocked]);
-  }, [timeLeftSec == null, result, submitting]);
-  }, [timeLeftSec == null, result, submitting, deadlineAt, serverOffsetMs]);
-
-
-  useEffect(() => {
-    if (!attemptId || result || submitting) return;
-
-    const poll = async () => {
-      try {
-        const status = await apiJson(`/attempts/${attemptId}/status`, { method: "GET" });
-        const serverNowMs = Date.parse(status?.server_time || "");
-        const offsetMs = Number.isFinite(serverNowMs) && serverNowMs > 0 ? serverNowMs - Date.now() : serverOffsetMs;
-        setServerOffsetMs(offsetMs);
-
-        const deadlineMs = Date.parse(status?.deadline || "");
-        if (Number.isFinite(deadlineMs) && deadlineMs > 0) {
-          setDeadlineAt(deadlineMs);
-          setTimeLeftSec(Math.max(0, Math.floor((deadlineMs - (Date.now() + offsetMs)) / 1000)));
-        } else {
-          const remaining = Number(status?.remaining_seconds);
-          if (Number.isFinite(remaining)) {
-            setTimeLeftSec(Math.max(0, Math.floor(remaining)));
-          }
-        }
-      } catch {
-        // keep local countdown when status endpoint is temporarily unavailable.
-      }
-    };
-
-    poll();
-    const t = setInterval(poll, 15000);
-    return () => clearInterval(t);
-  }, [attemptId, result, submitting, serverOffsetMs]);
-
-  useEffect(() => {
-    if (timeLeftSec == null || result || submitting) return;
-    if (timeLeftSec <= 300 && !warningShownRef.current.five) {
-      warningShownRef.current.five = true;
-      setError("Cảnh báo: còn 5 phút để hoàn thành bài.");
-      return;
-    }
-    if (timeLeftSec <= 60 && !warningShownRef.current.one) {
-      warningShownRef.current.one = true;
-      setError("Cảnh báo: chỉ còn 1 phút! Hãy kiểm tra và nộp bài.");
-    }
   }, [timeLeftSec, result, submitting]);
 
-  // Heartbeat every 30s: autosave + lock sync from server truth.
   useEffect(() => {
-    if (timeLeftSec !== 0 && !attemptLocked) return;
-    if (result) return;
-    if (submitting) return;
-    if (autoSubmittedRef.current) return;
-    autoSubmittedRef.current = true;
-    submit(true);
+    if (timeLeftSec == null || result || submitting) return;
+    if (timeLeftSec <= 300 && !warnedRef.current.five) {
+      warnedRef.current.five = true;
+      pushToast("Còn 5 phút");
+    }
+    if (timeLeftSec <= 60 && !warnedRef.current.one) {
+      warnedRef.current.one = true;
+      pushToast("Còn 1 phút");
+    }
+    if (timeLeftSec <= 0 && !autoSubmitRef.current) {
+      autoSubmitRef.current = true;
+      submit(true);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timeLeftSec, result, submitting]);
-    if (!attemptId || result || submitting || !data?.questions?.length) return;
-
-    const buildAnswers = () =>
-      (data.questions || []).map((q) => ({
-        question_id: q.question_id,
-        answer_index: answers[q.question_id]?.answer_index ?? null,
-        answer_text: answers[q.question_id]?.answer_text ?? null,
-      }));
-
-    const sendHeartbeat = async () => {
-      try {
-        const hb = await apiJson(`/attempts/${attemptId}/heartbeat`, {
-          method: "POST",
-          body: { answers: buildAnswers() },
-        });
-
-        if (Number.isFinite(Number(hb?.time_left_seconds))) {
-          setTimeLeftSec(Math.max(0, Number(hb.time_left_seconds)));
-        }
-
-        if (hb?.locked) {
-          setAttemptLocked(true);
-          if (!autoSubmittedRef.current) {
-            autoSubmittedRef.current = true;
-            setTimedOutBanner(true);
-            setError("Hết giờ, hệ thống đã khóa bài và đang tự nộp.");
-            submit(true);
-          }
-        }
-      } catch {
-        // keep UI timer; heartbeat sẽ thử lại ở lần sau
-      }
-    };
-
-    sendHeartbeat();
-    const hbTimer = setInterval(sendHeartbeat, 30000);
-    return () => clearInterval(hbTimer);
-  }, [attemptId, answers, data?.questions, result, submitting]);
-
-  const setMcq = (qid, idx) => {
-    setAnswers((prev) => ({ ...prev, [qid]: { ...(prev[qid] || {}), answer_index: idx } }));
-  };
-
-  const setEssay = (qid, txt) => {
-    setAnswers((prev) => ({ ...prev, [qid]: { ...(prev[qid] || {}), answer_text: txt } }));
-  };
-
-  useEffect(() => {
-    if (!attemptId || result || submitting) return undefined;
-
-    const buildAnswerList = () => (data?.questions || []).map((q) => ({
-      question_id: q.question_id,
-      answer_index: answers[q.question_id]?.answer_index ?? null,
-      answer_text: answers[q.question_id]?.answer_text ?? null,
-    }));
-
-    const tick = async () => {
-      try {
-        const hb = await apiJson(`/attempts/${attemptId}/heartbeat`, {
-          method: "POST",
-          body: { answers: buildAnswerList() },
-        });
-        const nextLeft = Number(hb?.time_left_seconds ?? 0);
-        if (Number.isFinite(nextLeft)) setTimeLeftSec(nextLeft);
-        setAttemptLocked(Boolean(hb?.locked));
-      } catch {
-        // keep local countdown as fallback
-      }
-    };
-
-    tick();
-    const id = setInterval(tick, 30000);
-    return () => clearInterval(id);
-  }, [attemptId, result, submitting, data, answers]);
-
 
   const submit = async (auto = false) => {
-    if (!data?.assessment_id) return;
+    if (!attemptId || !data) return;
     setSubmitting(true);
     setError("");
-
     try {
-      const answerList = (data.questions || []).map((q) => ({
+      const answerList = questions.map((q) => ({
         question_id: q.question_id,
         answer_index: answers[q.question_id]?.answer_index ?? null,
         answer_text: answers[q.question_id]?.answer_text ?? null,
       }));
-
-      let r = null;
-      if (attemptId) {
-        r = await apiJson(`/attempts/${attemptId}/submit`, {
-          method: "POST",
-          body: { answers: answerList, force: Boolean(auto) },
-        });
-      } else {
-        r = await apiJson(`/assessments/quiz-sets/${data.assessment_id}/submit`, {
-          method: "POST",
-          body: {
-            user_id: Number(userId ?? 1),
-            answers: answerList,
-          },
-        });
-      if (!attemptId) {
-        throw new Error("Không tìm thấy attempt để nộp bài.");
-
-        throw new Error("Không tìm thấy attempt hợp lệ. Vui lòng tải lại bài làm.");
-      }
       const r = await apiJson(`/attempts/${attemptId}/submit`, {
         method: "POST",
-        body: { answers: answerList },
+        body: { answers: answerList, force: Boolean(auto) },
       });
-
-      const r = await apiJson(`/attempts/${attemptId}/submit`, {
-        method: "POST",
-        body: { answers: answerList },
-      });
-
       setResult(r);
-      setTimedOutBanner(Boolean(auto || r?.timed_out || r?.locked));
-      setAttemptLocked(Boolean(r?.locked));
-
-      const attemptId = r?.attempt_id || r?.attemptId || r?.assessment_attempt_id;
-      if (attemptId) {
-        setRecLoading(true);
-        setRecError("");
-        try {
-          const rec = await apiJson(`/v1/assessments/${attemptId}/recommendations`, { method: "GET" });
-          setAiRecommendations(rec || []);
-        } catch (recErr) {
-          setRecError(recErr?.message || "Không tải được AI recommendation");
-          setAiRecommendations([]);
-        } finally {
-          setRecLoading(false);
-        }
-      }
-
-      const isEntryTest = String(r?.assessment_kind || data?.kind || "").toLowerCase() === "diagnostic_pre";
-      if (isEntryTest) {
-        setPathAssigned(Boolean(r?.learning_plan_created));
-      }
-
-      if (auto || r?.timed_out) {
-        setError("Hết giờ, hệ thống đã tự nộp");
+      if (String(data?.kind || "").toLowerCase() === "diagnostic_post") {
+        loadProgress();
       }
     } catch (e) {
-      setError(e?.message || "Submit thất bại");
-    } finally {
+      setError(e?.message || "Nộp bài thất bại.");
       setSubmitting(false);
+      return;
     }
+    setSubmitting(false);
   };
 
-  const renderSources = (srcs) => {
-    if (!Array.isArray(srcs) || srcs.length === 0) return null;
-    return (
-      <div style={{ marginTop: 8, fontSize: 13, color: "#555" }}>
-        <div style={{ fontWeight: 700, marginBottom: 4 }}>Nguồn tham khảo</div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-          {srcs.slice(0, 8).map((s, i) => (
-            <span
-              key={i}
-              style={{
-                border: "1px solid #eee",
-                background: "#fafafa",
-                borderRadius: 999,
-                padding: "4px 10px",
-              }}
-            >
-              chunk #{s?.chunk_id ?? "?"}
-            </span>
-          ))}
-        </div>
-      </div>
-    );
-  };
-
-  const sectionMeta = {
-    easy: {
-      id: "section-easy",
-      className: "easy",
-      title: "PHẦN I: CÂU HỎI CƠ BẢN",
-      label: "🟢 CƠ BẢN",
-      color: "#52c41a",
-      bg: "#f6ffed",
-      questions: groupedQuestions.easy,
-    },
-    medium: {
-      id: "section-medium",
-      className: "medium",
-      title: "PHẦN II: CÂU HỎI VẬN DỤNG",
-      label: "🟡 VẬN DỤNG",
-      color: "#fa8c16",
-      bg: "#fff7e6",
-      questions: groupedQuestions.medium,
-    },
-    hard: {
-      id: "section-hard",
-      className: "hard",
-      title: "PHẦN III: CÂU HỎI NÂNG CAO",
-      label: "🔴 NÂNG CAO",
-      color: "#f5222d",
-      bg: "#fff1f0",
-      questions: groupedQuestions.hard,
-    },
-  };
-
-  const renderQuestionCard = (q, orderNo) => (
-    <div
-      key={q.question_id}
-      style={{ background: "#fff", borderRadius: 12, padding: 12, boxShadow: "0 2px 10px rgba(0,0,0,0.06)" }}
-    >
-      <div style={{ fontWeight: 700, marginBottom: 6 }}>
-        Câu {orderNo} ({q.type === "mcq" ? "Trắc nghiệm" : "Tự luận"}) • {detectDifficulty(q)}
-        {Number(q?.estimated_minutes || 0) > 0 ? (
-          <span style={{ fontWeight: 500, color: "#666" }}> • ~{q.estimated_minutes} phút</span>
-        ) : null}
-      </div>
-      <div style={{ whiteSpace: "pre-wrap" }}>{q.stem}</div>
-
-      {q.type === "mcq" && (
-        <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-          {(q.options || []).map((op, i) => (
-            <label key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-              <input
-                type="radio"
-                name={`q_${q.question_id}`}
-                checked={(answers[q.question_id]?.answer_index ?? null) === i}
-                onChange={() => setMcq(q.question_id, i)}
-                disabled={!!result || attemptLocked}
-              />
-              <span>{op}</span>
-            </label>
-          ))}
-        </div>
-      )}
-
-      {q.type === "essay" && (
-        <div style={{ marginTop: 10 }}>
-          <textarea
-            rows={5}
-            value={answers[q.question_id]?.answer_text ?? ""}
-            onChange={(e) => setEssay(q.question_id, e.target.value)}
-            placeholder="Nhập câu trả lời tự luận..."
-            style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd" }}
-            disabled={!!result || attemptLocked}
-          />
-          <div style={{ color: "#666", marginTop: 6 }}>Thang điểm: {q.max_points || 10} (AI sẽ chấm theo rubric)</div>
-        </div>
-      )}
-    </div>
-  );
-
-  if (loading) {
-    return (
-      <div style={{ maxWidth: 900, margin: "0 auto", padding: 16 }}>
-        <h2>Đang tải…</h2>
-      </div>
-    );
-  }
+  if (loading) return <div style={{ padding: 16 }}>Đang tải bài kiểm tra…</div>;
+  if (error && !data) return <div style={{ padding: 16, color: "#b42318" }}>{error}</div>;
 
   if (result) {
+    const score = Number(result?.total_score_percent ?? result?.score_percent ?? 0);
+    const delta = Number(progress?.delta ?? 0);
+
     return (
       <div style={{ maxWidth: 980, margin: "0 auto", padding: 16 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
-          <Link to="/assessments" style={{ textDecoration: "none" }}>
-            <button style={{ padding: "8px 12px" }}>⬅ Danh sách</button>
-          </Link>
-          <button onClick={load} style={{ padding: "8px 12px" }}>Làm lại</button>
-        </div>
+        <h2>Kết quả bài kiểm tra</h2>
         <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 16 }}>
-          <h3 style={{ marginTop: 0 }}>Kết quả</h3>
-          <div>Điểm: <b>{Math.round(Number(result?.total_score_percent ?? result?.score_percent ?? 0))}/100</b></div>
-          <div>Đúng: {Number(result?.correct_count ?? 0)} / {Number(result?.total_questions ?? data?.questions?.length || 0)}</div>
-          {Number(result?.time_spent_seconds || 0) > 0 && (
-            <div>Thời gian làm bài: {fmtTime(Number(result?.time_spent_seconds || 0))}</div>
-          )}
-          {Number(result?.duration_seconds || 0) > 0 && (
-            <div>Giới hạn thời gian: {fmtTime(Number(result?.duration_seconds || 0))}</div>
-          )}
+          <div>Điểm: <b>{Math.round(score)}/100</b></div>
+          <div>Đúng: {Number(result?.correct_count || 0)} / {Number(result?.total_questions || questions.length)}</div>
+          <div>Thời gian làm bài: {fmtTime(Number(result?.time_spent_seconds || 0))}</div>
         </div>
-        {pathAssigned && (
-          <div style={{ marginTop: 12, padding: 10, borderRadius: 10, background: "#fffbe6", border: "1px solid #ffe58f" }}>
-            🎯 Dựa trên kết quả, hệ thống đã tạo lộ trình học tập phù hợp cho bạn!
+
+        {isFinalExam && (
+          <div style={{ marginTop: 12, background: "#f5f3ff", border: "1px solid #c4b5fd", borderRadius: 12, padding: 16 }}>
+            <h3 style={{ marginTop: 0, color: "#5b21b6" }}>So sánh đầu vào vs cuối kỳ</h3>
+            <div>Đầu vào: <b>{progress?.pre_score != null ? `${Number(progress.pre_score).toFixed(1)}%` : "Chưa có"}</b></div>
+            <div>Cuối kỳ: <b>{progress?.post_score != null ? `${Number(progress.post_score).toFixed(1)}%` : `${score.toFixed(1)}%`}</b></div>
+            <div>Mức cải thiện: <b style={{ color: delta >= 0 ? "#166534" : "#b91c1c" }}>{delta >= 0 ? "+" : ""}{Number.isFinite(delta) ? delta.toFixed(1) : "0.0"}%</b></div>
+            <p style={{ marginBottom: 0, color: "#4338ca" }}>{delta >= 0 ? "Bạn đã tiến bộ rõ rệt sau quá trình học. Tiếp tục phát huy!" : "Kết quả cuối kỳ chưa cao hơn đầu vào. Hãy xem lại phần sai để cải thiện."}</p>
           </div>
         )}
+
+        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+          <Link to="/assessments"><button style={{ padding: "8px 12px" }}>⬅ Danh sách</button></Link>
+          {examMode === "final" ? <button onClick={() => navigate("/final-exam")} style={{ padding: "8px 12px" }}>Về trang Cuối kỳ</button> : null}
+        </div>
       </div>
     );
   }
@@ -702,342 +327,72 @@ export default function AssessmentTake() {
     <div style={{ maxWidth: 980, margin: "0 auto", padding: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
         <div>
-          <h2 style={{ marginBottom: 4 }}>{data?.title || "Bài tổng hợp"}</h2>
+          <h2 style={{ marginBottom: 4 }}>{data?.title || "Bài kiểm tra"}</h2>
           <div style={{ color: "#666" }}>
-            Level: <b>{data?.level}</b> {data?.kind ? <span>• Kind: <b>{data.kind}</b></span> : null}
+            Nhãn: <b>{kindLabelMap[data?.kind] || data?.kind || "Khác"}</b>
           </div>
-          {(String(data?.kind || "").toLowerCase() === "diagnostic_pre" || String(data?.metadata?.type || "").toLowerCase() === "diagnostic") ? (
-            <div style={{ marginTop: 8, display: "inline-block", background: "#e6f4ff", color: "#0958d9", border: "1px solid #91caff", borderRadius: 999, padding: "4px 10px", fontWeight: 800 }}>
+          {String(data?.kind || "").toLowerCase() === "diagnostic_pre" && (
+            <div style={{ marginTop: 8, display: "inline-block", background: "#eff6ff", color: "#1d4ed8", border: "1px solid #93c5fd", borderRadius: 999, padding: "4px 10px", fontWeight: 700 }}>
               ĐÂY LÀ BÀI KIỂM TRA ĐẦU VÀO
             </div>
-          ) : null}
+          )}
+          {isFinalExam && (
+            <div style={{ marginTop: 8, display: "inline-block", background: "#f5f3ff", color: "#6d28d9", border: "1px solid #c4b5fd", borderRadius: 999, padding: "4px 10px", fontWeight: 700 }}>
+              🎓 ĐÂY LÀ BÀI KIỂM TRA CUỐI KỲ
+            </div>
+          )}
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <Link to="/assessments" style={{ textDecoration: "none" }}>
-            <button style={{ padding: "8px 12px" }}>⬅ Danh sách</button>
-          </Link>
-          <button onClick={load} style={{ padding: "8px 12px" }}>
-            Làm lại
-          </button>
-        </div>
+        <div style={{ fontWeight: 800, color: timeLeftSec <= 300 ? "#dc2626" : "#111827" }}>⏱ {fmtTime(timeLeftSec)}</div>
       </div>
 
-      {attemptLocked && !result && (
-        <div style={{ marginTop: 12, background: "#fff1f0", border: "1px solid #ffccc7", padding: 12, borderRadius: 12, color: "#a8071a", fontWeight: 700 }}>
-          Bài làm đã bị khóa do hết thời gian. Hệ thống sẽ tự nộp bài.
-        </div>
-      )}
+      {error ? <div style={{ marginTop: 12, color: "#b42318" }}>{error}</div> : null}
 
-      {timedOutBanner && (
-        <div style={{ marginTop: 12, background: "#fff1f0", border: "1px solid #ffccc7", padding: 12, borderRadius: 12, color: "#a8071a", fontWeight: 700 }}>
-          Hết giờ, hệ thống đã tự nộp
-        </div>
-      )}
+      <div style={{ marginTop: 8, color: "#6b7280" }}>Đã trả lời {answeredCount}/{questions.length} câu</div>
 
-      {timeLimitSec > 0 && (
-        <div
-          style={{
-            marginTop: 12,
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            gap: 12,
-            background: "#fff",
-            border: "1px solid #eee",
-            borderRadius: 14,
-            padding: 12,
-            boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
-          }}
-        >
-          <div>
-            <div style={{ fontWeight: 800, fontSize: 16 }}>⏱ Thời gian còn lại: {fmtTime(timeLeftSec)}</div>
-            <div style={{ color: "#666", fontSize: 13 }}>
-              (Tổng thời gian gợi ý bởi AI: {Math.round(timeLimitSec / 60)} phút)
-            </div>
-          </div>
-          <div style={{ minWidth: 220 }}>
-            <div
-              style={{
-                height: 10,
-                background: "#f0f0f0",
-                borderRadius: 999,
-                overflow: "hidden",
-              }}
-            >
-              <div
-                style={{
-                  height: 10,
-                  width: `${Math.min(100, Math.max(0, (timeLeftSec / timeLimitSec) * 100))}%`,
-                  background: timeLeftSec <= 60 ? "#ff4d4f" : "#52c41a",
-                }}
+      <div style={{ marginTop: 12, display: "grid", gap: 12 }}>
+        {questions.map((q, idx) => (
+          <div key={q.question_id} style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 12 }}>
+            <div style={{ color: "#6b7280", fontSize: 13 }}>Câu {idx + 1}</div>
+            <div style={{ fontWeight: 700 }}>{q.stem}</div>
+
+            {Array.isArray(q.options) && q.options.length > 0 ? (
+              <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                {q.options.map((op, i) => (
+                  <label key={`${q.question_id}-${i}`} style={{ display: "flex", gap: 8, alignItems: "center", border: "1px solid #e5e7eb", borderRadius: 10, padding: 8 }}>
+                    <input
+                      type="radio"
+                      checked={answers[q.question_id]?.answer_index === i}
+                      onChange={() => setAnswers((prev) => ({ ...prev, [q.question_id]: { ...prev[q.question_id], answer_index: i } }))}
+                      disabled={submitting}
+                    />
+                    <span>{op}</span>
+                  </label>
+                ))}
+              </div>
+            ) : (
+              <textarea
+                rows={4}
+                value={answers[q.question_id]?.answer_text || ""}
+                onChange={(e) => setAnswers((prev) => ({ ...prev, [q.question_id]: { ...prev[q.question_id], answer_text: e.target.value } }))}
+                placeholder="Nhập câu trả lời..."
+                style={{ marginTop: 10, width: "100%", border: "1px solid #e5e7eb", borderRadius: 10, padding: 8 }}
               />
-            </div>
-            <div style={{ marginTop: 6, color: "#666", fontSize: 13, textAlign: "right" }}>
-              {answeredCount}/{data?.questions?.length || 0} câu đã chọn
-            </div>
-          </div>
-        </div>
-      )}
-
-      {error && (
-        <div style={{ marginTop: 12, background: "#fff3f3", border: "1px solid #ffd0d0", padding: 12, borderRadius: 12 }}>
-          {error}
-        </div>
-      )}
-
-      {timeLimitSec <= 0 && (
-        <div style={{ marginTop: 12, color: "#666" }}>Đã trả lời: {answeredCount}/{data?.questions?.length || 0}</div>
-      )}
-
-      <div
-        style={{
-          position: "sticky",
-          top: 8,
-          zIndex: 5,
-          marginTop: 12,
-          background: "#fff",
-          border: "1px solid #eee",
-          borderRadius: 10,
-          padding: "8px 12px",
-          display: "flex",
-          flexWrap: "wrap",
-          gap: 12,
-        }}
-      >
-        <a href={`#${sectionMeta.easy.id}`} style={{ color: sectionMeta.easy.color, fontWeight: 700, textDecoration: "none" }}>
-          {sectionMeta.easy.label} ({sectionMeta.easy.questions.length})
-        </a>
-        <a href={`#${sectionMeta.medium.id}`} style={{ color: sectionMeta.medium.color, fontWeight: 700, textDecoration: "none" }}>
-          {sectionMeta.medium.label} ({sectionMeta.medium.questions.length})
-        </a>
-        <a href={`#${sectionMeta.hard.id}`} style={{ color: sectionMeta.hard.color, fontWeight: 700, textDecoration: "none" }}>
-          {sectionMeta.hard.label} ({sectionMeta.hard.questions.length})
-        </a>
-      </div>
-
-      <div style={{ display: "grid", gap: 14, marginTop: 12 }}>
-        {[
-          ["easy", sectionMeta.easy],
-          ["medium", sectionMeta.medium],
-          ["hard", sectionMeta.hard],
-        ].map(([sectionKey, section]) => (
-          <div key={sectionKey} id={section.id}>
-            <div
-              className={`section-header ${section.className}`}
-              style={{
-                background: section.bg,
-                border: `1px solid ${section.color}`,
-                color: section.color,
-                borderRadius: 4,
-                padding: "8px 12px",
-                margin: "16px 0",
-                fontWeight: 800,
-                display: "flex",
-                justifyContent: "space-between",
-                flexWrap: "wrap",
-                gap: 8,
-              }}
-            >
-              <span>{section.title} ({section.questions.length} câu)</span>
-              <span>{section.label}</span>
-            </div>
-
-            <div style={{ display: "grid", gap: 14 }}>
-              {section.questions.map((q) => {
-                const orderNo = (data?.questions || []).findIndex((it) => it.question_id === q.question_id) + 1;
-                return renderQuestionCard(q, orderNo);
-              })}
-            </div>
+            )}
           </div>
         ))}
       </div>
 
-      <div style={{ marginTop: 16, display: "flex", gap: 10, alignItems: "center" }}>
-        <button onClick={() => submit(false)} disabled={submitting || !!result || attemptLocked} style={{ padding: "10px 14px" }}>
-          Nộp bài
+      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+        <Link to="/assessments"><button style={{ padding: "8px 12px" }}>⬅ Danh sách</button></Link>
+        <button onClick={() => submit(false)} disabled={submitting} style={{ padding: "8px 12px", background: "#2563eb", color: "#fff", border: "none", borderRadius: 8 }}>
+          {submitting ? "Đang nộp..." : "Nộp bài"}
         </button>
-        {submitting && <span style={{ color: "#666" }}>Đang nộp…</span>}
       </div>
 
-      {result && (
-        <div style={{ marginTop: 16, display: "grid", gap: 14 }}>
-          <div
-            style={{
-              background: "#fff",
-              border: "1px solid #e5e7eb",
-              padding: 12,
-              borderRadius: 12,
-            }}
-          >
-            <div style={{ fontWeight: 800, fontSize: 16 }}>✅ Nộp bài thành công</div>
-            <div
-              style={{
-                marginTop: 10,
-                background: scoreTheme.bg,
-                border: `1px solid ${scoreTheme.track}`,
-                borderRadius: 12,
-                padding: 12,
-                display: "flex",
-                flexWrap: "wrap",
-                gap: 14,
-                alignItems: "center",
-                justifyContent: "space-between",
-              }}
-            >
-              <div>
-                <div style={{ fontSize: 13, color: "#666" }}>Tổng điểm</div>
-                <div
-                  style={{
-                    marginTop: 2,
-                    fontWeight: 900,
-                    fontSize: 30,
-                    color: scoreTheme.color,
-                  }}
-                >
-                  {resolvedScore}/100 – {levelLabel(resolvedScore)}
-                </div>
-              </div>
-              <div style={{ minWidth: 220, flex: 1 }}>
-                <div style={{ height: 12, borderRadius: 999, background: "#f3f4f6", overflow: "hidden" }}>
-                  <div
-                    style={{
-                      height: 12,
-                      width: `${Math.min(100, Math.max(0, resolvedScore))}%`,
-                      background: scoreTheme.color,
-                    }}
-                  />
-                </div>
-                <div style={{ marginTop: 8, display: "flex", justifyContent: "space-between", fontSize: 13, color: "#555" }}>
-                  <span>Level: <b>{scoreTheme.label}</b></span>
-                  <span>⏱️ {formatDuration(result.duration_sec ?? 0)}</span>
-                </div>
-              </div>
-            </div>
-            <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 10, color: "#333" }}>
-              <span>
-                Trắc nghiệm: <b>{result.mcq_score_percent ?? result.score_percent}%</b>
-              </span>
-              <span>
-                Tự luận: <b>{result.essay_score_percent ?? 0}%</b>
-              </span>
-              <span>
-                Tổng: <b>{result.total_score_percent ?? result.score_percent}%</b>
-              </span>
-              <span style={{ color: "#555" }}>{result.status}</span>
-            </div>
-
-            {result?.student_level ? (
-              <div style={{ marginTop: 8, color: "#0958d9" }}>
-                Phân loại trình độ: <b>{result.student_level}</b>
-              </div>
-            ) : null}
-
-            {pathAssigned && (
-              <div style={{ marginTop: 10, padding: 10, borderRadius: 10, background: "#fffbe6", border: "1px solid #ffe58f" }}>
-                🎯 Dựa trên kết quả, hệ thống đã tạo lộ trình học tập phù hợp cho bạn!
-              </div>
-            )}
-
-            {result?.synced_diagnostic?.stage === "pre" && (
-              <div
-                ref={diagnosticBannerRef}
-                ref={learningPathBannerRef}
-                style={{
-                  marginTop: 10,
-                  background: "#fff",
-                  border: "1px solid #b7eb8f",
-                  borderRadius: 12,
-                  padding: 12,
-                }}
-              >
-                <div style={{ fontWeight: 800 }}>🎯 Placement test đã cập nhật trình độ</div>
-                <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <span style={{ color: "#333" }}>Level:</span>
-                <div style={{ marginTop: 6, color: "#333", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <span>Level mới:</span>
-                  <span
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      padding: "2px 10px",
-                      borderRadius: 999,
-                      fontSize: 12,
-                      fontWeight: 700,
-                      color: diagnosticLevelTheme(result?.synced_diagnostic?.level).color,
-                      background: diagnosticLevelTheme(result?.synced_diagnostic?.level).bg,
-                      border: `1px solid ${diagnosticLevelTheme(result?.synced_diagnostic?.level).border}`,
-                    }}
-                  >
-                    {diagnosticLevelTheme(result?.synced_diagnostic?.level).label}
-                      fontWeight: 700,
-                      fontSize: 13,
-                      border: `1px solid ${levelBadgeTheme(result.synced_diagnostic.level).border}`,
-                      color: levelBadgeTheme(result.synced_diagnostic.level).color,
-                      background: levelBadgeTheme(result.synced_diagnostic.level).bg,
-                    }}
-                  >
-                    {result.synced_diagnostic.level || "Chưa xác định"}
-                  </span>
-                </div>
-                {result.synced_diagnostic.teacher_topic ? (
-                  <div style={{ marginTop: 4, color: "#666" }}>
-                    Chủ đề: <b>{result.synced_diagnostic.teacher_topic}</b>
-                  </div>
-                ) : null}
-                {result.synced_diagnostic.plan_id ? (
-                  <div style={{ marginTop: 8 }}>
-                    <div style={{ fontWeight: 700, color: "#237804" }}>✅ AI đã tạo lộ trình 7 ngày phù hợp với bạn</div>
-                    <div style={{ marginTop: 8 }}>
-                      <button style={{ padding: "8px 12px", cursor: "pointer" }} onClick={() => navigate("/learning-path")}>
-                    <div style={{ fontWeight: 700, color: "#166534" }}>✅ AI đã tạo lộ trình 7 ngày phù hợp với bạn</div>
-                    <div style={{ marginTop: 8 }}>
-                      <button style={{ padding: "8px 12px" }} onClick={() => navigate('/learning-path')}>
-                        Xem Learning Path
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div style={{ marginTop: 8, color: "#666" }}>
-                    (Chưa tạo được Learning Path tự động — bạn vẫn có thể vào Learning Path để tạo.)
-                  </div>
-                )}
-              </div>
-            )}
-
-            {String(result?.assessment_kind || data?.kind || "").toLowerCase() === "final_exam" && (
-              <div
-                style={{
-                  marginTop: 10,
-                  background: "#f9fafb",
-                  border: "1px solid #e5e7eb",
-                  borderRadius: 12,
-                  padding: 12,
-                }}
-              >
-                <div style={{ fontWeight: 800, marginBottom: 6 }}>So sánh với điểm đầu vào</div>
-                {typeof result?.improvement_vs_entry !== "number" ? (
-                  <div style={{ color: "#666" }}>Chưa có dữ liệu điểm đầu vào để so sánh.</div>
-                ) : (
-                  <>
-                    <div>
-                      Điểm cuối kỳ của bạn <b>{result.improvement_vs_entry >= 0 ? "tăng" : "giảm"}</b>
-                      {" "}<b style={{ color: result.improvement_vs_entry >= 0 ? "#389e0d" : "#cf1322" }}>{Math.abs(result.improvement_vs_entry)} điểm</b>{" "}
-                      so với bài đầu vào.
-                    </div>
-                    {!!result?.topics_improved?.length && (
-                      <div style={{ marginTop: 6, color: "#166534" }}>
-                        Topic tiến bộ: <b>{result.topics_improved.join(", ")}</b>
-                      </div>
-                    )}
-                    {!!result?.topics_declined?.length && (
-                      <div style={{ marginTop: 4, color: "#b91c1c" }}>
-                        Topic cần củng cố thêm: <b>{result.topics_declined.join(", ")}</b>
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            )}
+      <div style={{ position: "fixed", top: 16, right: 16, display: "grid", gap: 8, zIndex: 1000 }}>
+        {toasts.map((t) => (
+          <div key={t.id} style={{ background: "#111827", color: "#fff", padding: "10px 12px", borderRadius: 10, boxShadow: "0 6px 20px rgba(0,0,0,0.25)" }}>
+            {t.message}
           </div>
 
           <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 12, padding: 12, overflowX: "auto" }}>
@@ -1329,6 +684,8 @@ export default function AssessmentTake() {
           </div>
         </div>
       )}
+        ))}
+      </div>
     </div>
   );
 }
