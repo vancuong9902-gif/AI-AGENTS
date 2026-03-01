@@ -1765,6 +1765,44 @@ def student_recommendations(request: Request, student_id: int, db: Session = Dep
     return {"request_id": request.state.request_id, "data": {"student_id": student_id, "recommendations": recs, "assignments": assignments}, "error": None}
 
 
+
+
+@router.get("/lms/student/{user_id}/progress")
+def lms_student_progress(request: Request, user_id: int, classroom_id: int = Query(..., ge=1), db: Session = Depends(get_db)):
+    def _latest_attempt_for_kind(kind: str):
+        return (
+            db.query(Attempt)
+            .join(ClassroomAssessment, ClassroomAssessment.assessment_id == Attempt.quiz_set_id)
+            .join(QuizSet, QuizSet.id == Attempt.quiz_set_id)
+            .filter(
+                Attempt.user_id == int(user_id),
+                ClassroomAssessment.classroom_id == int(classroom_id),
+                QuizSet.kind == kind,
+            )
+            .order_by(Attempt.created_at.desc(), Attempt.id.desc())
+            .first()
+        )
+
+    pre_attempt = _latest_attempt_for_kind("diagnostic_pre")
+    post_attempt = _latest_attempt_for_kind("diagnostic_post")
+
+    pre_score = float(pre_attempt.score_percent) if pre_attempt else None
+    post_score = float(post_attempt.score_percent) if post_attempt else None
+    delta = (post_score - pre_score) if pre_score is not None and post_score is not None else None
+
+    timestamps = [x.created_at for x in (pre_attempt, post_attempt) if getattr(x, "created_at", None) is not None]
+    updated_at = max(timestamps).isoformat() if timestamps else None
+
+    data = {
+        "pre_score": pre_score,
+        "post_score": post_score,
+        "delta": delta,
+        "pre_attempt_id": int(pre_attempt.id) if pre_attempt else None,
+        "post_attempt_id": int(post_attempt.id) if post_attempt else None,
+        "updated_at": updated_at,
+    }
+    return {"request_id": request.state.request_id, "data": data, "error": None}
+
 @router.get("/students/{user_id}/progress")
 def student_progress_comparison(request: Request, user_id: int, classroomId: int = Query(..., ge=1), db: Session = Depends(get_db)):
     data = get_student_progress_comparison(user_id=int(user_id), classroom_id=int(classroomId), db=db)
