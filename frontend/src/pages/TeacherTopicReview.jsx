@@ -7,15 +7,17 @@ export default function TeacherTopicReview() {
   const [topics, setTopics] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
+  const [pagination, setPagination] = useState({ total: 0, limit: 20, offset: 0 });
 
   const loadTopics = async () => {
     if (!docId) return;
     setLoading(true);
     setError("");
     try {
-      const data = await apiJson(`/documents/${docId}/topics`);
-      const list = Array.isArray(data?.topics) ? data.topics : [];
+      const data = await apiJson(`/documents/${docId}/topics?limit=20&offset=0`);
+      const list = Array.isArray(data?.items) ? data.items : Array.isArray(data?.topics) ? data.topics : [];
       setTopics(
         list.map((t) => ({
           ...t,
@@ -23,6 +25,11 @@ export default function TeacherTopicReview() {
           titleDraft: t.title || "",
         }))
       );
+      setPagination({
+        total: Number(data?.total || list.length),
+        limit: Number(data?.limit || 20),
+        offset: Number(data?.offset || 0),
+      });
     } catch (e) {
       setError(e?.message || "Không tải được topics");
     } finally {
@@ -33,6 +40,32 @@ export default function TeacherTopicReview() {
   useEffect(() => {
     loadTopics();
   }, [docId]);
+
+  const loadMore = async () => {
+    if (!docId) return;
+    setLoadingMore(true);
+    setError("");
+    try {
+      const nextOffset = pagination.offset + pagination.limit;
+      const data = await apiJson(`/documents/${docId}/topics?limit=${pagination.limit}&offset=${nextOffset}`);
+      const list = Array.isArray(data?.items) ? data.items : Array.isArray(data?.topics) ? data.topics : [];
+      const normalized = list.map((t) => ({
+        ...t,
+        include: Boolean(t.is_active ?? true),
+        titleDraft: t.title || "",
+      }));
+      setTopics((prev) => [...prev, ...normalized]);
+      setPagination({
+        total: Number(data?.total || pagination.total),
+        limit: Number(data?.limit || pagination.limit),
+        offset: Number(data?.offset || nextOffset),
+      });
+    } catch (e) {
+      setError(e?.message || "Không tải thêm topics");
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const toggleInclude = (topicId, include) => {
     setTopics((prev) => prev.map((t) => (t.topic_id === topicId ? { ...t, include } : t)));
@@ -107,6 +140,7 @@ export default function TeacherTopicReview() {
           </table>
 
           <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+            {topics.length < pagination.total ? (<button disabled={loadingMore} onClick={loadMore}>{loadingMore ? "Đang tải thêm..." : `Load more (${topics.length}/${pagination.total})`}</button>) : null}
             <button disabled={saving || !topics.length} onClick={publish}>{saving ? "Đang publish..." : "Publish"}</button>
             <Link to="/teacher/files">← Quay lại thư viện</Link>
           </div>

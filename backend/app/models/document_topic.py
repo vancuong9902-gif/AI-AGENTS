@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy import JSON
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -14,6 +14,9 @@ class DocumentTopic(Base):
     """Auto-extracted topics from a teacher uploaded document."""
 
     __tablename__ = "document_topics"
+    __table_args__ = (
+        Index("ix_document_topics_document_id_topic_index", "document_id", "topic_index"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), index=True, nullable=False)

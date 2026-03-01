@@ -29,7 +29,7 @@ export default function TeacherCreateEntryTest() {
   useEffect(() => {
     (async () => {
       try {
-        const data = await apiJson("/documents");
+        const data = await apiJson("/documents?limit=100&offset=0");
         setDocs(data?.documents || []);
       } catch (e) {
         setError(e?.message || "Không tải được tài liệu");
@@ -43,7 +43,7 @@ export default function TeacherCreateEntryTest() {
       if (!missing.length) return;
       const entries = await Promise.all(
         missing.map(async (did) => {
-          const data = await apiJson(`/documents/${did}/topics`);
+          const data = await apiJson(`/documents/${did}/topics?limit=100&offset=0`);
           return [did, data?.topics || []];
         })
       );

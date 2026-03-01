@@ -111,7 +111,7 @@ export default function Quiz() {
       if (!activeClassroom) throw new Error('Không tìm thấy lớp học đang hoạt động.');
       setClassroom(activeClassroom);
 
-      const docsResponse = await apiJson('/documents');
+      const docsResponse = await apiJson('/documents?limit=100&offset=0');
       const docs = asArray(docsResponse);
       setDocuments(docs);
 
@@ -151,7 +151,7 @@ export default function Quiz() {
     }
 
     try {
-      const topicsResponse = await apiJson(`/documents/${encodeURIComponent(documentId)}/topics`);
+      const topicsResponse = await apiJson(`/documents/${encodeURIComponent(documentId)}/topics?limit=100&offset=0`);
       const topicRows = asArray(topicsResponse);
       setTopics(topicRows);
 

@@ -29,6 +29,7 @@ export default function Tutor() {
   useEffect(() => {
     (async () => {
       try {
+        const data = await apiJson("/documents?limit=100&offset=0");
         const data = await apiJson('/documents');
         const arr = data?.documents || [];
         setDocs(arr);
