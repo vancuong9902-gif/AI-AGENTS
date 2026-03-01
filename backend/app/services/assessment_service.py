@@ -59,6 +59,21 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[\.\?!\n])\s+")
 _TOPIC_IN_STEM_RE = re.compile(r"'([^']+)'|\"([^\"]+)\"|“([^”]+)”")
 _STEM_PUNCT_RE = re.compile(r"[^\w\sÀ-ỹ]", re.UNICODE)
 _TRAILING_PUNCT_RE = re.compile(r"[\s\?\!\.,;:]+$")
+_KEYWORD_TOKEN_RE = re.compile(r"[\wÀ-ỹ]{4,}", re.UNICODE)
+
+_STOPWORDS_VI_EN = {
+    # Vietnamese
+    "nhung", "những", "cac", "các", "mot", "một", "duoc", "được", "trong", "theo", "khi", "voi", "với",
+    "nguoi", "người", "khong", "không", "cung", "cũng", "nay", "đây", "that", "rằng", "la", "là", "cho",
+    "tu", "từ", "den", "đến", "tren", "trên", "duoi", "dưới", "giua", "giữa", "hoac", "hoặc", "neu", "nếu",
+    "vi", "vì", "nhu", "như", "roi", "rồi", "se", "sẽ", "da", "đã", "sau", "truoc", "trước", "ban", "bạn",
+    "chung", "chúng", "minh", "mình", "toi", "tôi", "anh", "chị", "em", "cua", "của", "can", "cần", "phai", "phải",
+    # English
+    "this", "that", "with", "from", "into", "about", "what", "which", "where", "when", "while", "will", "would",
+    "could", "should", "have", "has", "had", "been", "being", "their", "there", "these", "those", "your", "yours",
+    "they", "them", "then", "than", "also", "such", "only", "more", "most", "many", "much", "some", "any", "each",
+    "very", "over", "under", "between", "after", "before", "during", "using", "used", "does", "done", "make", "made",
+}
 
 
 def _normalize_stem_for_dedup(stem: str, *, max_chars: int = 120) -> str:
@@ -81,6 +96,15 @@ def _is_dup(stem: str, excluded_stems: set[str] | None = None, similarity_thresh
     s = _normalize_stem_for_dedup(stem)
     if not s:
         return False
+
+    def _keyword_set(text: str) -> set[str]:
+        return {
+            tok
+            for tok in _KEYWORD_TOKEN_RE.findall((text or "").lower())
+            if tok not in _STOPWORDS_VI_EN
+        }
+
+    s_keywords = _keyword_set(s)
     for ex in excluded_stems:
         if not ex:
             continue
@@ -91,6 +115,12 @@ def _is_dup(stem: str, excluded_stems: set[str] | None = None, similarity_thresh
             return True
         if SequenceMatcher(None, s, ex_norm).ratio() >= float(similarity_threshold):
             return True
+        if s_keywords:
+            ex_keywords = _keyword_set(ex_norm)
+            if ex_keywords:
+                overlap = float(len(s_keywords & ex_keywords)) / float(max(len(s_keywords), len(ex_keywords)))
+                if overlap >= 0.60:
+                    return True
     return False
 
 
