@@ -5,11 +5,11 @@ import { apiJson } from '../lib/api';
 import PageContainer from '../ui/PageContainer';
 import SectionHeader from '../ui/SectionHeader';
 import Card from '../ui/Card';
-import Banner from '../ui/Banner';
 import Button from '../ui/Button';
 import Badge from '../ui/Badge';
-import Spinner from '../ui/Spinner';
 import EmptyState from '../ui/EmptyState';
+import LoadingState from '../ui/LoadingState';
+import ErrorState from '../ui/ErrorState';
 import './unified-pages.css';
 
 const DIFFICULTY_LABELS = { easy: 'Dễ', medium: 'Trung bình', hard: 'Khó' };
@@ -84,17 +84,22 @@ export default function Result() {
     <PageContainer className='stack-md'>
       <SectionHeader title='Kết quả bài làm' subtitle='Tổng hợp năng lực theo chủ đề và độ khó.' action={<Button onClick={() => navigate('/quiz')}>Làm lại</Button>} />
 
-      {loading ? <Card><div className='row'><Spinner /> Đang tải kết quả...</div></Card> : null}
+      {loading ? <LoadingState title='Đang tải kết quả...' description='Hệ thống đang tổng hợp điểm và phân loại năng lực.' /> : null}
 
       {!loading && (error || !detail) ? (
-        <Card className='stack-sm'>
-          <Banner tone='warning'>{error || 'Không có dữ liệu kết quả.'}</Banner>
-          <EmptyState title='Không thể hiển thị kết quả' description='Vui lòng thử lại hoặc quay về trang quiz.' icon='📉' />
+        <div className='stack-sm'>
+          <ErrorState
+            title='Không thể hiển thị kết quả'
+            description={error || 'Không có dữ liệu kết quả.'}
+            actionLabel='Tải lại'
+            onAction={() => window.location.reload()}
+          />
+          <EmptyState title='Vui lòng thử lại' description='Bạn có thể quay về trang quiz hoặc xem danh sách assessments.' icon='📉' />
           <div className='row'>
             <Link to='/quiz'><Button variant='primary'>Làm quiz</Button></Link>
             <Link to='/assessments'><Button>Bài assessments</Button></Link>
           </div>
-        </Card>
+        </div>
       ) : null}
 
       {!loading && !error && detail ? (
@@ -116,7 +121,7 @@ export default function Result() {
 
           <Card className='result-span-8'>
             <h3>Điểm theo chủ đề</h3>
-            <div style={{ width: '100%', height: 300 }}>
+            <div className='result-chart'>
               <ResponsiveContainer>
                 <BarChart data={topicChartData}>
                   <XAxis dataKey='name' hide />
@@ -130,7 +135,7 @@ export default function Result() {
 
           <Card className='result-span-4'>
             <h3>Phân bố theo độ khó</h3>
-            <div style={{ width: '100%', height: 300 }}>
+            <div className='result-chart'>
               <ResponsiveContainer>
                 <PieChart>
                   <Pie data={difficultyChartData} dataKey='percent' nameKey='name' innerRadius={46} outerRadius={76}>
