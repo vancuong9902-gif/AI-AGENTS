@@ -91,7 +91,7 @@ export default function AgentFlow() {
   useEffect(() => {
     (async () => {
       try {
-        const data = await apiJson("/documents");
+        const data = await apiJson("/documents?limit=100&offset=0");
         const arr = data?.documents || [];
         setDocs(arr);
         if (arr.length > 0) setSelectedDocId(String(arr[0].document_id));

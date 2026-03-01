@@ -109,7 +109,7 @@ export default function TeacherAssessments() {
 
   const loadDocs = async () => {
     try {
-      const data = await apiJson("/documents");
+      const data = await apiJson("/documents?limit=100&offset=0");
       const arr = data?.documents || [];
       setDocs(Array.isArray(arr) ? arr : []);
     } catch {
@@ -160,7 +160,7 @@ export default function TeacherAssessments() {
       try {
         const entries = await Promise.all(
           missing.map(async (id) => {
-            const data = await apiJson(`/documents/${id}/topics`);
+            const data = await apiJson(`/documents/${id}/topics?limit=100&offset=0`);
             const rawTopics = Array.isArray(data) ? data : data?.topics || data?.items || [];
             return [id, rawTopics];
           })

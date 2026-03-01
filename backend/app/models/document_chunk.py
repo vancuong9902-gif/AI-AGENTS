@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import JSONB
 
@@ -11,6 +11,9 @@ from app.db.base_class import Base
 
 class DocumentChunk(Base):
     __tablename__ = "document_chunks"
+    __table_args__ = (
+        Index("ix_document_chunks_document_id_chunk_index", "document_id", "chunk_index"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"), index=True, nullable=False)

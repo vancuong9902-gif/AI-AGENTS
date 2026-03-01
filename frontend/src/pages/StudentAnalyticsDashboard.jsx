@@ -36,7 +36,7 @@ export default function StudentAnalyticsDashboard() {
 
   const loadDocs = async () => {
     try {
-      const docs = await apiJson("/documents");
+      const docs = await apiJson("/documents?limit=100&offset=0");
       const arr = Array.isArray(docs) ? docs : [];
       setDocuments(arr);
       if (!documentId && arr.length) setDocumentId(Number(arr[0].id));

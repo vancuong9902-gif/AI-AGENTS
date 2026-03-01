@@ -34,6 +34,7 @@ from app.api.routes.exams import router as exams_router
 from app.api.routes.lms import router as lms_router
 from app.api.routes.admin import router as admin_router
 from app.api.routes.notifications import router as notifications_router
+from app.api.routes.auth import router as auth_router
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.services import vector_store
@@ -79,14 +80,52 @@ app = FastAPI(
     title=settings.APP_NAME,
     version="0.3.0",
 )
+def _include_api_routers(fastapi_app: FastAPI, auth_enabled: bool) -> None:
+    fastapi_app.include_router(health_router, prefix="/api")
+    fastapi_app.include_router(documents_router, prefix="/api")
+    fastapi_app.include_router(rag_router, prefix="/api")
+    fastapi_app.include_router(quiz_router, prefix="/api")
+    fastapi_app.include_router(tutor_router, prefix="/api")
+    fastapi_app.include_router(agent_router, prefix="/api")
+    fastapi_app.include_router(adaptive_router, prefix="/api")
+    fastapi_app.include_router(retention_router, prefix="/api")
+    fastapi_app.include_router(analytics_router, prefix="/api")
+    fastapi_app.include_router(jobs_router, prefix="/api")
+    fastapi_app.include_router(llm_router, prefix="/api")
+    fastapi_app.include_router(classrooms_router, prefix="/api")
+    fastapi_app.include_router(exams_router, prefix="/api")
+    fastapi_app.include_router(lms_router, prefix="/api")
+    fastapi_app.include_router(profile_router, prefix="/api")
+    fastapi_app.include_router(homework_router, prefix="/api")
+    fastapi_app.include_router(learning_plans_router, prefix="/api")
+    fastapi_app.include_router(evaluation_router, prefix="/api")
+    fastapi_app.include_router(assessments_router, prefix="/api")
+    fastapi_app.include_router(teacher_assessments_router, prefix="/api")
+    fastapi_app.include_router(admin_router, prefix="/api")
+    fastapi_app.include_router(notifications_router, prefix="/api")
+    if auth_enabled:
+        fastapi_app.include_router(auth_router, prefix="/api")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.BACKEND_CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+def create_app(auth_enabled: Optional[bool] = None) -> FastAPI:
+    app = FastAPI(
+        title=settings.APP_NAME,
+        version="0.3.0",
+    )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.BACKEND_CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    _include_api_routers(app, settings.AUTH_ENABLED if auth_enabled is None else auth_enabled)
+    return app
+
+
+app = create_app()
 
 
 @app.middleware("http")
@@ -281,27 +320,3 @@ def bootstrap_demo_user():
     finally:
         db.close()
 
-
-app.include_router(health_router, prefix="/api")
-app.include_router(documents_router, prefix="/api")
-app.include_router(rag_router, prefix="/api")
-app.include_router(quiz_router, prefix="/api")
-app.include_router(tutor_router, prefix="/api")
-app.include_router(agent_router, prefix="/api")
-app.include_router(adaptive_router, prefix="/api")
-app.include_router(retention_router, prefix="/api")
-app.include_router(analytics_router, prefix="/api")
-app.include_router(jobs_router, prefix="/api")
-app.include_router(llm_router, prefix="/api")
-app.include_router(classrooms_router, prefix="/api")
-app.include_router(exams_router, prefix="/api")
-app.include_router(lms_router, prefix="/api")
-app.include_router(profile_router, prefix="/api")
-app.include_router(homework_router, prefix="/api")
-app.include_router(learning_plans_router, prefix="/api")
-app.include_router(evaluation_router, prefix="/api")
-app.include_router(assessments_router, prefix="/api")
-app.include_router(teacher_assessments_router, prefix="/api")
-app.include_router(admin_router, prefix="/api")
-
-app.include_router(notifications_router, prefix="/api")

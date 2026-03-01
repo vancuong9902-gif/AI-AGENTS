@@ -9,6 +9,7 @@ import Banner from '../ui/Banner';
 import PageHeader from '../ui/PageHeader';
 import Skeleton from '../ui/Skeleton';
 import EmptyState from '../ui/EmptyState';
+import Modal from '../ui/Modal';
 
 export default function FileLibrary() {
   const [docs, setDocs] = useState([]);
@@ -16,12 +17,49 @@ export default function FileLibrary() {
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [tagFilter, setTagFilter] = useState('');
+  const [topicsModal, setTopicsModal] = useState({
+    isOpen: false,
+    loading: false,
+    error: '',
+    topics: [],
+    documentId: null,
+    documentTitle: '',
+  });
   const activeClassroomId = Number(localStorage.getItem('teacher_active_classroom_id')) || null;
+
+  const closeTopicsModal = () => {
+    setTopicsModal((prev) => ({ ...prev, isOpen: false }));
+  };
+
+  const openTopicsModal = async (doc) => {
+    setTopicsModal({
+      isOpen: true,
+      loading: true,
+      error: '',
+      topics: [],
+      documentId: doc.document_id,
+      documentTitle: doc.title || doc.filename || `Tài liệu #${doc.document_id}`,
+    });
+
+    try {
+      const data = await apiJson(`/documents/${doc.document_id}/topics`);
+      const rawTopics = Array.isArray(data) ? data : data?.topics || data?.items || [];
+      const normalizedTopics = rawTopics.map((topic, idx) => ({
+        id: topic?.topic_id || topic?.id || `${doc.document_id}-${idx}`,
+        title: topic?.display_title || topic?.effective_title || topic?.title || topic?.name || `Chủ đề ${idx + 1}`,
+        chunkCount: Number(topic?.chunk_span || topic?.chunk_count || topic?.notes_count || 0),
+        summary: String(topic?.summary || topic?.sample_content || '').trim(),
+      }));
+      setTopicsModal((prev) => ({ ...prev, loading: false, topics: normalizedTopics }));
+    } catch (e) {
+      setTopicsModal((prev) => ({ ...prev, loading: false, error: e?.message || 'Không tải được danh sách chủ đề.' }));
+    }
+  };
 
   const refresh = async () => {
     setLoading(true);
     try {
-      setDocs((await apiJson('/documents'))?.documents || []);
+      setDocs((await apiJson('/documents?limit=100&offset=0'))?.documents || []);
       setError('');
     } catch (e) {
       setError(e?.message || 'Lỗi tải tài liệu');
@@ -64,6 +102,7 @@ export default function FileLibrary() {
                   <tr key={d.document_id}>
                     <td>{d.title}</td><td>{d.filename}</td><td>{d.chunk_count}</td><td>{(d.tags || []).join(', ') || '-'}</td>
                     <td><div className='row'>
+                      <Button onClick={() => openTopicsModal(d)}>Xem topics</Button>
                       <Link to={`/teacher/documents/${d.document_id}/topic-review`}><Button>Rà soát và công bố chủ đề</Button></Link>
                       <Link
                         to={activeClassroomId
@@ -80,6 +119,37 @@ export default function FileLibrary() {
           </div>
         ) : null}
       </Card>
+
+      <Modal
+        open={topicsModal.isOpen}
+        title={`Topics: ${topicsModal.documentTitle}`}
+        onClose={closeTopicsModal}
+        actions={<Button onClick={closeTopicsModal}>Đóng</Button>}
+      >
+        {topicsModal.loading ? <Spinner /> : null}
+        {!topicsModal.loading && topicsModal.error ? <Banner tone='error'>{topicsModal.error}</Banner> : null}
+        {!topicsModal.loading && !topicsModal.error && topicsModal.topics.length === 0 ? (
+          <EmptyState
+            icon='🧩'
+            title='Chưa có topics'
+            description='Tài liệu này chưa có chủ đề nào để hiển thị.'
+          />
+        ) : null}
+        {!topicsModal.loading && !topicsModal.error && topicsModal.topics.length > 0 ? (
+          <div className='stack-sm'>
+            {topicsModal.topics.map((topic) => (
+              <Card key={topic.id} className='stack-xs'>
+                <div><strong>{topic.title}</strong></div>
+                <div style={{ color: 'var(--text-muted)' }}>Số chunks/notes: {topic.chunkCount}</div>
+                {topic.summary ? <div>{topic.summary}</div> : <div style={{ color: 'var(--text-muted)' }}>Chưa có mô tả ngắn.</div>}
+                <div>
+                  <Link to={`/documents/${topicsModal.documentId}/topics/${topic.id}`}><Button variant='ghost'>Mở/Chi tiết</Button></Link>
+                </div>
+              </Card>
+            ))}
+          </div>
+        ) : null}
+      </Modal>
     </div>
   );
 }
