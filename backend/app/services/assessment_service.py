@@ -59,6 +59,47 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[\.\?!\n])\s+")
 _TOPIC_IN_STEM_RE = re.compile(r"'([^']+)'|\"([^\"]+)\"|“([^”]+)”")
 _STEM_PUNCT_RE = re.compile(r"[^\w\sÀ-ỹ]", re.UNICODE)
 _TRAILING_PUNCT_RE = re.compile(r"[\s\?\!\.,;:]+$")
+_LOGGER = logging.getLogger(__name__)
+
+
+def _coerce_document_ids(raw: Any) -> List[int]:
+    """Normalize document_ids stored in quiz metadata into int list."""
+    if raw is None:
+        return []
+    values = raw
+    if isinstance(raw, str):
+        try:
+            values = json.loads(raw)
+        except Exception:
+            values = [raw]
+    if not isinstance(values, list):
+        values = [values]
+
+    out: List[int] = []
+    for v in values:
+        try:
+            n = int(v)
+        except Exception:
+            continue
+        if n > 0 and n not in out:
+            out.append(n)
+    return out
+
+
+def _fallback_mcq_explanation(*, stem: str, correct_text: str, chosen_text: str | None = None) -> str:
+    """Rule-based fallback explanation when RAG/LLM is unavailable."""
+    topic = (stem or "").strip()
+    if len(topic) > 120:
+        topic = topic[:117].rstrip() + "..."
+    if chosen_text:
+        return (
+            f"Bạn đã chọn '{chosen_text}', nhưng đáp án đúng là '{correct_text}'. "
+            f"Hãy ôn lại ý chính liên quan đến: {topic or 'câu hỏi này'} và so sánh điều kiện áp dụng giữa các đáp án."
+        )
+    return (
+        f"Đáp án đúng là '{correct_text}'. "
+        f"Hãy ôn lại ý chính liên quan đến: {topic or 'câu hỏi này'} và chú ý từ khóa then chốt trong đề."
+    )
 
 
 def _normalize_stem_for_dedup(stem: str, *, max_chars: int = 120) -> str:
@@ -2933,6 +2974,9 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
 
     has_essay = False
 
+    question_by_id: Dict[int, Question] = {int(q.id): q for q in questions}
+    quiz_doc_ids = _coerce_document_ids(getattr(quiz_set, "document_ids_json", None))
+
     for q in questions:
         a = answer_map.get(q.id, {})
         topic = _infer_topic_from_stem(q.stem, fallback=str(quiz_set.topic))
@@ -2979,6 +3023,94 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
                 "rubric_breakdown": [],
                 "sources": q.sources or [],
             })
+
+    for item in breakdown:
+        if str(item.get("type") or "").strip().lower() != "mcq":
+            continue
+        if bool(item.get("is_correct")):
+            continue
+
+        raw_expl = str(item.get("explanation") or "").strip()
+        if len(raw_expl) >= 20:
+            continue
+
+        q_obj = question_by_id.get(int(item.get("question_id") or 0))
+        if not q_obj:
+            continue
+
+        options = list(getattr(q_obj, "options", None) or [])
+        correct_idx = int(item.get("correct") if item.get("correct") is not None else getattr(q_obj, "correct_index", -1))
+        chosen_idx = int(item.get("chosen") or -1)
+
+        correct_text = options[correct_idx] if 0 <= correct_idx < len(options) else f"phương án {correct_idx + 1}"
+        chosen_text = options[chosen_idx] if 0 <= chosen_idx < len(options) else None
+
+        item["explanation"] = _fallback_mcq_explanation(
+            stem=str(getattr(q_obj, "stem", "") or ""),
+            correct_text=str(correct_text or ""),
+            chosen_text=str(chosen_text or "") or None,
+        )
+
+        try:
+            retr_filters: Dict[str, Any] = {}
+            if quiz_doc_ids:
+                retr_filters["document_ids"] = quiz_doc_ids
+            retrieval = retrieve_and_log(
+                db,
+                query=str(getattr(q_obj, "stem", "") or ""),
+                top_k=3,
+                filters=retr_filters,
+            )
+            packed = pack_chunks(
+                list((retrieval or {}).get("chunks") or []),
+                max_chunks=3,
+                max_chars_per_chunk=300,
+                max_total_chars=800,
+            )
+            if not packed:
+                continue
+
+            if not llm_available():
+                continue
+
+            prompt_chunks = "\n\n".join(
+                [
+                    f"- Chunk #{c.get('chunk_id')} | {c.get('title') or 'Tài liệu'}\n{c.get('text') or ''}"
+                    for c in packed
+                ]
+            )
+            resp = chat_json(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Bạn là trợ giảng. Viết giải thích ngắn, rõ ràng cho học sinh khi làm sai MCQ. "
+                            "Bắt buộc dựa trên ngữ cảnh tài liệu đã cho. "
+                            'Trả JSON: {"explanation": string, "key_concept": string}.'
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Câu hỏi: {str(getattr(q_obj, 'stem', '') or '')}\n"
+                            f"Đáp án học sinh chọn: {chosen_text or '(không chọn)'}\n"
+                            f"Đáp án đúng: {correct_text}\n\n"
+                            f"Ngữ cảnh tài liệu:\n{prompt_chunks}\n\n"
+                            "Yêu cầu: explanation 1-3 câu, tối đa 320 ký tự; key_concept tối đa 12 từ."
+                        ),
+                    },
+                ],
+                temperature=0.2,
+                max_tokens=300,
+            )
+            improved = str((resp or {}).get("explanation") or "").strip()
+            if improved:
+                item["explanation"] = improved
+            key_concept = str((resp or {}).get("key_concept") or "").strip()
+            if key_concept:
+                item["key_concept"] = key_concept
+        except Exception:
+            _LOGGER.warning("submit_assessment: failed to enrich MCQ explanation", exc_info=True)
 
     session = (
         db.query(QuizSession)

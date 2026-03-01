@@ -970,6 +970,11 @@ export default function AssessmentTake() {
                           <div style={{ marginTop: 6, whiteSpace: "pre-wrap", color: "#333" }}>
                             <b>Giải thích:</b> {b.explanation || "(Chưa có giải thích)"}
                           </div>
+                          {b.key_concept ? (
+                            <div style={{ marginTop: 4, color: "#555" }}>
+                              <b>Khái niệm chính:</b> {b.key_concept}
+                            </div>
+                          ) : null}
                           {!b.is_correct && (
                             <div style={{ marginTop: 6, color: "#333" }}>
                               Bạn chọn: <b>{Number.isInteger(b.your_answer_index) && b.your_answer_index >= 0 ? String.fromCharCode(65 + Number(b.your_answer_index)) : "(không chọn)"}</b>
