@@ -3116,8 +3116,10 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
 
             breakdown.append({
                 "question_id": q.id,
+                "order_no": int(getattr(q, "order_no", 0) or 0),
                 "type": "mcq",
                 "topic": topic,
+                "bloom_level": getattr(q, "bloom_level", None),
                 "difficulty": difficulty,
                 "stem": q.stem,
                 "options": options,
@@ -3137,8 +3139,10 @@ def submit_assessment(db: Session, *, assessment_id: int, user_id: int, answers:
             txt = (a.get("answer_text") or "").strip()
             breakdown.append({
                 "question_id": q.id,
+                "order_no": int(getattr(q, "order_no", 0) or 0),
                 "type": "essay",
                 "topic": topic,
+                "bloom_level": getattr(q, "bloom_level", None),
                 "difficulty": difficulty,
                 "stem": q.stem,
                 "answer_text": txt,

@@ -135,7 +135,7 @@ export default function AppRoutes() {
       />
 
       <Route
-        path="/result"
+        path="/result/:attemptId"
         element={
           <ProtectedRoute allow={["student"]}>
             <Result />
