@@ -80,7 +80,7 @@ export default function AppRoutes() {
       />
 
       <Route
-        path="/topic/:documentId/:topicId"
+        path="/documents/:documentId/topics/:topicId"
         element={
           <ProtectedRoute allow={["student"]}>
             <TopicDetail />
