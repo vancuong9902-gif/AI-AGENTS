@@ -33,7 +33,7 @@ export default function Navbar({ onNavigate }) {
     if (role !== 'teacher' || !userId) return undefined;
     const poll = async () => {
       try {
-        const res = await apiJson(`/teacher/notifications?teacher_id=${userId}`);
+        const res = await apiJson('/notifications/my');
         const arr = Array.isArray(res) ? res : [];
         setNotifications(arr);
         setUnreadCount(arr.length);

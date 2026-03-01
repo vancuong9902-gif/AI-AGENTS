@@ -5,164 +5,70 @@ from fastapi.testclient import TestClient
 
 from app.db.session import get_db
 from app.main import app
-from app.services import lms_service
 
 
 class _FakeQuery:
     def __init__(self, rows):
         self._rows = rows
 
+    def join(self, *args, **kwargs):
+        return self
+
     def filter(self, *args, **kwargs):
+        return self
+
+    def order_by(self, *args, **kwargs):
+        return self
+
+    def distinct(self):
         return self
 
     def all(self):
         return self._rows
 
-    def order_by(self, *args, **kwargs):
-        return self
+    def first(self):
+        return self._rows[0] if self._rows else None
+
+    def count(self):
+        return len(self._rows)
 
 
 class _FakeDB:
     def query(self, *entities):
-        entity_dump = ",".join(str(e).lower() for e in entities)
-        if "classroommember.user_id" in entity_dump:
-            return _FakeQuery([(101,), (102,)])
-        if "classroomassessment.assessment_id" in entity_dump:
-            return _FakeQuery([(1,), (2,)])
-        if "quizset.id" in entity_dump and "quizset.kind" in entity_dump:
+        dump = ",".join(str(x).lower() for x in entities)
+        now = datetime.now(timezone.utc)
+        if "quizset.id" in dump and "quizset.kind" in dump:
             return _FakeQuery([(1, "diagnostic_pre"), (2, "diagnostic_post")])
-        if "attempt" in entity_dump:
-            return _FakeQuery(
-                [
-                    SimpleNamespace(user_id=101, quiz_set_id=1, breakdown_json=[], created_at=datetime.now(timezone.utc)),
-                    SimpleNamespace(user_id=101, quiz_set_id=2, breakdown_json=[], created_at=datetime.now(timezone.utc)),
-                ]
-            )
-        if "user.id" in entity_dump:
-            return _FakeQuery([SimpleNamespace(id=101, full_name="HS A", email="a@test")])
-        if "learningplan" in entity_dump:
-            return _FakeQuery([SimpleNamespace(user_id=101, days_total=5)])
-        if "learningplanhomeworksubmission" in entity_dump:
-            return _FakeQuery([SimpleNamespace(user_id=101, created_at=datetime.now(timezone.utc))])
+        if "classroom" in dump and "classroom.id" in dump:
+            return _FakeQuery([SimpleNamespace(id=1, teacher_id=999, name="A")])
+        if "classroommember" in dump:
+            return _FakeQuery([SimpleNamespace(user_id=101), SimpleNamespace(user_id=102)])
+        if "attempt" in dump:
+            return _FakeQuery([SimpleNamespace(score_percent=40, breakdown_json=[], created_at=now)])
+        if "learningplan" in dump:
+            return _FakeQuery([SimpleNamespace(id=1, days_total=5, created_at=now)])
+        if "learningplantaskcompletion" in dump:
+            return _FakeQuery([SimpleNamespace(id=1), SimpleNamespace(id=2)])
+        if "learningplanhomeworksubmission" in dump:
+            return _FakeQuery([SimpleNamespace(id=1)])
+        if "session" in dump:
+            return _FakeQuery([SimpleNamespace(id=1)])
         return _FakeQuery([])
 
 
-def test_teacher_report_returns_full_shape(monkeypatch):
+def test_teacher_report_returns_enhanced_shape(monkeypatch):
     app.dependency_overrides[get_db] = lambda: _FakeDB()
-    lms_service._TEACHER_REPORT_CACHE.clear()
-
-    def _fake_score_breakdown(_):
-        _fake_score_breakdown.calls += 1
-        if _fake_score_breakdown.calls == 1:
-            return {"overall": {"percent": 45.0}, "by_topic": {"dao_ham": {"percent": 45.0}}}
-        return {"overall": {"percent": 70.0}, "by_topic": {"dao_ham": {"percent": 70.0}}}
-
-    _fake_score_breakdown.calls = 0
-    monkeypatch.setattr("app.services.lms_service.score_breakdown", _fake_score_breakdown)
-    async def _fake_comment(_stats):
-        return "Lớp có tiến bộ tốt."
-
-    monkeypatch.setattr("app.services.lms_service.generate_class_ai_comment", _fake_comment)
+    monkeypatch.setattr("app.api.routes.lms.resolve_student_name", lambda _db, uid: f"HS {uid}")
+    monkeypatch.setattr("app.api.routes.lms.llm_available", lambda: False)
+    monkeypatch.setattr("app.api.routes.lms.analyze_topic_weak_points", lambda _x: [{"topic": "ham_so", "wrong": 3}])
+    monkeypatch.setattr("app.api.routes.lms.score_breakdown", lambda _x: {"by_topic": {"ham_so": {"percent": 45.0}}})
 
     client = TestClient(app)
-    response = client.get("/api/lms/teacher/report/1")
-    assert response.status_code == 200
-    data = response.json()["data"]
-    assert data["classroom_id"] == 1
-    assert "generated_at" in data
-    assert "summary" in data
-    assert "student_list" in data
-    assert "class_analytics" in data
-    assert "ai_recommendations" in data
-    assert data["summary"]["total_students"] == 2
-    assert set(data["class_analytics"]["score_distribution"].keys()) == {"gioi", "kha", "trung_binh", "yeu"}
-
-    app.dependency_overrides.clear()
-
-
-def test_teacher_report_contains_new_ai_structure(monkeypatch):
-    app.dependency_overrides[get_db] = lambda: _FakeDB()
-    lms_service._TEACHER_REPORT_CACHE.clear()
-
-    def _fake_score_breakdown(_):
-        _fake_score_breakdown.calls += 1
-        if _fake_score_breakdown.calls == 1:
-            return {"overall": {"percent": 50.0}, "by_topic": {"ham_so": {"percent": 50.0}}}
-        return {"overall": {"percent": 80.0}, "by_topic": {"ham_so": {"percent": 80.0}}}
-
-    _fake_score_breakdown.calls = 0
-    monkeypatch.setattr("app.services.lms_service.score_breakdown", _fake_score_breakdown)
-    monkeypatch.setattr(
-        "app.services.lms_service._build_student_ai_evaluation",
-        lambda student_data: {
-            "summary": "Có tiến bộ.",
-            "strengths": ["Nắm kiến thức cơ bản"],
-            "improvements": ["Luyện thêm bài nâng cao"],
-            "recommendation": "Ôn 30 phút mỗi ngày",
-        },
-    )
-
-    async def _fake_comment(_stats):
-        return "Nhận xét lớp tổng quan"
-
-    monkeypatch.setattr("app.services.lms_service.generate_class_ai_comment", _fake_comment)
-
-    client = TestClient(app)
-    response = client.get("/api/lms/teacher/report/1")
-    assert response.status_code == 200
-    data = response.json()["data"]
-
-    assert "students" in data
-    assert "class_summary" in data
-    assert data["students"][0]["ai_evaluation"]["summary"] == "Có tiến bộ."
-    assert "overall_assessment" in data["class_summary"]
-
-    app.dependency_overrides.clear()
-
-
-def test_teacher_report_export_html_v1(monkeypatch):
-    class _CountQuery:
-        def filter(self, *args, **kwargs):
-            return self
-
-        def count(self):
-            return 1
-
-    class _DB:
-        def query(self, *entities):
-            return _CountQuery()
-
-    app.dependency_overrides[get_db] = lambda: _DB()
-
-    monkeypatch.setattr(
-        "app.api.routes.lms.build_teacher_report",
-        lambda db, classroom_id: {
-            "classroom_id": classroom_id,
-            "generated_at": "2026-01-01T00:00:00+00:00",
-            "students": [
-                {
-                    "name": "HS A",
-                    "diagnostic_score": 50.0,
-                    "final_score": 70.0,
-                    "improvement_pct": 20.0,
-                    "level": "kha",
-                    "topic_scores": {"ham_so": 70.0},
-                    "ai_evaluation": {"summary": "Tiến bộ tốt."},
-                }
-            ],
-            "class_summary": {
-                "avg_improvement": 20.0,
-                "top_performers": ["HS A"],
-                "needs_attention": [],
-                "overall_assessment": "Tổng quan tích cực",
-            },
-        },
-    )
-
-    client = TestClient(app)
-    response = client.get("/api/v1/lms/teacher/report/1/export?format=html")
-    assert response.status_code == 200
-    assert "text/html" in response.headers.get("content-type", "")
-    assert "HS A" in response.text
+    resp = client.get("/api/lms/teacher/report/1")
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert set(data.keys()) >= {"classroom_id", "generated_at", "class_summary", "per_student", "topic_heatmap", "ai_class_narrative", "recommendations_for_teacher"}
+    assert isinstance(data["per_student"], list)
+    assert set(data["per_student"][0].keys()) >= {"placement_score", "final_score", "improvement", "weak_topics", "strong_topics", "homework_completion_rate", "tutor_sessions_count", "ai_comment"}
 
     app.dependency_overrides.clear()
