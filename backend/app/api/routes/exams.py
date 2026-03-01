@@ -13,11 +13,12 @@ from app.schemas.exam import (
     ExamAnalyzeOut,
     ExamGenerateFromTemplateRequest,
     ExamGenerateVariantsRequest,
+    MultiVariantGenerateRequest,
     ExportFormat,
 )
 from app.services import assessment_service
 from app.services.exam_analyzer import analyze_assessment
-from app.services.exam_exporters import export_assessment_to_docx, export_assessment_to_pdf, export_batch_to_zip
+from app.services.exam_exporters import export_assessment_to_docx, export_assessment_to_pdf, export_batch_to_zip, export_multi_variant_docx
 from app.services.exam_template_service import get_template, list_templates, template_to_assessment_counts
 from app.services.exam_variant_service import export_variants_zip, generate_variants_batch
 
@@ -88,6 +89,19 @@ def _build_counts(payload: BatchExamGenerateRequest) -> Dict[str, int]:
         "medium": mcq_counts["medium"] + essay_counts["medium"],
         "hard": mcq_counts["hard"] + essay_counts["hard"],
     }
+
+
+def _fingerprint_question(question: Dict[str, Any]) -> str:
+    stem = " ".join(str(question.get("stem") or "").lower().split())
+    options = "|".join(" ".join(str(o).lower().split()) for o in (question.get("options") or []))
+    return f"{stem}::{options}"
+
+
+def _stable_seed(*parts: Any) -> int:
+    import hashlib
+
+    raw = "|".join(str(p) for p in parts)
+    return int(hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12], 16)
 
 
 router = APIRouter(prefix="/exams", tags=["exams"])
@@ -287,4 +301,70 @@ def batch_generate_exams(
         zip_path,
         media_type="application/zip",
         filename=f"de_thi_batch_{int(payload.classroom_id)}.zip",
+    )
+
+
+@router.post("/generate-multi-variant")
+def generate_multi_variant(payload: MultiVariantGenerateRequest, db: Session = Depends(get_db)):
+    template = get_template(payload.template_id) if payload.template_id else None
+    counts = {"easy_count": int(payload.easy_count), "medium_count": int(payload.medium_count), "hard_count": int(payload.hard_count), "hard_mcq_count": 0}
+    if template:
+        counts = template_to_assessment_counts(template)
+
+    generated: List[Dict[str, Any]] = []
+    seen_fingerprints: set[str] = set()
+    excluded_quiz_ids: List[int] = []
+    for i in range(int(payload.num_variants)):
+        assessment = assessment_service.generate_assessment(
+            db,
+            teacher_id=int(payload.teacher_id),
+            classroom_id=int(payload.classroom_id),
+            title=f"Đề {i + 1:02d}",
+            level="intermediate",
+            kind="midterm",
+            easy_count=int(counts.get("easy_count", 0)),
+            medium_count=int(counts.get("medium_count", 0)),
+            hard_mcq_count=int(counts.get("hard_mcq_count", 0)),
+            hard_count=int(counts.get("hard_count", 0)),
+            document_ids=[int(x) for x in (payload.document_ids or [])],
+            topics=[str(x) for x in (payload.topics or [])],
+            similarity_threshold=float(payload.similarity_threshold),
+            exclude_quiz_ids=excluded_quiz_ids,
+        )
+
+        for _ in range(2):
+            questions = list(assessment.get("questions") or [])
+            duplicates = [q for q in questions if _fingerprint_question(q) in seen_fingerprints]
+            if not duplicates:
+                break
+            assessment = assessment_service.generate_assessment(
+                db,
+                teacher_id=int(payload.teacher_id),
+                classroom_id=int(payload.classroom_id),
+                title=f"Đề {i + 1:02d}",
+                level="intermediate",
+                kind="midterm",
+                easy_count=int(counts.get("easy_count", 0)),
+                medium_count=int(counts.get("medium_count", 0)),
+                hard_mcq_count=int(counts.get("hard_mcq_count", 0)),
+                hard_count=int(counts.get("hard_count", 0)),
+                document_ids=[int(x) for x in (payload.document_ids or [])],
+                topics=[str(x) for x in (payload.topics or [])],
+                similarity_threshold=float(payload.similarity_threshold),
+                exclude_quiz_ids=excluded_quiz_ids,
+            )
+
+        variant_questions = list(assessment.get("questions") or [])
+        for q in variant_questions:
+            seen_fingerprints.add(_fingerprint_question(q))
+        assessment["paper_code"] = f"{i + 1:02d}"
+        generated.append(assessment)
+        if assessment.get("assessment_id"):
+            excluded_quiz_ids.append(int(assessment["assessment_id"]))
+
+    docx_path = export_multi_variant_docx(variants=generated, title="Bộ đề nhiều mã")
+    return FileResponse(
+        path=str(docx_path),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=f"multi_variant_{payload.classroom_id}.docx",
     )

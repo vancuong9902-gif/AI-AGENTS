@@ -14,6 +14,7 @@ RUN set -eux; \
         ca-certificates \
         curl \
         fonts-dejavu-core \
+        fonts-noto-core \
         tesseract-ocr \
         tesseract-ocr-eng \
         poppler-utils; \

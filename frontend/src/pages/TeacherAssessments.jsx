@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { apiJson } from "../lib/api";
+import { apiJson, API_BASE, buildAuthHeaders } from "../lib/api";
 import BatchExamGenerator from "../components/BatchExamGenerator";
 
 const EXAM_TYPE_OPTIONS = [
@@ -48,6 +48,7 @@ export default function TeacherAssessments() {
   const [generatedQuiz, setGeneratedQuiz] = useState(null);
   const [diagnosticConfig, setDiagnosticConfig] = useState({ easy: 5, medium: 5, hard: 5 });
   const [diagnosticCreated, setDiagnosticCreated] = useState(null);
+  const [numVariants, setNumVariants] = useState(3);
 
   const [creating, setCreating] = useState(false);
   const [assigning, setAssigning] = useState(false);
@@ -202,6 +203,48 @@ export default function TeacherAssessments() {
   const updateExamType = (examType) => {
     const selected = EXAM_TYPE_OPTIONS.find((o) => o.value === examType) || DEFAULT_EXAM_TYPE;
     setExamConfig((prev) => ({ ...prev, examType: selected.value, ...selected.defaults }));
+  };
+
+
+  const downloadBlob = async (url, filename) => {
+    const res = await fetch(url, { headers: buildAuthHeaders() });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  const downloadWord = async (assessmentId) => {
+    await downloadBlob(`${API_BASE}/exams/${assessmentId}/export?format=docx`, `assessment_${assessmentId}.docx`);
+  };
+
+  const generateMultiVariants = async () => {
+    if (!classroomId) return;
+    const payload = {
+      classroom_id: Number(classroomId),
+      teacher_id: Number(localStorage.getItem("user_id") || 1),
+      document_ids: effectiveDocIds,
+      topics: selectedTopics,
+      num_variants: Number(numVariants) || 2,
+      easy_count: Number(examConfig.easy) || 0,
+      medium_count: Number(examConfig.medium) || 0,
+      hard_count: Number(examConfig.hard) || 0,
+    };
+    const res = await fetch(`${API_BASE}/exams/generate-multi-variant`, {
+      method: "POST",
+      headers: { ...buildAuthHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `multi_variant_class_${classroomId}.docx`;
+    a.click();
+    URL.revokeObjectURL(a.href);
   };
 
   const createAssessment = async () => {
@@ -513,10 +556,12 @@ export default function TeacherAssessments() {
               </div>
             </div>
 
-            <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 12 }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 12, flexWrap: "wrap" }}>
               <button onClick={createAssessment} disabled={creating} style={{ padding: "10px 14px" }}>
                 Tạo bài kiểm tra
               </button>
+              <input type="number" min={1} max={10} value={numVariants} onChange={(e) => setNumVariants(Number(e.target.value) || 1)} style={{ width: 90, padding: 8, borderRadius: 8, border: "1px solid #ddd" }} />
+              <button onClick={generateMultiVariants} style={{ padding: "10px 14px" }}>Sinh N đề & tải Word</button>
               {creating && <span style={{ color: "#666" }}>Đang tạo…</span>}
             </div>
           </div>
@@ -555,6 +600,7 @@ export default function TeacherAssessments() {
               <Link to={`/teacher/assessments/${generatedQuiz?.assessment_id || generatedQuiz?.id || ""}/leaderboard`} style={{ textDecoration: "none" }}>
                 <button style={{ padding: "8px 12px" }}>Xem kết quả</button>
               </Link>
+              <button onClick={() => downloadWord(generatedQuiz?.assessment_id || generatedQuiz?.id)} style={{ padding: "8px 12px" }}>Tải Word</button>
             </div>
           </div>
         )}

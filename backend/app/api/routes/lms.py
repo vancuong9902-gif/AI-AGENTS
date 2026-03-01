@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from io import BytesIO
 import logging
 import re
 import tempfile
@@ -12,10 +13,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from pydantic import BaseModel, Field
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfgen import canvas
 from sqlalchemy import func
+from openpyxl import Workbook
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user_optional
@@ -1695,6 +1701,19 @@ def get_my_path(request: Request, user_id: int, db: Session = Depends(get_db)):
     }
     level_info = level_map.get(level_key, level_map["trung_binh"])
 
+    focus_topics = weak_topics[:5] or ["kiến thức nền tảng"]
+    study_materials = {
+        "level": level_key,
+        "documents": [
+            {"id": idx + 1, "title": f"Tài liệu {topic}", "focus_topics": [topic]}
+            for idx, topic in enumerate(focus_topics[:4])
+        ],
+        "exercises": [
+            {"quiz_id": idx + 1, "title": f"Bài luyện {topic}", "estimated_minutes": 20 if level_key == "yeu" else 30}
+            for idx, topic in enumerate(focus_topics[:4])
+        ],
+    }
+
     total_tasks = len(assigned_tasks)
     completed_tasks = 0
     progress_percent = 0.0
@@ -1734,6 +1753,7 @@ def get_my_path(request: Request, user_id: int, db: Session = Depends(get_db)):
             "plan_id": int(plan.id) if plan else None,
             "assigned_tasks": assigned_tasks,
             "weak_topics": weak_topics,
+            "study_materials": study_materials,
         },
         "error": None,
     }
@@ -2322,6 +2342,168 @@ def _render_teacher_report_html(report: dict[str, object]) -> str:
       </body>
     </html>
     """
+
+
+def resolve_font_path() -> str | None:
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/Library/Fonts/Arial Unicode.ttf",
+        r"C:\Windows\Fonts\arialuni.ttf",
+    ]
+    for path in candidates:
+        if Path(path).exists():
+            return path
+    return None
+
+
+def _teacher_report_export_payload(db: Session, classroom_id: int) -> dict:
+    report = generate_full_teacher_report(classroom_id=int(classroom_id), db=db)
+    students = list(report.get("per_student") or report.get("student_list") or [])
+    weak_topics = report.get("weak_topics") or []
+    if isinstance(weak_topics, dict):
+        weak_topics = list(weak_topics.keys())
+    return {
+        "report": report,
+        "students": students,
+        "weak_topics": weak_topics,
+    }
+
+
+def _build_teacher_excel_bytes(db: Session, classroom_id: int) -> bytes:
+    payload = _teacher_report_export_payload(db, classroom_id)
+    wb = Workbook()
+    ws_sum = wb.active
+    ws_sum.title = "Điểm Tổng Hợp"
+    ws_sum.append(["STT", "Họ Tên", "Email", "Điểm ĐV", "Điểm CK", "Trung Bình", "Xếp Loại"])
+
+    for idx, student in enumerate(payload["students"], start=1):
+        entry = float(student.get("placement_score") or student.get("entry_score") or 0)
+        final = float(student.get("final_score") or 0)
+        avg = round((entry + final) / 2, 2)
+        ws_sum.append([
+            idx,
+            student.get("student_name") or student.get("name") or "",
+            student.get("email") or "",
+            round(entry, 2),
+            round(final, 2),
+            avg,
+            (student.get("level") or "").replace("_", " "),
+        ])
+
+    ws_topic = wb.create_sheet("Chi Tiết Theo Topic")
+    ws_topic.append(["STT", "Học Sinh", "Topic", "Điểm %", "Nhận Xét"])
+    row = 1
+    for student in payload["students"]:
+        by_topic = student.get("topic_scores") or student.get("by_topic") or {}
+        if isinstance(by_topic, list):
+            topic_items = [(str(it.get("topic") or ""), it.get("percent") or it.get("score") or 0) for it in by_topic]
+        else:
+            topic_items = list(by_topic.items())
+        for topic, score in topic_items:
+            row += 1
+            ws_topic.append([row - 1, student.get("student_name") or student.get("name") or "", topic, float(score or 0), student.get("ai_comment") or ""] )
+
+    stream = BytesIO()
+    wb.save(stream)
+    stream.seek(0)
+    return stream.getvalue()
+
+
+def _build_teacher_pdf_bytes(db: Session, classroom_id: int) -> bytes:
+    payload = _teacher_report_export_payload(db, classroom_id)
+    report = payload["report"]
+    font_path = resolve_font_path()
+    if not font_path:
+        raise HTTPException(status_code=500, detail="Không tìm thấy font hệ thống hỗ trợ tiếng Việt. Hãy cài fonts-dejavu-core hoặc fonts-noto-core.")
+
+    pdfmetrics.registerFont(TTFont("UNI", font_path))
+    stream = BytesIO()
+    c = canvas.Canvas(stream, pagesize=A4)
+    width, height = A4
+    y = height - 40
+
+    c.setFont("UNI", 14)
+    c.drawString(40, y, f"Báo cáo lớp #{classroom_id}")
+    y -= 24
+
+    summary = report.get("summary") or report.get("class_summary") or {}
+    c.setFont("UNI", 11)
+    c.drawString(40, y, f"Tổng học sinh: {summary.get('total_students', 0)}")
+    y -= 16
+    c.drawString(40, y, f"Điểm TB cuối kỳ: {summary.get('average_final_score', summary.get('avg_final', 0))}")
+    y -= 20
+
+    c.setFont("UNI", 10)
+    c.drawString(40, y, "Phân bố level:")
+    y -= 14
+    level_dist = (report.get("class_analytics") or {}).get("score_distribution") or {}
+    for k, v in level_dist.items():
+        c.drawString(60, y, f"- {k}: {v}")
+        y -= 12
+
+    weak_topics = payload["weak_topics"]
+    c.drawString(40, y, "Chủ đề yếu:")
+    y -= 14
+    for t in weak_topics[:8]:
+        c.drawString(60, y, f"- {t}")
+        y -= 12
+
+    narrative = str(report.get("ai_class_narrative") or report.get("ai_recommendations") or "")
+    c.drawString(40, y, "AI narrative:")
+    y -= 14
+    for line in [narrative[i:i+95] for i in range(0, len(narrative), 95)] or ["N/A"]:
+        if y < 40:
+            c.showPage()
+            c.setFont("UNI", 10)
+            y = height - 40
+        c.drawString(40, y, line)
+        y -= 12
+
+    c.showPage()
+    c.save()
+    stream.seek(0)
+    return stream.getvalue()
+
+
+@router.get("/lms/teacher/report/{classroom_id}/export/excel")
+def export_teacher_report_excel(
+    classroom_id: int,
+    current_user: User | None = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    classroom = db.query(Classroom).filter(Classroom.id == int(classroom_id)).first()
+    if not classroom:
+        raise HTTPException(status_code=404, detail="Classroom not found")
+    if not current_user or str(getattr(current_user, "role", "")).lower() != "teacher" or int(getattr(current_user, "id", 0) or 0) != int(classroom.teacher_id):
+        raise HTTPException(status_code=403, detail="Teacher access required")
+
+    content = _build_teacher_excel_bytes(db, int(classroom_id))
+    return StreamingResponse(
+        BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="report_class_{int(classroom_id)}.xlsx"'},
+    )
+
+
+@router.get("/lms/teacher/report/{classroom_id}/export/pdf")
+def export_teacher_report_pdf_v2(
+    classroom_id: int,
+    current_user: User | None = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+):
+    classroom = db.query(Classroom).filter(Classroom.id == int(classroom_id)).first()
+    if not classroom:
+        raise HTTPException(status_code=404, detail="Classroom not found")
+    if not current_user or str(getattr(current_user, "role", "")).lower() != "teacher" or int(getattr(current_user, "id", 0) or 0) != int(classroom.teacher_id):
+        raise HTTPException(status_code=403, detail="Teacher access required")
+
+    content = _build_teacher_pdf_bytes(db, int(classroom_id))
+    return StreamingResponse(
+        BytesIO(content),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="report_class_{int(classroom_id)}.pdf"'},
+    )
 
 
 @router.get("/lms/teacher/report/{classroom_id}/export")

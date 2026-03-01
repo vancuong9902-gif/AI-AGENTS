@@ -53,6 +53,7 @@ class ExamGenerateVariantsRequest(BaseModel):
     kind: AssessmentKind = "midterm"
     template_id: Optional[str] = None
     n_variants: int = Field(default=2, ge=1, le=20)
+    num_variants: int = Field(default=2, ge=1, le=10)
     easy_count: int = Field(default=5, ge=0, le=50)
     medium_count: int = Field(default=5, ge=0, le=50)
     hard_count: int = Field(default=2, ge=0, le=20)
@@ -90,3 +91,16 @@ class BatchExamGenerateRequest(BaseModel):
     similarity_threshold: float = 0.75
     include_answer_key: bool = True
     paper_code_style: Literal["ABC", "NUM"] = "ABC"
+
+
+class MultiVariantGenerateRequest(BaseModel):
+    template_id: Optional[str] = None
+    teacher_id: int = 1
+    classroom_id: int = 1
+    document_ids: List[int] = Field(default_factory=list)
+    topics: List[str] = Field(default_factory=list)
+    num_variants: int = Field(default=2, ge=1, le=10)
+    easy_count: int = Field(default=5, ge=0, le=50)
+    medium_count: int = Field(default=5, ge=0, le=50)
+    hard_count: int = Field(default=2, ge=0, le=20)
+    similarity_threshold: float = Field(default=0.72, ge=0.3, le=0.95)

@@ -13,7 +13,7 @@ import {
   YAxis,
   CartesianGrid,
 } from "recharts";
-import { API_BASE, apiJson } from "../lib/api";
+import { API_BASE, apiJson, buildAuthHeaders } from "../lib/api";
 
 const LEVEL_LABEL = {
   gioi: "Giỏi",
@@ -89,12 +89,7 @@ export default function TeacherClassroomDashboard() {
   }, [report]);
 
   const downloadFile = async (url, filename) => {
-    const headers = { "Cache-Control": "no-cache" };
-    const uid = localStorage.getItem("user_id");
-    const role = localStorage.getItem("role");
-    if (uid) headers["X-User-Id"] = uid;
-    if (role) headers["X-User-Role"] = role;
-    const res = await fetch(url, { headers });
+    const res = await fetch(url, { headers: buildAuthHeaders() });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const blob = await res.blob();
     const link = document.createElement("a");
@@ -115,9 +110,7 @@ export default function TeacherClassroomDashboard() {
 
   const exportXlsx = async () => {
     try {
-      const teacherId = Number(localStorage.getItem("user_id") || 0);
-      const teacherQuery = teacherId > 0 ? `&teacher_id=${teacherId}` : "";
-      await downloadFile(`${API_BASE}/lms/teacher/report/${classroomId}/export?format=xlsx${teacherQuery}`, `teacher-report-class-${classroomId}.xlsx`);
+      await downloadFile(`${API_BASE}/lms/teacher/report/${classroomId}/export/excel`, `teacher-report-class-${classroomId}.xlsx`);
     } catch (e) {
       setErr(`Xuất Excel thất bại: ${e?.message || e}`);
     }
@@ -155,7 +148,7 @@ export default function TeacherClassroomDashboard() {
         <h2 style={{ margin: 0 }}>Báo cáo giáo viên - Lớp #{classroomId}</h2>
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={generateVariants} style={{ border: "1px solid #ddd", borderRadius: 8, padding: "10px 14px", background: "#f3f4f6", color: "#111", fontWeight: 700 }}>Sinh N mã đề</button>
-          <button onClick={exportXlsx} style={{ border: "1px solid #ddd", borderRadius: 8, padding: "10px 14px", background: "#0f766e", color: "#fff", fontWeight: 700 }}>Xuất Excel</button>
+          <button onClick={exportXlsx} style={{ border: "1px solid #ddd", borderRadius: 8, padding: "10px 14px", background: "#0f766e", color: "#fff", fontWeight: 700 }}>📥 Xuất Excel</button>
           <button onClick={exportPdf} style={{ border: "1px solid #ddd", borderRadius: 8, padding: "10px 14px", background: "#111", color: "#fff", fontWeight: 700 }}>Tải báo cáo PDF lớp</button>
         </div>
       </div>
