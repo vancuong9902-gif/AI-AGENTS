@@ -39,6 +39,15 @@ _AUX_SECTION_RX = re.compile(
     flags=re.IGNORECASE,
 )
 
+# Non-learning structural sections that should not become standalone topics.
+_NON_TOPIC_SECTION_RX = re.compile(
+    r"^\s*(?:[\-•\*]+\s*)?(?:"
+    r"mục\s*lục|muc\s*luc|table\s*of\s*contents|contents|"
+    r"phụ\s*lục\s*đáp\s*án|phu\s*luc\s*dap\s*an|answer\s*appendix|appendix\s*answers?"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+
 
 
 _PAGE_PREFIX_RX = re.compile(r"^\s*(?:trang|page|p\.?|pp\.?)\s*\d{1,4}\b", flags=re.IGNORECASE)
@@ -2018,6 +2027,10 @@ def _is_bad_heading_candidate(line: str) -> bool:
     # Never promote practice/answer-key sections into standalone topics.
     # These should be kept inside the nearest related learning topic.
     if _AUX_SECTION_RX.match(s):
+        return True
+
+    # Never promote structural/non-learning sections to topics.
+    if _NON_TOPIC_SECTION_RX.match(s):
         return True
 
     # UI/meta markers
