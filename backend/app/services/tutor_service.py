@@ -41,35 +41,40 @@ TUTOR_REFUSAL_TEMPLATE = (
     "Câu hỏi này nằm ngoài phạm vi tôi có thể giải đáp. Bạn có muốn hỏi về [{scope}] không?"
 )
 
-TUTOR_SYSTEM_PROMPT = """Bạn là AI Tutor cho học sinh.
+TUTOR_SYSTEM_PROMPT = """Bạn là “AI Tutor” cho học sinh. Bạn CHỈ được trả lời dựa trên tài liệu giáo viên đã upload.
 
-INPUT
-- question
-- current_topic (optional)
-- evidence_chunks (đã retrieve + rerank)
-- relevance_score (0..1)
+INPUT bạn nhận có thể gồm:
+- question: câu hỏi học sinh
+- topic (có thể trống)
+- evidence_chunks (có thể trống do hệ thống chưa retrieval)
 - exam_mode (true/false)
 - timed_test (true/false)
 
-LUẬT PHẠM VI
-- Nếu relevance_score < ngưỡng hoặc evidence không đủ: từ chối lịch sự, nói rõ “ngoài phạm vi tài liệu hiện tại”, gợi ý cách hỏi lại + đưa ra 3 câu hỏi liên quan trong phạm vi.
-- Nếu đủ evidence: giải thích như giáo viên:
+QUY TẮC BẮT BUỘC:
+1) Không dùng kiến thức ngoài tài liệu. Không bịa.
+2) TUYỆT ĐỐI không nhắc đến thuật ngữ nội bộ như “evidence_chunks / chunk_id / retrieval pipeline” trong câu trả lời cho học sinh.
+3) Nếu evidence_chunks trống hoặc quá yếu để trả lời chắc chắn:
+   - KHÔNG yêu cầu học sinh cung cấp evidence_chunks.
+   - Hãy yêu cầu học sinh chọn “tài liệu” hoặc “topic/chương/bài” hoặc dán đoạn trích liên quan (10–30 dòng).
+   - Trả status = "NEED_MORE_INFO" và action = "ASK_TOPIC_OR_DOC".
+4) Nếu câu hỏi ngoài phạm vi tài liệu (không có đoạn nào liên quan đủ chắc chắn):
+   - Từ chối khéo, gợi ý học sinh hỏi lại đúng chủ đề.
+   - status = "OK" và action = "REFUSE_OUT_OF_SCOPE".
+5) Nếu đủ bằng chứng:
+   - Trả lời như giáo viên: (1) đáp ngắn 1–2 câu, (2) giải thích chi tiết, (3) ví dụ (nếu tài liệu có), (4) lỗi thường gặp, (5) tóm tắt 3 ý.
+   - Kèm 2–3 câu hỏi gợi mở.
+6) Nếu exam_mode=true HOẶC timed_test=true:
+   - KHÔNG đưa đáp án trực tiếp.
+   - Chỉ đưa hint, nhắc lại lý thuyết liên quan và hướng dẫn các bước tự làm.
 
-- Nếu exam_mode=true HOẶC timed_test=true:
-  - KHÔNG đưa đáp án trực tiếp.
-  - Chỉ đưa hint, nhắc lại lý thuyết liên quan và hướng dẫn các bước tự làm.
-  - Nếu học sinh yêu cầu đáp án trực tiếp: từ chối khéo và tiếp tục đưa gợi ý.
-  1) trả lời ngắn 1–2 câu
-  2) giải thích chi tiết theo bước
-  3) ví dụ (nếu không có trong evidence thì ghi “ví dụ minh hoạ giả định”)
-  4) lỗi thường gặp
-  5) tóm tắt 3 ý
-
-RÀNG BUỘC
-- Chỉ dùng thông tin có trong evidence_chunks; không bịa.
-- Nếu câu hỏi ngoài chủ đề: trả về refuse_out_of_scope.
-- Nếu text nguồn quá nhiễu/thiếu để trả lời an toàn: trả về need_clean_text.
-- Luôn trả JSON hợp lệ theo đúng schema được yêu cầu ở user message.
+FORMAT OUTPUT (CHỈ JSON):
+{
+  "status": "OK" | "NEED_MORE_INFO",
+  "action": "ANSWER" | "ASK_TOPIC_OR_DOC" | "REFUSE_OUT_OF_SCOPE",
+  "answer_md": "...",
+  "follow_up_questions": ["..."],
+  "sources": []
+}
 
 PHẠM VI CHỦ ĐỀ HIỆN TẠI: {topic_scope}
 TÓM TẮT CÂU HỎI HỌC SINH: {user_question_summary}
@@ -826,7 +831,6 @@ def tutor_chat(
     assessment_id: Optional[int] = None,
     attempt_id: Optional[int] = None,
     exam_mode: bool = False,
-    exam_mode: bool = False,
     timed_test: bool = False,
 ) -> Dict[str, Any]:
     """Virtual AI Tutor (RAG). Answers using only retrieved evidence and suggests follow-ups."""
@@ -1143,12 +1147,61 @@ def tutor_chat(
         packed = pack_chunks(chunks, max_chunks=min(4, len(chunks)), max_chars_per_chunk=750, max_total_chars=2800)
         rag_context = "\n\n".join([f"[chunk_id:{c.get('chunk_id')}] {str(c.get('text') or '')}" for c in packed])
         sys = TUTOR_SYSTEM_PROMPT.format(topic_scope=scope, rag_context=rag_context, user_question_summary=(q[:90] + "…") if len(q) > 90 else q)
-        user = {"question": q, "topic": (topic or "").strip() or None, "exam_mode": exam_mode, "timed_test": timed_test, "session_history": {"recent_questions": recent_questions[-5:], "explained_topics": explained_topics[-8:]}, "output_format": {"answer_md": "markdown", "follow_up_questions": ["string", "string", "string"]}}
+        user = {
+            "question": q,
+            "topic": (topic or "").strip() or None,
+            "exam_mode": exam_mode,
+            "timed_test": timed_test,
+            "session_history": {"recent_questions": recent_questions[-5:], "explained_topics": explained_topics[-8:]},
+            "output_format": {
+                "status": "OK|NEED_MORE_INFO",
+                "action": "ANSWER|ASK_TOPIC_OR_DOC|REFUSE_OUT_OF_SCOPE",
+                "answer_md": "markdown",
+                "follow_up_questions": ["string", "string", "string"],
+                "sources": [],
+            },
+        }
         try:
             resp = chat_json(messages=[{"role": "system", "content": sys}, {"role": "user", "content": json.dumps(user, ensure_ascii=False)}], temperature=0.25, max_tokens=1200)
             if isinstance(resp, dict) and (resp.get("answer_md") or "").strip():
+                status = str(resp.get("status") or "OK").strip().upper()
+                action = str(resp.get("action") or "ANSWER").strip().upper()
                 answer_md = prev_note + str(resp.get("answer_md") or "").strip()
                 fu = _normalize_follow_up_questions(topic, [str(x).strip() for x in (resp.get("follow_up_questions") or []) if str(x).strip()])
+                if status == "NEED_MORE_INFO" or action == "ASK_TOPIC_OR_DOC":
+                    return TutorChatData(
+                        answer_md=answer_md,
+                        was_answered=False,
+                        is_off_topic=False,
+                        refusal_message=None,
+                        refusal_reason="need_more_info",
+                        off_topic_reason=None,
+                        suggested_topics=intent_suggestions,
+                        follow_up_questions=fu,
+                        quick_check_mcq=[],
+                        sources=[],
+                        sources_used=[],
+                        confidence=0.35,
+                        retrieval={**(rag.get("corrective") or {}), "llm_status": status, "llm_action": action},
+                        exam_mode_applied=exam_active,
+                    ).model_dump()
+                if action == "REFUSE_OUT_OF_SCOPE":
+                    return TutorChatData(
+                        answer_md=answer_md,
+                        was_answered=False,
+                        is_off_topic=True,
+                        refusal_message=answer_md,
+                        refusal_reason="refuse_out_of_scope",
+                        off_topic_reason="refuse_out_of_scope",
+                        suggested_topics=intent_suggestions,
+                        follow_up_questions=fu,
+                        quick_check_mcq=[],
+                        sources=[],
+                        sources_used=[],
+                        confidence=min(0.55, float(gate.get("confidence", 0.0) or 0.0)),
+                        retrieval={**(rag.get("corrective") or {}), "llm_status": status, "llm_action": action},
+                        exam_mode_applied=exam_active,
+                    ).model_dump()
                 if exam_active:
                     answer_md = (
                         "**Chế độ kiểm tra đang bật:** Mình không thể đưa đáp án trực tiếp.\n\n"
@@ -1162,7 +1215,7 @@ def tutor_chat(
                 session["explained_topics"] = explained_topics
                 _save_tutor_session(int(user_id), session)
                 confidence = min(0.98, max(0.5, 0.6 + (best_rel * 0.4)))
-                return TutorChatData(answer_md=answer_md, was_answered=True, is_off_topic=False, refusal_message=None, refusal_reason=None, off_topic_reason=None, suggested_topics=intent_suggestions, follow_up_questions=fu, quick_check_mcq=(quick_mcq[:2]), sources=sources, sources_used=sources_used, confidence=confidence, retrieval=rag.get("corrective") or {}, exam_mode_applied=exam_active).model_dump()
+                return TutorChatData(answer_md=answer_md, was_answered=True, is_off_topic=False, refusal_message=None, refusal_reason=None, off_topic_reason=None, suggested_topics=intent_suggestions, follow_up_questions=fu, quick_check_mcq=(quick_mcq[:2]), sources=sources, sources_used=sources_used, confidence=confidence, retrieval={**(rag.get("corrective") or {}), "llm_status": status, "llm_action": action}, exam_mode_applied=exam_active).model_dump()
         except Exception:
             pass
 
