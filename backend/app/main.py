@@ -13,6 +13,8 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.config import settings
+from app.core.logging import configure_logging
+from app.core.observability import setup_observability
 from app.api.routes.health import router as health_router
 from app.api.routes.documents import router as documents_router
 from app.api.routes.rag import router as rag_router
@@ -40,9 +42,8 @@ from app.models.user import User
 from app.services import vector_store
 
 
+configure_logging()
 logger = logging.getLogger("app.request")
-if not logging.getLogger().handlers:
-    logging.basicConfig(level=logging.INFO)
 
 
 def envelope(request_id: str, data: Any = None, error: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -117,7 +118,10 @@ def _resolve_cors_origins() -> list[str]:
 def create_app(auth_enabled: Optional[bool] = None) -> FastAPI:
     app = FastAPI(
         title=settings.APP_NAME,
-        version="0.3.0",
+        version="0.4.0",
+        openapi_url="/api/v1/openapi.json",
+        docs_url="/api/v1/docs",
+        redoc_url="/api/v1/redoc",
     )
 
     app.add_middleware(
@@ -129,6 +133,7 @@ def create_app(auth_enabled: Optional[bool] = None) -> FastAPI:
     )
 
     _include_api_routers(app, settings.AUTH_ENABLED if auth_enabled is None else auth_enabled)
+    setup_observability(app)
     return app
 
 
@@ -198,6 +203,8 @@ async def request_id_middleware(request: Request, call_next):
         )
     latency_ms = round((time.perf_counter() - start) * 1000, 2)
     response.headers["X-Request-ID"] = req_id
+    if request.method == "GET" and response.status_code == 200:
+        response.headers.setdefault("Cache-Control", "public, max-age=30")
     logger.info(
         json.dumps(
             {

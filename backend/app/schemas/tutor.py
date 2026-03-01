@@ -86,3 +86,10 @@ class TutorGenerateQuestionsData(BaseModel):
     questions: List[TutorPracticeQuestion] = Field(default_factory=list)
     sources: List[TutorSource] = Field(default_factory=list)
     retrieval: Dict[str, Any] = Field(default_factory=dict)
+
+
+class TutorChatEnqueueResponse(BaseModel):
+    job_id: Optional[str] = None
+    queued: bool
+    sync_executed: bool
+    result: Optional[Dict[str, Any]] = None
