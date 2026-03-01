@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterable
 
 UTF8_BOM = b"\xef\xbb\xbf"
+SKIP_DIR_NAMES = {".git", ".venv", "venv", "node_modules", "__pycache__"}
 
 
 def iter_python_files(roots: Iterable[Path]) -> Iterable[Path]:
@@ -16,12 +17,15 @@ def iter_python_files(roots: Iterable[Path]) -> Iterable[Path]:
             yield root
             continue
 
-        if not root.exists():
+        if not root.exists() or not root.is_dir():
             continue
 
         for path in root.rglob("*.py"):
-            if path.is_file():
-                yield path
+            if not path.is_file():
+                continue
+            if any(part in SKIP_DIR_NAMES for part in path.parts):
+                continue
+            yield path
 
 
 def strip_bom(path: Path) -> bool:
@@ -37,14 +41,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Recursively scan directories and strip UTF-8 BOM from *.py files. "
-            "Defaults to backend/."
+            "Defaults to current repository root."
         )
     )
     parser.add_argument(
         "paths",
         nargs="*",
-        default=["backend"],
-        help="Directories or files to scan (default: backend)",
+        default=["."],
+        help="Directories or files to scan (default: current directory)",
     )
     return parser.parse_args()
 

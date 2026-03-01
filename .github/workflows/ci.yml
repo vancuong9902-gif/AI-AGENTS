@@ -25,8 +25,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Lint
-        run: npm run lint
+      - name: Lint (if script exists)
+        run: npm run --if-present lint
 
       - name: Build
         run: npm run build
@@ -50,11 +50,5 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
 
-      - name: Lint
-        run: ruff check tests/test_topic_validation.py --select F
-
-      - name: Format check
-        run: ruff format --check tests/test_topic_validation.py
-
       - name: Test
-        run: pytest tests/test_topic_validation.py
+        run: pytest

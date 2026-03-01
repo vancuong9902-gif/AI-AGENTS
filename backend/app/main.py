@@ -55,17 +55,16 @@ class InMemoryTokenBucket:
         self._buckets: dict[str, dict[str, float]] = {}
 
     def allow(self, key: str, rate_per_minute: int | None = None) -> bool:
-        if rate_per_minute is not None:
-            self.rate = max(1, int(rate_per_minute))
+        capacity = max(1, int(rate_per_minute)) if rate_per_minute is not None else self.rate
         now = time.monotonic()
         bucket = self._buckets.get(key)
         if bucket is None:
-            self._buckets[key] = {"tokens": float(self.rate - 1), "ts": now}
+            self._buckets[key] = {"tokens": float(capacity - 1), "ts": now}
             return True
 
-        refill_per_sec = self.rate / 60.0
+        refill_per_sec = capacity / 60.0
         elapsed = max(0.0, now - bucket["ts"])
-        bucket["tokens"] = min(float(self.rate), bucket["tokens"] + elapsed * refill_per_sec)
+        bucket["tokens"] = min(float(capacity), bucket["tokens"] + elapsed * refill_per_sec)
         bucket["ts"] = now
         if bucket["tokens"] < 1.0:
             return False
@@ -82,6 +81,7 @@ app = FastAPI(
 )
 def _include_api_routers(fastapi_app: FastAPI, auth_enabled: bool) -> None:
     fastapi_app.include_router(health_router, prefix="/api")
+    fastapi_app.include_router(health_router)
     fastapi_app.include_router(documents_router, prefix="/api")
     fastapi_app.include_router(rag_router, prefix="/api")
     fastapi_app.include_router(quiz_router, prefix="/api")
@@ -107,6 +107,13 @@ def _include_api_routers(fastapi_app: FastAPI, auth_enabled: bool) -> None:
         fastapi_app.include_router(auth_router, prefix="/api")
 
 
+def _resolve_cors_origins() -> list[str]:
+    origin = (settings.FRONTEND_ORIGIN or "").strip()
+    if origin:
+        return [origin]
+    return [o for o in settings.BACKEND_CORS_ORIGINS if o != "*"]
+
+
 def create_app(auth_enabled: Optional[bool] = None) -> FastAPI:
     app = FastAPI(
         title=settings.APP_NAME,
@@ -115,7 +122,7 @@ def create_app(auth_enabled: Optional[bool] = None) -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.BACKEND_CORS_ORIGINS,
+        allow_origins=_resolve_cors_origins(),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -137,7 +144,13 @@ async def request_id_middleware(request: Request, call_next):
     max_upload_bytes = int(settings.MAX_UPLOAD_MB) * 1024 * 1024
     content_type = (request.headers.get("content-type") or "").lower()
     content_length = request.headers.get("content-length")
-    if content_type.startswith("multipart/form-data") and content_length:
+    upload_methods = {"POST", "PUT", "PATCH"}
+    is_body_upload = request.method in upload_methods and (
+        content_type.startswith("multipart/form-data")
+        or content_type.startswith("application/octet-stream")
+        or content_type.startswith("application/json")
+    )
+    if is_body_upload and content_length:
         try:
             if int(content_length) > max_upload_bytes:
                 return JSONResponse(
@@ -193,15 +206,21 @@ async def request_id_middleware(request: Request, call_next):
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     req_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+    is_production = settings.ENV.lower() in {"prod", "production"}
 
     detail = exc.detail
     # Preserve structured error details when provided (e.g., NEED_CLEAN_TEXT).
     if isinstance(detail, dict):
         code = str(detail.get("code") or "HTTP_ERROR")
         message = detail.get("message") or detail.get("reason") or str(detail)
+        if is_production and exc.status_code >= 500:
+            message = "Internal server error"
         error = {"code": code, "message": message, "details": detail}
     else:
-        error = {"code": "HTTP_ERROR", "message": str(detail)}
+        message = str(detail)
+        if is_production and exc.status_code >= 500:
+            message = "Internal server error"
+        error = {"code": "HTTP_ERROR", "message": message}
 
     return JSONResponse(
         status_code=exc.status_code,
@@ -319,4 +338,3 @@ def bootstrap_demo_user():
             pass
     finally:
         db.close()
-

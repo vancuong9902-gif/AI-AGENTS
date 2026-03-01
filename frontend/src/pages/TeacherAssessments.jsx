@@ -110,7 +110,7 @@ export default function TeacherAssessments() {
   const loadDocs = async () => {
     try {
       const data = await apiJson("/documents?limit=100&offset=0");
-      const arr = data?.documents || [];
+      const arr = Array.isArray(data?.items) ? data.items : data?.documents || [];
       setDocs(Array.isArray(arr) ? arr : []);
     } catch {
       // ignore
