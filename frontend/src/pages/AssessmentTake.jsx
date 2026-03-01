@@ -28,6 +28,7 @@ export default function AssessmentTake() {
   const warningShownRef = useRef({ five: false, one: false });
   const diagnosticBannerRef = useRef(null);
 
+  const learningPathBannerRef = useRef(null);
   const answeredCount = useMemo(() => Object.keys(answers).length, [answers]);
 
   const qMap = useMemo(() => {
@@ -66,7 +67,21 @@ export default function AssessmentTake() {
     if (s < 40) return { label: "Yếu", color: "#cf1322", bg: "#fff1f0", track: "#ffccc7" };
     if (s < 60) return { label: "Trung bình", color: "#d48806", bg: "#fff7e6", track: "#ffd591" };
     if (s < 80) return { label: "Khá", color: "#096dd9", bg: "#e6f4ff", track: "#91caff" };
-    return { label: "Giỏi", color: "#389e0d", bg: "#f6ffed", track: "#b7eb8f" };
+    return { label: "Giỏi", color: "#722ed1", bg: "#f9f0ff", track: "#d3adf7" };
+  };
+
+  const levelBadgeTheme = (levelValue) => {
+    const level = String(levelValue || "").toLowerCase();
+    if (level.includes("yếu") || level.includes("yeu") || level.includes("beginner")) {
+      return { color: "#cf1322", bg: "#fff1f0", border: "#ffa39e" };
+    }
+    if (level.includes("trung bình") || level.includes("trung_binh") || level.includes("intermediate")) {
+      return { color: "#d48806", bg: "#fff7e6", border: "#ffd591" };
+    }
+    if (level.includes("khá") || level.includes("kha") || level.includes("proficient")) {
+      return { color: "#096dd9", bg: "#e6f4ff", border: "#91caff" };
+    }
+    return { color: "#722ed1", bg: "#f9f0ff", border: "#d3adf7" };
   };
 
 
@@ -115,6 +130,12 @@ export default function AssessmentTake() {
       if (item?.is_correct) buckets[key].correct += 1;
     }
     return buckets;
+  }, [result]);
+
+  useEffect(() => {
+    if (result?.synced_diagnostic?.stage === "pre" && result?.synced_diagnostic?.plan_id) {
+      learningPathBannerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
   }, [result]);
 
   const groupedQuestions = useMemo(() => {
@@ -755,6 +776,7 @@ export default function AssessmentTake() {
             {result?.synced_diagnostic?.stage === "pre" && (
               <div
                 ref={diagnosticBannerRef}
+                ref={learningPathBannerRef}
                 style={{
                   marginTop: 10,
                   background: "#fff",
@@ -766,6 +788,8 @@ export default function AssessmentTake() {
                 <div style={{ fontWeight: 800 }}>🎯 Placement test đã cập nhật trình độ</div>
                 <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <span style={{ color: "#333" }}>Level:</span>
+                <div style={{ marginTop: 6, color: "#333", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span>Level mới:</span>
                   <span
                     style={{
                       display: "inline-flex",
@@ -780,6 +804,14 @@ export default function AssessmentTake() {
                     }}
                   >
                     {diagnosticLevelTheme(result?.synced_diagnostic?.level).label}
+                      fontWeight: 700,
+                      fontSize: 13,
+                      border: `1px solid ${levelBadgeTheme(result.synced_diagnostic.level).border}`,
+                      color: levelBadgeTheme(result.synced_diagnostic.level).color,
+                      background: levelBadgeTheme(result.synced_diagnostic.level).bg,
+                    }}
+                  >
+                    {result.synced_diagnostic.level || "Chưa xác định"}
                   </span>
                 </div>
                 {result.synced_diagnostic.teacher_topic ? (
@@ -792,6 +824,9 @@ export default function AssessmentTake() {
                     <div style={{ fontWeight: 700, color: "#237804" }}>✅ AI đã tạo lộ trình 7 ngày phù hợp với bạn</div>
                     <div style={{ marginTop: 8 }}>
                       <button style={{ padding: "8px 12px", cursor: "pointer" }} onClick={() => navigate("/learning-path")}>
+                    <div style={{ fontWeight: 700, color: "#166534" }}>✅ AI đã tạo lộ trình 7 ngày phù hợp với bạn</div>
+                    <div style={{ marginTop: 8 }}>
+                      <button style={{ padding: "8px 12px" }} onClick={() => navigate('/learning-path')}>
                         Xem Learning Path
                       </button>
                     </div>

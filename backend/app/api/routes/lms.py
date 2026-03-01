@@ -118,6 +118,25 @@ class SubmitAttemptByIdIn(BaseModel):
     answers: list[dict] = Field(default_factory=list)
 
 
+def _normalize_synced_diagnostic(base: dict) -> dict:
+    """Ensure submit responses expose synced diagnostic payload consistently."""
+    synced = dict(base.get("synced_diagnostic") or {})
+    if not synced:
+        return base
+
+    plan_id = synced.get("plan_id") or synced.get("learning_plan_id") or base.get("learning_plan_id")
+    if plan_id is not None:
+        synced["plan_id"] = plan_id
+        synced["learning_plan_id"] = plan_id
+
+    if synced.get("stage") == "pre":
+        if synced.get("level") is None and base.get("student_level") is not None:
+            synced["level"] = base.get("student_level")
+
+    base["synced_diagnostic"] = synced
+    return base
+
+
 class AssignPathIn(BaseModel):
     student_level: str
     document_ids: list[int] = Field(default_factory=list)
@@ -927,6 +946,8 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
     except Exception:
         pass
 
+    base = _normalize_synced_diagnostic(base)
+
     if str(getattr(quiz, "kind", "") or "") == "diagnostic_pre":
         evt = Event(
             type="ENTRY_TEST_SUBMITTED",
@@ -1224,6 +1245,7 @@ def lms_submit_attempt(request: Request, assessment_id: int, payload: SubmitAtte
 
     base["score_breakdown"] = breakdown
     base["student_level"] = level
+    base = _normalize_synced_diagnostic(base)
     base["multidim_profile"] = persisted["profile"]
     base["multidim_profile_key"] = persisted["key"]
     base["recommendations"] = recommendations

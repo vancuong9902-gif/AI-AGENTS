@@ -15,6 +15,7 @@ export default function FileLibrary() {
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [tagFilter, setTagFilter] = useState('');
+  const activeClassroomId = Number(localStorage.getItem('teacher_active_classroom_id')) || null;
 
   const refresh = async () => {
     setLoading(true);
@@ -61,7 +62,16 @@ export default function FileLibrary() {
                 {filtered.map((d) => (
                   <tr key={d.document_id}>
                     <td>{d.title}</td><td>{d.filename}</td><td>{d.chunk_count}</td><td>{(d.tags || []).join(', ') || '-'}</td>
-                    <td style={{ display: 'flex', gap: 8 }}><Link to={`/teacher/documents/${d.document_id}/topic-review`}><Button>Review & Publish topics</Button></Link></td>
+                    <td style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <Link to={`/teacher/documents/${d.document_id}/topic-review`}><Button>Review & Publish topics</Button></Link>
+                      <Link
+                        to={activeClassroomId
+                          ? `/teacher/classrooms/${activeClassroomId}/documents/${d.document_id}/topics`
+                          : '/teacher/assessments'}
+                      >
+                        <Button variant='primary'>Quản lý topics</Button>
+                      </Link>
+                    </td>
                   </tr>
                 ))}
               </tbody>
