@@ -23,6 +23,7 @@ from app.schemas.assessment import (
     AssessmentSubmitRequest,
     TeacherGradeRequest,
 )
+from app.api.routes.lms import collect_excluded_quiz_ids_for_classroom_final
 from app.services.assessment_service import (
     generate_assessment,
     generate_diagnostic_assessment,
@@ -255,6 +256,10 @@ def assessments_generate(
     if not c or int(c.teacher_id) != int(teacher.id):
         raise HTTPException(status_code=404, detail="Classroom not found")
 
+    exclude_ids = []
+    if str(payload.kind or "").lower() in {"diagnostic_post", "final_exam"}:
+        exclude_ids = collect_excluded_quiz_ids_for_classroom_final(db, int(payload.classroom_id))
+
     try:
         data = generate_assessment(
             db,
@@ -267,7 +272,11 @@ def assessments_generate(
             document_ids=payload.document_ids,
             topics=payload.topics,
             kind=payload.kind,
+            exclude_quiz_ids=exclude_ids,
+            similarity_threshold=0.75,
         )
+        if exclude_ids:
+            data["excluded_from_count"] = len(exclude_ids)
         return {"request_id": request.state.request_id, "data": data, "error": None}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -417,9 +426,6 @@ def quiz_set_start(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-
-@router.post("/assessments/quiz-sets/{quiz_set_id}/submit")
-def quiz_set_submit(
 
 @router.post("/assessments/quiz-sets/{quiz_set_id}/submit")
 def assessments_submit_quiz_set(

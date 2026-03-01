@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import re
 import copy
 import json
 import logging
@@ -392,6 +393,37 @@ def _is_assessment_kind(kind: str) -> bool:
     return (kind or "").strip().lower() in ("midterm", "diagnostic_pre", "diagnostic_post", "assessment", "entry_test", "final_exam", "final")
 
 
+
+
+def parse_duration_seconds(level_text: str | None) -> int | None:
+    raw = str(level_text or "").strip()
+    if not raw:
+        return None
+    m = re.search(r"(?:^|;)\s*duration\s*=\s*(\d+)\s*(?:$|;)", raw, flags=re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        sec = int(m.group(1))
+    except Exception:
+        return None
+    return sec if sec > 0 else None
+
+
+def clean_level_text(level_text: str | None) -> str:
+    raw = str(level_text or "")
+    cleaned = re.sub(r"(?:^|;)\s*duration\s*=\s*\d+\s*(?=$|;)", "", raw, flags=re.IGNORECASE)
+    cleaned = re.sub(r";{2,}", ";", cleaned).strip(" ;")
+    return cleaned or raw
+
+
+def resolve_duration_seconds(quiz_set: QuizSet) -> int:
+    direct = int(getattr(quiz_set, "duration_seconds", 0) or 0)
+    if direct > 0:
+        return direct
+    parsed = parse_duration_seconds(getattr(quiz_set, "level", ""))
+    if parsed and parsed > 0:
+        return int(parsed)
+    return 0
 def _is_final_diagnostic_kind(kind: str | None) -> bool:
     return (kind or "").strip().lower() in ("final_exam", "diagnostic_post")
 
@@ -2528,8 +2560,10 @@ def generate_assessment(
     return {
         "assessment_id": quiz_set.id,
         "title": quiz_set.topic,
-        "level": quiz_set.level,
+        "level": clean_level_text(quiz_set.level),
         "time_limit_minutes": int(total_minutes),
+        "duration_seconds": int(duration_seconds),
+        "level_raw": quiz_set.level,
         "exam_type_label": "Kiểm tra cuối kỳ" if _is_final_diagnostic_kind(kind) else "Kiểm tra đầu vào",
         "metadata": quiz_metadata,
         "questions": questions_out,
@@ -2654,7 +2688,8 @@ def get_assessment(db: Session, *, assessment_id: int) -> Dict[str, Any]:
         .all()
     )
 
-    total_minutes = max(0, int((getattr(quiz_set, "duration_seconds", 0) or 0) // 60))
+    duration_seconds = resolve_duration_seconds(quiz_set)
+    total_minutes = max(0, int(duration_seconds // 60))
 
     # Backfill for older assessments that were created before we stored estimated_minutes.
     if total_minutes <= 0 and questions:
@@ -2692,11 +2727,13 @@ def get_assessment(db: Session, *, assessment_id: int) -> Dict[str, Any]:
     return {
         "assessment_id": quiz_set.id,
         "title": quiz_set.topic,
-        "level": quiz_set.level,
+        "level": clean_level_text(quiz_set.level),
         "kind": quiz_set.kind,
         "exam_type_label": "Kiểm tra cuối kỳ" if _normalize_assessment_kind(getattr(quiz_set, "kind", "")) == "final_exam" else "Kiểm tra đầu vào",
         "metadata": getattr(quiz_set, "metadata_json", {}) or {},
         "time_limit_minutes": int(total_minutes),
+        "duration_seconds": int(duration_seconds),
+        "level_raw": quiz_set.level,
         "questions": [
             {
                 "question_id": q.id,
@@ -3118,7 +3155,9 @@ def list_assessments_for_teacher(db: Session, *, teacher_id: int, classroom_id: 
             "assessment_id": r[0].id,
             "classroom_id": int(r[1]),
             "title": r[0].topic,
-            "level": r[0].level,
+            "level": clean_level_text(r[0].level),
+            "level_raw": r[0].level,
+            "duration_seconds": int(resolve_duration_seconds(r[0])),
             "kind": _normalize_assessment_kind(r[0].kind),
             "created_at": r[0].created_at.isoformat(),
         }
@@ -3147,7 +3186,9 @@ def list_assessments_for_user(db: Session, *, user_id: int, classroom_id: int | 
             "assessment_id": r[0].id,
             "classroom_id": int(r[1]),
             "title": r[0].topic,
-            "level": r[0].level,
+            "level": clean_level_text(r[0].level),
+            "level_raw": r[0].level,
+            "duration_seconds": int(resolve_duration_seconds(r[0])),
             "kind": _normalize_assessment_kind(r[0].kind),
             "created_at": r[0].created_at.isoformat(),
         }
