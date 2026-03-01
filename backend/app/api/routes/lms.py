@@ -19,7 +19,6 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models.attempt import Attempt
 from app.models.classroom import ClassroomMember
 from app.models.classroom_assessment import ClassroomAssessment
 from app.mas.base import AgentContext
@@ -504,7 +503,7 @@ def _collect_quiz_ids_from_learning_plan_json(plan_json: dict | None) -> set[int
 
 def collect_excluded_quiz_ids_for_classroom_final(db: Session, classroom_id: int) -> list[int]:
     cid = int(classroom_id)
-    excluded: set[int] = set()
+    excluded: set[int] = set(_placement_quiz_ids_by_classroom(db, classroom_id=cid))
 
     assigned_ids = (
         db.query(ClassroomAssessment.assessment_id)
@@ -513,32 +512,6 @@ def collect_excluded_quiz_ids_for_classroom_final(db: Session, classroom_id: int
         .all()
     )
     excluded.update(int(r[0]) for r in assigned_ids if r and r[0] is not None)
-
-    student_ids = [
-        int(r[0])
-        for r in db.query(ClassroomMember.user_id)
-        .filter(ClassroomMember.classroom_id == cid)
-        .distinct()
-        .all()
-        if r and r[0] is not None
-    ]
-    if student_ids:
-        attempted_ids = (
-            db.query(Attempt.quiz_set_id)
-            .filter(Attempt.user_id.in_(student_ids), Attempt.quiz_set_id.isnot(None))
-            .distinct()
-            .all()
-        )
-        excluded.update(int(r[0]) for r in attempted_ids if r and r[0] is not None)
-
-        lp_rows = (
-            db.query(LearningPlan.plan_json)
-            .filter(LearningPlan.classroom_id == cid, LearningPlan.user_id.in_(student_ids))
-            .all()
-        )
-        for row in lp_rows:
-            excluded.update(_collect_quiz_ids_from_learning_plan_json((row[0] if row else None) or {}))
-
     return sorted(excluded)
 
 
