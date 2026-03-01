@@ -49,7 +49,6 @@ export default function NotificationBell() {
     }
 
     const topic = n?.payload_json?.topic || n?.data?.topic;
-    const topic = n?.payload_json?.topic;
     if (topic) navigate(`/learning-path?topic=${encodeURIComponent(topic)}`);
     else navigate('/learning-path');
     setOpen(false);
@@ -57,7 +56,7 @@ export default function NotificationBell() {
 
   return (
     <div className='notification-wrap' ref={panelRef}>
-      <button className='notification-bell' onClick={() => setOpen((v) => !v)} aria-label='Notifications'>
+      <button className='notification-bell' onClick={() => setOpen((v) => !v)} aria-label='Thông báo'>
         🔔
         {unreadCount > 0 && <span className='notification-badge'>{unreadCount}</span>}
       </button>

@@ -2,10 +2,10 @@ export default function Modal({ open, title, children, onClose, actions }) {
   if (!open) return null;
   return (
     <div className='modal-backdrop' onClick={onClose}>
-      <div className='modal-card' onClick={(e) => e.stopPropagation()}>
-        <h3 style={{ marginTop: 0 }}>{title}</h3>
+      <div className='modal-card' onClick={(e) => e.stopPropagation()} role='dialog' aria-modal='true' aria-label={title}>
+        <h3 className='modal-title'>{title}</h3>
         <div>{children}</div>
-        <div className='row' style={{ marginTop: 16, justifyContent: 'flex-end' }}>{actions}</div>
+        <div className='modal-actions'>{actions}</div>
       </div>
     </div>
   );

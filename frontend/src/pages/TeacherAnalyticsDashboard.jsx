@@ -1,11 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
-import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid } from "recharts";
-import { apiJson, API_BASE, buildAuthHeaders } from "../lib/api";
-import { useAuth } from "../context/AuthContext";
+import { useEffect, useMemo, useState } from 'react';
+import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid } from 'recharts';
+import { apiJson, API_BASE, buildAuthHeaders } from '../lib/api';
+import { useAuth } from '../context/AuthContext';
+import Card from '../ui/Card';
+import Button from '../ui/Button';
+import PageHeader from '../ui/PageHeader';
+import EmptyState from '../ui/EmptyState';
 
 export default function TeacherAnalyticsDashboard() {
   const { role, userId } = useAuth();
-  const [classroomId, setClassroomId] = useState(localStorage.getItem("teacher_report_classroom_id") || "1");
+  const [classroomId, setClassroomId] = useState(localStorage.getItem('teacher_report_classroom_id') || '1');
   const [report, setReport] = useState(null);
   const [hoursData, setHoursData] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -15,7 +19,7 @@ export default function TeacherAnalyticsDashboard() {
     if (!cid) return;
     setLoading(true);
     try {
-      localStorage.setItem("teacher_report_classroom_id", String(cid));
+      localStorage.setItem('teacher_report_classroom_id', String(cid));
       const data = await apiJson(`/lms/teacher/report/${cid}`);
       setReport(data);
       if (userId) {
@@ -28,65 +32,78 @@ export default function TeacherAnalyticsDashboard() {
   };
 
   useEffect(() => {
-    if (role === "teacher") loadReport();
+    if (role === 'teacher') loadReport();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [role]);
 
-  const rows = useMemo(() => Array.isArray(report?.per_student) ? report.per_student : [], [report]);
+  const rows = useMemo(() => (Array.isArray(report?.per_student) ? report.per_student : []), [report]);
 
   const download = async (url, filename) => {
     const res = await fetch(url, { headers: buildAuthHeaders() });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const blob = await res.blob();
-    const a = document.createElement("a");
+    const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = filename;
     a.click();
     URL.revokeObjectURL(a.href);
   };
 
-  if (role !== "teacher") return <div style={{ padding: 16 }}>Trang này dành cho giáo viên.</div>;
+  if (role !== 'teacher') {
+    return <div className='container'><Card><p className='page-subtitle'>Trang này dành cho giáo viên.</p></Card></div>;
+  }
 
   return (
-    <div style={{ maxWidth: 1200, margin: "0 auto", padding: 16 }}>
-      <h2>📊 Teacher Analytics Dashboard</h2>
-      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-        <input value={classroomId} onChange={(e) => setClassroomId(e.target.value)} style={{ width: 120 }} />
-        <button onClick={loadReport}>{loading ? "Đang tải..." : "Tải báo cáo"}</button>
-        <button onClick={() => download(`${API_BASE}/lms/teacher/report/${Number(classroomId)}/export/pdf`, `teacher_report_${classroomId}.pdf`)}>📄 Xuất Báo Cáo PDF</button>
-        <button onClick={() => download(`${API_BASE}/lms/teacher/report/${Number(classroomId)}/export/excel`, `teacher_report_${classroomId}.xlsx`)}>📊 Xuất Excel</button>
-      </div>
+    <div className='container grid-12'>
+      <Card className='span-12'>
+        <PageHeader title='Phân tích học tập' subtitle='Theo dõi báo cáo lớp, tải PDF/Excel và xem tiến độ theo thời gian.' breadcrumbs={['Giáo viên', 'Phân tích học tập']} />
+      </Card>
 
-      <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 10, padding: 12, marginBottom: 12 }}>
-        <div>Tổng HS: <b>{report?.summary?.total_students || 0}</b></div>
-        <div>Đã có final: <b>{report?.summary?.students_with_final || 0}</b></div>
-      </div>
-
-      <div style={{ background: "#fff", border: "1px solid #eee", borderRadius: 10, padding: 12, marginBottom: 12 }}>
-        <h3 style={{ marginTop: 0 }}>Biểu đồ giờ học theo ngày (30 ngày)</h3>
-        <div style={{ width: "100%", height: 280 }}>
-          <ResponsiveContainer>
-            <LineChart data={hoursData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="date" />
-              <YAxis />
-              <Tooltip />
-              <Line type="monotone" dataKey="hours" stroke="#2563eb" strokeWidth={2} />
-            </LineChart>
-          </ResponsiveContainer>
+      <Card className='span-12 stack-md'>
+        <div className='row'>
+          <input className='input' value={classroomId} onChange={(e) => setClassroomId(e.target.value)} style={{ maxWidth: 160 }} aria-label='Mã lớp học' />
+          <Button onClick={loadReport}>{loading ? 'Đang tải...' : 'Tải báo cáo'}</Button>
+          <Button onClick={() => download(`${API_BASE}/lms/teacher/report/${Number(classroomId)}/export/pdf`, `teacher_report_${classroomId}.pdf`)}>Xuất báo cáo PDF</Button>
+          <Button onClick={() => download(`${API_BASE}/lms/teacher/report/${Number(classroomId)}/export/excel`, `teacher_report_${classroomId}.xlsx`)}>Xuất Excel</Button>
         </div>
-      </div>
 
-      <table style={{ width: "100%", borderCollapse: "collapse" }}>
-        <thead><tr><th>Tên</th><th>Placement</th><th>Final</th><th>Improvement</th></tr></thead>
-        <tbody>
-          {rows.map((s) => (
-            <tr key={s.student_id} style={{ borderTop: "1px solid #eee" }}>
-              <td>{s.student_name || s.name}</td><td>{s.placement_score ?? "—"}</td><td>{s.final_score ?? "—"}</td><td>{s.improvement ?? "—"}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+        <div className='grid-12'>
+          <Card className='span-4'>Tổng học viên: <b>{report?.summary?.total_students || 0}</b></Card>
+          <Card className='span-4'>Đã có điểm cuối kỳ: <b>{report?.summary?.students_with_final || 0}</b></Card>
+        </div>
+
+        <Card className='stack-sm'>
+          <h3 className='section-title'>Biểu đồ giờ học theo ngày (30 ngày)</h3>
+          <div style={{ width: '100%', height: 280 }}>
+            <ResponsiveContainer>
+              <LineChart data={hoursData}>
+                <CartesianGrid strokeDasharray='3 3' stroke='var(--border)' />
+                <XAxis dataKey='date' stroke='var(--muted)' />
+                <YAxis stroke='var(--muted)' />
+                <Tooltip />
+                <Line type='monotone' dataKey='hours' stroke='var(--primary)' strokeWidth={2} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
+
+        {!rows.length ? (
+          <EmptyState icon='📊' title='Chưa có dữ liệu học viên' description='Hãy tải báo cáo của lớp học khác hoặc thử lại sau.' />
+        ) : (
+          <div className='data-table-wrap'>
+            <table className='data-table'>
+              <thead><tr><th>Tên học viên</th><th>Điểm đầu vào</th><th>Điểm cuối kỳ</th><th>Cải thiện</th></tr></thead>
+              <tbody>
+                {rows.map((s) => (
+                  <tr key={s.student_id}>
+                    <td>{s.student_name || s.name}</td><td>{s.placement_score ?? '—'}</td><td>{s.final_score ?? '—'}</td><td>{s.improvement ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
     </div>
   );
 }

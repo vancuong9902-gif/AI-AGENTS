@@ -8,6 +8,7 @@ import Spinner from '../ui/Spinner';
 import Banner from '../ui/Banner';
 import PageHeader from '../ui/PageHeader';
 import Skeleton from '../ui/Skeleton';
+import EmptyState from '../ui/EmptyState';
 
 export default function FileLibrary() {
   const [docs, setDocs] = useState([]);
@@ -41,7 +42,7 @@ export default function FileLibrary() {
   return (
     <div className='container grid-12'>
       <Card className='span-12'>
-        <PageHeader title='Library' subtitle='Quản lý tài liệu và topics trước khi tạo placement/final quiz.' breadcrumbs={['Teacher', 'Library']} />
+        <PageHeader title='Thư viện tài liệu' subtitle='Quản lý tài liệu và chủ đề trước khi tạo bài kiểm tra.' breadcrumbs={['Giáo viên', 'Thư viện tài liệu']} />
       </Card>
 
       <Card className='span-12 stack-md'>
@@ -52,26 +53,26 @@ export default function FileLibrary() {
         {loading ? <><Skeleton height={24} /><Skeleton height={24} /><Spinner /></> : null}
         {error ? <Banner tone='error'>{error}</Banner> : null}
         {!loading && !error && filtered.length === 0 ? (
-          <Banner tone='info'>Thư viện chưa có tài liệu phù hợp. <Link to='/upload' style={{ color: 'var(--primary)' }}>Tải lên tài liệu</Link></Banner>
+          <EmptyState icon='📁' title='Chưa có tài liệu phù hợp' description='Thử đổi bộ lọc hoặc tải thêm tài liệu mới.' actionLabel='Tải lên tài liệu' onAction={() => window.location.assign('/upload')} />
         ) : null}
         {!loading && !error && filtered.length > 0 ? (
-          <div style={{ overflowX: 'auto' }}>
+          <div className='data-table-wrap'>
             <table className='data-table'>
-              <thead><tr><th>Title</th><th>Filename</th><th>Chunks</th><th>Tags</th><th>Actions</th></tr></thead>
+              <thead><tr><th>Tiêu đề</th><th>Tệp</th><th>Số đoạn</th><th>Thẻ</th><th>Thao tác</th></tr></thead>
               <tbody>
                 {filtered.map((d) => (
                   <tr key={d.document_id}>
                     <td>{d.title}</td><td>{d.filename}</td><td>{d.chunk_count}</td><td>{(d.tags || []).join(', ') || '-'}</td>
-                    <td style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                      <Link to={`/teacher/documents/${d.document_id}/topic-review`}><Button>Review & Publish topics</Button></Link>
+                    <td><div className='row'>
+                      <Link to={`/teacher/documents/${d.document_id}/topic-review`}><Button>Rà soát và công bố chủ đề</Button></Link>
                       <Link
                         to={activeClassroomId
                           ? `/teacher/classrooms/${activeClassroomId}/documents/${d.document_id}/topics`
                           : '/teacher/assessments'}
                       >
-                        <Button variant='primary'>Quản lý topics</Button>
+                        <Button variant='primary'>Quản lý chủ đề</Button>
                       </Link>
-                    </td>
+                    </div></td>
                   </tr>
                 ))}
               </tbody>
