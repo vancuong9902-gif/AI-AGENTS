@@ -12,7 +12,7 @@ import {
   XAxis,
   YAxis,
   CartesianGrid,
-} from "recharts";
+} from "../lib/rechartsCompat";
 import { API_BASE, apiJson, buildAuthHeaders } from "../lib/api";
 
 const LEVEL_LABEL = {

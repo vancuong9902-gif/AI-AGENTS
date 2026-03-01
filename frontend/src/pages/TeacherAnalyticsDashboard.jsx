@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid } from 'recharts';
+import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid } from '../lib/rechartsCompat';
 import { apiJson, API_BASE, buildAuthHeaders } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import Card from '../ui/Card';

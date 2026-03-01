@@ -7,7 +7,7 @@ import {
   Tooltip,
   XAxis,
   YAxis,
-} from "recharts";
+} from "../lib/rechartsCompat";
 
 function toPercent(value) {
   const n = Number(value);
