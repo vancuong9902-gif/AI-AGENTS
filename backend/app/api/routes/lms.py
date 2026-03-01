@@ -238,6 +238,64 @@ def _normalize_submit_synced_diagnostic(base: dict, *, quiz_kind: str | None = N
     return base
 
 
+
+
+def _extract_quiz_document_ids(quiz: QuizSet | None) -> list[int]:
+    if not quiz:
+        return []
+    raw = getattr(quiz, "document_ids_json", None)
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    out: list[int] = []
+    for item in parsed:
+        try:
+            out.append(int(item))
+        except Exception:
+            continue
+    return out
+
+
+def _infer_document_ids_from_topics(db: Session, topic_names: list[str]) -> list[int]:
+    names = [str(t).strip() for t in (topic_names or []) if str(t).strip()]
+    if not names:
+        return []
+
+    doc_ids: set[int] = set()
+    for topic_name in names:
+        topic_row = (
+            db.query(DocumentTopic.document_id)
+            .filter(DocumentTopic.title.ilike(f"%{topic_name}%"))
+            .order_by(DocumentTopic.topic_index.asc(), DocumentTopic.id.asc())
+            .first()
+        )
+        if topic_row is None:
+            continue
+        row_val = topic_row[0] if isinstance(topic_row, tuple) else getattr(topic_row, "document_id", topic_row)
+        try:
+            doc_ids.add(int(row_val))
+        except Exception:
+            continue
+    return sorted(doc_ids)
+
+
+def _upsert_plan_weak_topics(db: Session, *, plan_id: int | None, weak_topics: list[str]) -> None:
+    if not plan_id:
+        return
+    plan = db.query(LearningPlan).filter(LearningPlan.id == int(plan_id)).first()
+    if not plan:
+        return
+    payload = dict(plan.plan_json or {}) if isinstance(plan.plan_json, dict) else {}
+    payload["weak_topics"] = [str(t) for t in (weak_topics or []) if str(t).strip()]
+    plan.plan_json = payload
+    db.add(plan)
+    db.commit()
+
 def _final_exam_eligibility_payload(db: Session, *, classroom_id: int, user_id: int) -> dict:
     has_diagnostic_pre = (
         db.query(DiagnosticAttempt.id)
@@ -1273,32 +1331,48 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
 
     # === AUTO-ASSIGN LEARNING PATH SAU KHI PHÂN LOẠI ===
     classroom_id_for_path = int(getattr(quiz, "classroom_id", 0) or 0)
-    try:
-        doc_ids = []
-        if quiz and quiz.document_ids_json:
-            import json as _json
+    quiz_kind = str(getattr(quiz, "kind", "") or "").lower()
+    should_auto_assign = quiz_kind in {"diagnostic_pre", "diagnostic_post"}
+    weak_topics = [
+        topic
+        for topic, stat in ((breakdown.get("by_topic") or {}).items())
+        if float((stat or {}).get("percent") or 0) < 65
+    ]
 
-            doc_ids = [int(x) for x in (_json.loads(quiz.document_ids_json) or [])]
+    if should_auto_assign:
+        try:
+            doc_ids = _extract_quiz_document_ids(quiz)
 
-        if not doc_ids:
             ca = db.query(ClassroomAssessment).filter(
                 ClassroomAssessment.assessment_id == quiz_id
             ).first()
             if ca:
-                classroom_id_for_path = int(ca.classroom_id)
+                classroom_id_for_path = int(getattr(ca, "classroom_id", 0) or classroom_id_for_path or 0)
 
-        auto_plan = assign_learning_path(
-            db,
-            user_id=int(started.user_id),
-            student_level=str(level.get("level_key") or "trung_binh"),
-            document_ids=doc_ids,
-            classroom_id=int(classroom_id_for_path) if classroom_id_for_path else 0,
-        )
-        base["learning_path_assigned"] = True
-        base["learning_plan_id"] = auto_plan.get("plan_id")
-        base = _normalize_submit_synced_diagnostic(base, quiz_kind=getattr(quiz, "kind", None))
-    except Exception as _e:
-        logging.getLogger(__name__).warning(f"Auto-assign learning path failed: {_e}")
+            if not doc_ids:
+                doc_ids = _infer_document_ids_from_topics(db, weak_topics)
+
+            auto_plan = assign_learning_path(
+                db,
+                user_id=int(started.user_id),
+                student_level=str(level.get("level_key") or "trung_binh"),
+                document_ids=doc_ids,
+                classroom_id=int(classroom_id_for_path) if classroom_id_for_path else 0,
+            )
+            _upsert_plan_weak_topics(
+                db,
+                plan_id=auto_plan.get("plan_id"),
+                weak_topics=weak_topics,
+            )
+
+            base["learning_path_assigned"] = True
+            base["learning_plan_id"] = auto_plan.get("plan_id")
+            base["weak_topics"] = weak_topics
+            base = _normalize_submit_synced_diagnostic(base, quiz_kind=getattr(quiz, "kind", None))
+        except Exception as _e:
+            logging.getLogger(__name__).warning(f"Auto-assign learning path failed: {_e}")
+            base["learning_path_assigned"] = False
+    else:
         base["learning_path_assigned"] = False
 
     try:
@@ -1489,16 +1563,59 @@ def get_my_path(request: Request, user_id: int, db: Session = Depends(get_db)):
         .order_by(LearningPlan.id.desc())
         .first()
     )
-    assigned_tasks = []
-    if plan and isinstance(plan.plan_json, dict):
-        assigned_tasks = (plan.plan_json or {}).get("assigned_tasks", [])
+
+    plan_json = dict(plan.plan_json or {}) if plan and isinstance(plan.plan_json, dict) else {}
+    assigned_tasks = plan_json.get("assigned_tasks") if isinstance(plan_json.get("assigned_tasks"), list) else []
+    weak_topics = [str(t) for t in (plan_json.get("weak_topics") or []) if str(t).strip()]
+
+    level_key = str((profile.level if profile else None) or (plan.level if plan else None) or "trung_binh")
+    level_map = {
+        "gioi": {"label": "Giỏi", "color": "green"},
+        "kha": {"label": "Khá", "color": "blue"},
+        "trung_binh": {"label": "Trung Bình", "color": "orange"},
+        "yeu": {"label": "Yếu", "color": "red"},
+    }
+    level_info = level_map.get(level_key, level_map["trung_binh"])
+
+    total_tasks = len(assigned_tasks)
+    completed_tasks = 0
+    progress_percent = 0.0
+    if plan:
+        completed_rows = (
+            db.query(LearningPlanTaskCompletion)
+            .filter(
+                LearningPlanTaskCompletion.plan_id == int(plan.id),
+                LearningPlanTaskCompletion.completed.is_(True),
+            )
+            .all()
+        )
+        completed_tasks = len(completed_rows)
+        if total_tasks > 0:
+            progress_percent = round((completed_tasks / total_tasks) * 100, 2)
 
     return {
         "request_id": request.state.request_id,
         "data": {
-            "student_level": profile.level if profile else None,
+            "student_level": level_key,
+            "level": {
+                "key": level_key,
+                "label": level_info["label"],
+                "color": level_info["color"],
+            },
+            "progress": {
+                "completed_tasks": completed_tasks,
+                "total_tasks": total_tasks,
+                "percent": progress_percent,
+            },
+            "plan": {
+                "plan_id": int(plan.id) if plan else None,
+                "assigned_tasks": assigned_tasks,
+                "tasks": assigned_tasks,
+                "weak_topics": weak_topics,
+            },
             "plan_id": int(plan.id) if plan else None,
             "assigned_tasks": assigned_tasks,
+            "weak_topics": weak_topics,
         },
         "error": None,
     }

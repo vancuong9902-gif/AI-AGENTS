@@ -155,7 +155,7 @@ function levelFromRaw(levelRaw) {
 
 
 function StudentLevelBadge({ level }) {
-  const meta = levelMeta(level);
+  const meta = levelFromRaw(level?.label || level);
   return (
     <span
       style={{
@@ -299,7 +299,6 @@ export default function LearningPath() {
   );
 
   const allDone = timelineTasks.length > 0 && completedCount === timelineTasks.length;
-  const activeLevel = levelMeta(myPath?.student_level || plan?.student_level || "Khá");
   const adaptiveItems = useMemo(() => (Array.isArray(currentPlan?.items) ? currentPlan.items : []), [currentPlan]);
   const groupedAdaptive = useMemo(() => ({
     study_material: adaptiveItems.filter((x) => x?.type === "study_material"),
@@ -524,6 +523,14 @@ export default function LearningPath() {
   }
 
   const assignedTopicIds = new Set((myPath?.assigned_tasks || []).map((t) => Number(t?.topic_id)).filter((v) => Number.isFinite(v)));
+  const assignedTasks = Array.isArray(myPath?.plan?.assigned_tasks)
+    ? myPath.plan.assigned_tasks
+    : Array.isArray(myPath?.assigned_tasks)
+      ? myPath.assigned_tasks
+      : [];
+  const weakTopics = new Set((myPath?.weak_topics || myPath?.plan?.weak_topics || []).map((t) => String(t || "").toLowerCase()));
+  const progress = myPath?.progress || { completed_tasks: 0, total_tasks: assignedTasks.length, percent: 0 };
+  const levelDisplay = myPath?.level || { key: activeLevel?.label, label: activeLevel?.label || "Khá", color: activeLevel?.color || "blue" };
   const pageWrap = { maxWidth: 1020, margin: "0 auto", padding: 16 };
   const card = { border: "1px solid #eee", borderRadius: 14, padding: 16, background: "#fff" };
 
@@ -561,14 +568,16 @@ export default function LearningPath() {
             <div style={{ marginTop: 6, color: "#333" }}>
               Dựa trên bài kiểm tra đầu vào {formatVNDate(myPath?.assessment_date || plan?.created_at)}
             </div>
-            <div style={{ marginTop: 8, maxWidth: 620 }}>
-              <StudentLevelBadge level={activeLevel} size="lg" />
-            </div>
-            <div style={{ marginTop: 8 }}>
-              <StudentLevelBadge level={currentPlan?.student_level || activeLevel.label} />
+            <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <strong>Trình độ:</strong>
+              <StudentLevelBadge level={levelDisplay.label} />
+              <span style={{ color: "#666" }}>({String(levelDisplay.label || "").toUpperCase()})</span>
             </div>
             <div style={{ marginTop: 10, color: "#555" }}>
-              Đã hoàn thành {currentPlan?.completed_items ?? completedCount}/{currentPlan?.total_items ?? (timelineTasks.length || 0)} bài
+              Tiến độ: {progress.completed_tasks}/{progress.total_tasks} nhiệm vụ ({progress.percent}%)
+            </div>
+            <div style={{ marginTop: 6, width: "100%", maxWidth: 520, height: 10, borderRadius: 999, background: "#f0f0f0", overflow: "hidden" }}>
+              <div style={{ width: `${Math.max(0, Math.min(100, Number(progress.percent) || 0))}%`, height: "100%", background: "#1677ff" }} />
             </div>
             <div style={{ marginTop: 10, color: "#555" }}>
               Lộ trình AI tạo cho trình độ <strong>{String(activeLevel?.label || "Khá").toUpperCase()}</strong>: {planStats.materials} tài liệu | {planStats.exercises} bài tập | {planStats.tests} bài kiểm tra
@@ -585,6 +594,33 @@ export default function LearningPath() {
           </div>
         </div>
       </div>
+
+      {!!assignedTasks.length && (
+        <div style={{ ...card, marginBottom: 12 }}>
+          <h3 style={{ marginTop: 0 }}>📌 Nhiệm vụ được giao</h3>
+          <div style={{ display: "grid", gap: 8 }}>
+            {assignedTasks.map((task, idx) => {
+              const isWeak = weakTopics.has(String(task?.topic_title || "").toLowerCase());
+              return (
+                <div key={`${task?.topic_id || "t"}-${idx}`} style={{ border: "1px solid #eee", borderRadius: 10, padding: 10, display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                  <div>
+                    <div style={{ fontWeight: 700 }}>{task?.topic_title || "Chủ đề"}</div>
+                    <div style={{ marginTop: 4 }}>
+                      <span style={{ fontSize: 12, padding: "2px 8px", borderRadius: 999, background: isWeak ? "#fff1f0" : "#f6ffed", color: isWeak ? "#cf1322" : "#389e0d" }}>
+                        Priority: {isWeak ? "high" : "normal"}
+                      </span>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => nav(`/topics/${task?.topic_id || ""}`)} disabled={!task?.topic_id}>Học ngay</button>
+                    <button onClick={() => nav(`/assessments/${task?.quiz_id || ""}`)} disabled={!task?.quiz_id}>Làm quiz</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {currentPlan && (
         <div style={{ ...card, marginBottom: 12 }}>
@@ -691,8 +727,8 @@ export default function LearningPath() {
                           <div style={{ marginTop: 6, fontSize: 13, color: "#666" }}>Trạng thái: {statusText} • ⏱ ~{task?.estimated_minutes || 15} phút</div>
                         </div>
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-start" }}>
-                          <button onClick={() => nav(`/topics/${task?.topic_id || ""}`)} disabled={!task?.topic_id}>📚 Học bài</button>
-                          <button onClick={() => nav(`/practice/${task?.topic_id || ""}`)} disabled={!task?.topic_id}>📝 Làm bài tập</button>
+                          <button onClick={() => nav(`/topics/${task?.topic_id || ""}`)} disabled={!task?.topic_id}>Học ngay</button>
+                          <button onClick={() => nav(`/practice/${task?.topic_id || ""}`)} disabled={!task?.topic_id}>Làm quiz</button>
                           <button onClick={() => { setSelectedDay(dayIndex); toggleTask(dayIndex, taskIndex, true); }}>✅ Đánh dấu hoàn thành</button>
                         </div>
                       </div>
