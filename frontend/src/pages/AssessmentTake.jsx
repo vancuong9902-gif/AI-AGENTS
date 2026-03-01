@@ -14,6 +14,7 @@ export default function AssessmentTake() {
   const [deadlineAt, setDeadlineAt] = useState(null);
   const [timeLeftSec, setTimeLeftSec] = useState(null);
   const [attemptId, setAttemptId] = useState(null);
+  const [serverOffsetMs, setServerOffsetMs] = useState(0);
   const [timedOutBanner, setTimedOutBanner] = useState(false);
   const [attemptLocked, setAttemptLocked] = useState(false);
   const [result, setResult] = useState(null);
@@ -264,13 +265,22 @@ export default function AssessmentTake() {
       });
       setAttemptId(Number(session?.attempt_id || 0) || null);
 
+      const currentAttemptId = Number(session?.attempt_id || 0) || null;
+      setAttemptId(currentAttemptId);
+
+      const serverNowMs = Date.parse(session?.server_time || "");
+      const offsetMs = Number.isFinite(serverNowMs) && serverNowMs > 0 ? serverNowMs - Date.now() : 0;
+      setServerOffsetMs(offsetMs);
+
       const deadlineMs = Date.parse(session?.deadline_utc || "");
       if (Number.isFinite(deadlineMs) && deadlineMs > 0) {
         setDeadlineAt(deadlineMs);
-        setTimeLeftSec(Math.max(0, Math.floor((deadlineMs - Date.now()) / 1000)));
+        setTimeLeftSec(Math.max(0, Math.floor((deadlineMs - (Date.now() + offsetMs)) / 1000)));
       } else {
         setDeadlineAt(null);
         const secs = Number(session?.duration_seconds || 0);
+
+        const secs = Number(session?.remaining_seconds ?? session?.duration_seconds || 0);
         setTimeLeftSec(Number.isFinite(secs) && secs > 0 ? secs : null);
       }
     } catch (e) {
@@ -290,6 +300,10 @@ export default function AssessmentTake() {
     if (timeLeftSec == null || result || submitting) return;
 
     const t = setInterval(() => {
+      if (deadlineAt) {
+        setTimeLeftSec(Math.max(0, Math.floor((deadlineAt - (Date.now() + serverOffsetMs)) / 1000)));
+        return;
+      }
       setTimeLeftSec((prev) => {
         if (prev == null) return prev;
         return Math.max(0, prev - 1);
@@ -298,6 +312,38 @@ export default function AssessmentTake() {
 
     return () => clearInterval(t);
   }, [timeLeftSec == null, result, submitting]);
+  }, [timeLeftSec == null, result, submitting, deadlineAt, serverOffsetMs]);
+
+
+  useEffect(() => {
+    if (!attemptId || result || submitting) return;
+
+    const poll = async () => {
+      try {
+        const status = await apiJson(`/attempts/${attemptId}/status`, { method: "GET" });
+        const serverNowMs = Date.parse(status?.server_time || "");
+        const offsetMs = Number.isFinite(serverNowMs) && serverNowMs > 0 ? serverNowMs - Date.now() : serverOffsetMs;
+        setServerOffsetMs(offsetMs);
+
+        const deadlineMs = Date.parse(status?.deadline || "");
+        if (Number.isFinite(deadlineMs) && deadlineMs > 0) {
+          setDeadlineAt(deadlineMs);
+          setTimeLeftSec(Math.max(0, Math.floor((deadlineMs - (Date.now() + offsetMs)) / 1000)));
+        } else {
+          const remaining = Number(status?.remaining_seconds);
+          if (Number.isFinite(remaining)) {
+            setTimeLeftSec(Math.max(0, Math.floor(remaining)));
+          }
+        }
+      } catch {
+        // keep local countdown when status endpoint is temporarily unavailable.
+      }
+    };
+
+    poll();
+    const t = setInterval(poll, 15000);
+    return () => clearInterval(t);
+  }, [attemptId, result, submitting, serverOffsetMs]);
 
   useEffect(() => {
     if (timeLeftSec == null || result || submitting) return;
@@ -375,7 +421,14 @@ export default function AssessmentTake() {
 
       if (!attemptId) {
         throw new Error("Không tìm thấy attempt để nộp bài.");
+
+        throw new Error("Không tìm thấy attempt hợp lệ. Vui lòng tải lại bài làm.");
       }
+      const r = await apiJson(`/attempts/${attemptId}/submit`, {
+        method: "POST",
+        body: { answers: answerList },
+      });
+
       const r = await apiJson(`/attempts/${attemptId}/submit`, {
         method: "POST",
         body: { answers: answerList },
