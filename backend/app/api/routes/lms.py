@@ -56,6 +56,7 @@ from app.services.lms_service import (
     get_student_homework_results,
     resolve_student_name,
     score_breakdown,
+    _difficulty_from_breakdown_item,
     assign_topic_materials,
     assign_learning_path,
     teacher_report as build_teacher_report,
@@ -789,6 +790,139 @@ def start_attempt(request: Request, payload: StartAttemptIn, db: Session = Depen
             "start_time": session.started_at.isoformat() if session.started_at else datetime.now(timezone.utc).isoformat(),
             "duration_seconds": int(duration_seconds or 0),
         },
+        "error": None,
+    }
+
+
+@router.get("/attempts/{attempt_id}/result")
+def get_attempt_result(request: Request, attempt_id: int, db: Session = Depends(get_db)):
+    session = db.query(UserSession).filter(UserSession.id == int(attempt_id)).first()
+    if not session or not str(session.type or "").startswith("quiz_attempt:"):
+        raise HTTPException(status_code=404, detail="Attempt session not found")
+
+    try:
+        quiz_id = int(str(session.type).split(":", 1)[1])
+    except Exception:
+        raise HTTPException(status_code=400, detail="Attempt session payload is invalid")
+
+    quiz = db.query(QuizSet).filter(QuizSet.id == int(quiz_id)).first()
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    linked_attempt_record_id = getattr(session, "linked_attempt_record_id", None)
+    attempt_record = None
+    if linked_attempt_record_id is not None:
+        attempt_record = db.query(Attempt).filter(Attempt.id == int(linked_attempt_record_id)).first()
+
+    if not attempt_record:
+        q = (
+            db.query(Attempt)
+            .filter(Attempt.user_id == int(session.user_id), Attempt.quiz_set_id == int(quiz_id))
+            .order_by(Attempt.created_at.desc())
+        )
+        if getattr(session, "started_at", None) is not None:
+            q = q.filter(Attempt.created_at >= session.started_at)
+        attempt_record = q.first()
+
+    if not attempt_record:
+        raise HTTPException(status_code=404, detail="Attempt result not found")
+
+    questions = (
+        db.query(Question)
+        .filter(Question.quiz_set_id == int(quiz_id))
+        .order_by(Question.order_no.asc())
+        .all()
+    )
+    q_by_id = {int(q.id): q for q in questions}
+
+    breakdown = list(attempt_record.breakdown_json or [])
+    by_qid = {}
+    for item in breakdown:
+        try:
+            by_qid[int(item.get("question_id") or 0)] = item
+        except Exception:
+            continue
+
+    questions_detail = []
+    for q in questions:
+        item = by_qid.get(int(q.id), {})
+        options = list(getattr(q, "options", None) or [])
+        student_answer_idx = item.get("chosen") if str(item.get("type") or q.type or "").lower() == "mcq" else None
+        correct_answer_idx = int(getattr(q, "correct_index", -1)) if str(q.type or "").lower() == "mcq" else None
+
+        try:
+            student_answer_idx = int(student_answer_idx) if student_answer_idx is not None else None
+        except Exception:
+            student_answer_idx = None
+
+        student_answer_text = item.get("answer_text")
+        if str(q.type or "").lower() == "mcq":
+            if student_answer_idx is not None and 0 <= student_answer_idx < len(options):
+                student_answer_text = options[student_answer_idx]
+            else:
+                student_answer_text = None
+
+        correct_answer_text = None
+        if correct_answer_idx is not None and 0 <= correct_answer_idx < len(options):
+            correct_answer_text = options[correct_answer_idx]
+
+        enriched_item = dict(item or {})
+        if not enriched_item.get("bloom_level"):
+            enriched_item["bloom_level"] = getattr(q, "bloom_level", None)
+        difficulty = _difficulty_from_breakdown_item(enriched_item)
+
+        questions_detail.append({
+            "question_id": int(q.id),
+            "order_no": int(item.get("order_no") or getattr(q, "order_no", 0) or 0),
+            "question_text": str(getattr(q, "stem", "") or ""),
+            "type": str(getattr(q, "type", "mcq") or "mcq"),
+            "bloom_level": item.get("bloom_level") or getattr(q, "bloom_level", None),
+            "difficulty": difficulty,
+            "topic": item.get("topic") or str(getattr(quiz, "topic", "") or ""),
+            "options": options,
+            "student_answer_idx": student_answer_idx,
+            "correct_answer_idx": correct_answer_idx,
+            "student_answer_text": student_answer_text,
+            "correct_answer_text": correct_answer_text,
+            "is_correct": bool(item.get("is_correct")) if str(q.type or "").lower() == "mcq" else None,
+            "score_earned": int(item.get("score_points") or 0),
+            "score_max": int(item.get("max_points") or (1 if str(q.type or "").lower() == "mcq" else 0)),
+            "explanation": item.get("explanation") or getattr(q, "explanation", None),
+            "sources": item.get("sources") or list(getattr(q, "sources", None) or []),
+        })
+
+    summary = score_breakdown(breakdown)
+    for key in ("easy", "medium", "hard"):
+        summary.setdefault("by_difficulty", {}).setdefault(key, {"earned": 0, "total": 0, "percent": 0.0})
+
+    level_obj = classify_student_level(int(round(float(summary.get("overall", {}).get("percent") or attempt_record.score_percent or 0))))
+
+    duration_seconds = _quiz_duration_map(quiz)
+    spent = int(getattr(attempt_record, "duration_sec", 0) or 0)
+    timed_out = bool(getattr(attempt_record, "is_late", False) or (duration_seconds and spent > int(duration_seconds)))
+
+    title = str(getattr(quiz, "topic", "") or "").strip() or f"Quiz #{quiz_id}"
+
+    result_detail = {
+        "attempt_record_id": int(attempt_record.id),
+        "quiz_id": int(quiz_id),
+        "quiz_kind": str(getattr(quiz, "kind", "") or ""),
+        "quiz_title": title,
+        "score_percent": int(getattr(attempt_record, "score_percent", 0) or 0),
+        "total_score_percent": float(summary.get("overall", {}).get("percent") or 0.0),
+        "score_points": int(summary.get("overall", {}).get("earned") or 0),
+        "max_points": int(summary.get("overall", {}).get("total") or 0),
+        "classification": str(level_obj.get("level_key") or ""),
+        "level_label": str(level_obj.get("label") or ""),
+        "time_spent_seconds": spent,
+        "timed_out": timed_out,
+        "questions_detail": questions_detail,
+        "summary": summary,
+    }
+
+    return {
+        "request_id": request.state.request_id,
+        "data": {"result_detail": result_detail},
         "error": None,
     }
 

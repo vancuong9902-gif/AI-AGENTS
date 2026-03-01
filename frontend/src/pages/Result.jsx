@@ -1,296 +1,255 @@
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import {
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
+  Tooltip,
+  BarChart,
+  CartesianGrid,
+  XAxis,
+  YAxis,
+  Bar,
+} from "recharts";
+
 import Card from "../ui/Card";
 import Banner from "../ui/Banner";
 import Button from "../ui/Button";
 import PageHeader from "../ui/PageHeader";
+import { Accordion, AccordionItem } from "../ui/Accordion";
+import { apiJson } from "../lib/api";
 
-const DIFFICULTIES = ["easy", "medium", "hard"];
-
-const TYPE_META = {
-  entry: { title: "Kết quả bài kiểm tra đầu vào", subtitle: "Tổng hợp năng lực hiện tại của bạn." },
-  final: { title: "Kết quả bài kiểm tra cuối kỳ", subtitle: "Đánh giá tổng thể sau quá trình học." },
-  assessment: { title: "Kết quả bài assessment", subtitle: "Xem điểm số và các phần cần cải thiện." },
-  homework: { title: "Kết quả bài tập", subtitle: "Phân tích nhanh theo độ khó và chủ đề." },
+const DIFFICULTY_LABELS = {
+  easy: "Dễ",
+  medium: "Trung bình",
+  hard: "Khó",
 };
 
-const LEVEL_META = {
-  gioi: { label: "Giỏi", tone: "#15803d", bg: "#dcfce7" },
-  kha: { label: "Khá", tone: "#1d4ed8", bg: "#dbeafe" },
-  trung_binh: { label: "Trung bình", tone: "#b45309", bg: "#fef3c7" },
-  yeu: { label: "Yếu", tone: "#b91c1c", bg: "#fee2e2" },
-};
+const PIE_COLORS = ["#6366f1", "#14b8a6", "#f59e0b", "#ef4444", "#8b5cf6", "#0ea5e9"];
 
-function toNumber(value, fallback = 0) {
-  const num = Number(value);
-  return Number.isFinite(num) ? num : fallback;
+function asNumber(v, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
 }
 
-function clampPercent(value) {
-  return Math.max(0, Math.min(100, Math.round(toNumber(value, 0))));
-}
-
-function mapType(rawType) {
-  const value = String(rawType || "").toLowerCase();
-  if (["entry", "diagnostic", "diagnostic_pre"].includes(value)) return "entry";
-  if (["final", "final_exam"].includes(value)) return "final";
-  if (value === "homework") return "homework";
-  return "assessment";
-}
-
-function deriveClassification(scorePercent, classificationRaw) {
-  const normalized = String(classificationRaw || "").toLowerCase();
-  if (["gioi", "excellent", "high"].includes(normalized)) return "gioi";
-  if (["kha", "good", "medium_high"].includes(normalized)) return "kha";
-  if (["trung_binh", "average", "medium"].includes(normalized)) return "trung_binh";
-  if (["yeu", "weak", "low"].includes(normalized)) return "yeu";
-
-  const score = clampPercent(scorePercent);
-  if (score >= 85) return "gioi";
-  if (score >= 70) return "kha";
-  if (score >= 50) return "trung_binh";
-  return "yeu";
-}
-
-function normalizeDifficultyBucket(raw) {
-  const total = toNumber(raw?.total ?? raw?.count ?? 0, 0);
-  const correct = toNumber(raw?.correct ?? raw?.correct_count ?? 0, 0);
-  const pctFromCorrect = total > 0 ? (correct / total) * 100 : 0;
-  const pct = clampPercent(raw?.percentage ?? raw?.percent ?? raw?.score_percent ?? pctFromCorrect);
-  return { total, correct, percentage: pct };
-}
-
-function aggregateFromBreakdown(breakdown) {
-  const byDifficulty = {
-    easy: { total: 0, correct: 0 },
-    medium: { total: 0, correct: 0 },
-    hard: { total: 0, correct: 0 },
-  };
-  const byTopic = {};
-
-  (Array.isArray(breakdown) ? breakdown : []).forEach((row) => {
-    const difficulty = String(row?.difficulty || "medium").toLowerCase();
-    const key = DIFFICULTIES.includes(difficulty) ? difficulty : "medium";
-    const isCorrect = Boolean(row?.is_correct);
-
-    byDifficulty[key].total += 1;
-    if (isCorrect) byDifficulty[key].correct += 1;
-
-    const topic = String(row?.topic || row?.topic_name || "Chưa phân loại").trim() || "Chưa phân loại";
-    if (!byTopic[topic]) byTopic[topic] = { total: 0, correct: 0, wrong: 0 };
-    byTopic[topic].total += 1;
-    if (isCorrect) byTopic[topic].correct += 1;
-    else byTopic[topic].wrong += 1;
-  });
-
-  return { byDifficulty, byTopic };
-}
-
-function normalizeResult(result) {
-  const scorePercent = clampPercent(result?.total_score_percent ?? result?.score_percent ?? 0);
-  const derived = aggregateFromBreakdown(result?.breakdown);
-  const apiDiff = result?.score_breakdown?.by_difficulty || result?.breakdown_by_difficulty || {};
-  const apiTopic = result?.score_breakdown?.by_topic || result?.breakdown_by_topic || {};
-
-  const byDifficulty = {};
-  DIFFICULTIES.forEach((difficulty) => {
-    byDifficulty[difficulty] = normalizeDifficultyBucket(apiDiff[difficulty] || derived.byDifficulty[difficulty]);
-  });
-
-  const topicEntries = Object.entries(
-    Array.isArray(apiTopic)
-      ? apiTopic.reduce((acc, item) => {
-          const name = String(item?.topic || item?.topic_name || item?.name || "Chưa phân loại").trim() || "Chưa phân loại";
-          acc[name] = item;
-          return acc;
-        }, {})
-      : apiTopic,
-  ).map(([topic, value]) => {
-    const total = toNumber(value?.total ?? value?.count ?? derived.byTopic[topic]?.total ?? 0, 0);
-    const correct = toNumber(value?.correct ?? value?.correct_count ?? derived.byTopic[topic]?.correct ?? 0, 0);
-    const wrong = toNumber(value?.wrong ?? value?.incorrect ?? Math.max(0, total - correct), 0);
-    const percentage = clampPercent(
-      value?.percentage ?? value?.percent ?? value?.score_percent ?? (total > 0 ? (correct / total) * 100 : 0),
-    );
-    return { topic, total, correct, wrong, percentage };
-  });
-
-  const fallbackTopicEntries = Object.entries(derived.byTopic).map(([topic, stats]) => ({
-    topic,
-    total: stats.total,
-    correct: stats.correct,
-    wrong: stats.wrong,
-    percentage: clampPercent(stats.total > 0 ? (stats.correct / stats.total) * 100 : 0),
-  }));
-
-  const topics = (topicEntries.length ? topicEntries : fallbackTopicEntries)
-    .sort((a, b) => a.percentage - b.percentage)
-    .slice(0, 8);
-
-  const recommendations = Array.isArray(result?.recommendations)
-    ? result.recommendations
-    : Array.isArray(result?.recommendations?.items)
-      ? result.recommendations.items
-      : result?.ai_recommendation
-        ? [result.ai_recommendation]
-        : [];
-
-  return {
-    scorePercent,
-    mcqScorePercent: result?.mcq_score_percent,
-    essayScorePercent: result?.essay_score_percent,
-    classification: deriveClassification(scorePercent, result?.classification),
-    timedOut: Boolean(result?.timed_out || result?.autoSubmitted),
-    byDifficulty,
-    weakTopics: topics,
-    recommendations,
-  };
-}
-
-function ProgressRing({ score }) {
-  const radius = 42;
-  const circumference = 2 * Math.PI * radius;
-  const offset = circumference - (clampPercent(score) / 100) * circumference;
-  return (
-    <svg width="120" height="120" viewBox="0 0 120 120">
-      <circle cx="60" cy="60" r={radius} stroke="#e2e8f0" strokeWidth="10" fill="none" />
-      <circle
-        cx="60"
-        cy="60"
-        r={radius}
-        stroke="#4f46e5"
-        strokeWidth="10"
-        fill="none"
-        strokeDasharray={circumference}
-        strokeDashoffset={offset}
-        strokeLinecap="round"
-        transform="rotate(-90 60 60)"
-      />
-      <text x="60" y="66" textAnchor="middle" fontSize="20" fontWeight="700" fill="#0f172a">
-        {clampPercent(score)}%
-      </text>
-    </svg>
-  );
+function levelTone(levelKey) {
+  const key = String(levelKey || "").toLowerCase();
+  if (key === "gioi") return { label: "Giỏi", bg: "#dcfce7", fg: "#15803d" };
+  if (key === "kha") return { label: "Khá", bg: "#dbeafe", fg: "#1d4ed8" };
+  if (key === "trung_binh") return { label: "Trung bình", bg: "#fef3c7", fg: "#b45309" };
+  return { label: "Yếu", bg: "#fee2e2", fg: "#b91c1c" };
 }
 
 export default function Result() {
-  const location = useLocation();
+  const { attemptId } = useParams();
   const navigate = useNavigate();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [detail, setDetail] = useState(null);
 
-  const state = location.state || {};
-  const resultRaw = state?.result || state?.quizResult || null;
-  const resolvedType = mapType(state?.type || state?.quizType);
-  const header = TYPE_META[resolvedType] || TYPE_META.assessment;
+  useEffect(() => {
+    let mounted = true;
+    async function loadResult() {
+      if (!attemptId) {
+        setError("Thiếu attemptId trong URL.");
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      setError("");
+      try {
+        const data = await apiJson(`/attempts/${encodeURIComponent(attemptId)}/result`);
+        if (!mounted) return;
+        setDetail(data?.result_detail || null);
+      } catch (e) {
+        if (!mounted) return;
+        setError(e?.message || "Không thể tải kết quả.");
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    }
+    loadResult();
+    return () => {
+      mounted = false;
+    };
+  }, [attemptId]);
 
-  if (!resultRaw) {
+  const topicChartData = useMemo(() => {
+    const rows = detail?.summary?.by_topic || {};
+    return Object.entries(rows)
+      .map(([topic, value]) => ({
+        name: topic,
+        percent: asNumber(value?.percent, 0),
+      }))
+      .sort((a, b) => b.percent - a.percent)
+      .slice(0, 8);
+  }, [detail]);
+
+  const difficultyChartData = useMemo(() => {
+    const rows = detail?.summary?.by_difficulty || {};
+    return ["easy", "medium", "hard"].map((key) => ({
+      key,
+      name: DIFFICULTY_LABELS[key],
+      percent: asNumber(rows?.[key]?.percent, 0),
+      earned: asNumber(rows?.[key]?.earned, 0),
+      total: asNumber(rows?.[key]?.total, 0),
+    }));
+  }, [detail]);
+
+  const weakestTopic = topicChartData?.[topicChartData.length - 1]?.name || "nội dung vừa làm";
+  const level = levelTone(detail?.classification);
+
+  if (loading) {
     return (
-      <div style={{ maxWidth: 980, margin: "0 auto", padding: 16, display: "grid", gap: 12 }}>
-        <PageHeader title="Kết quả" subtitle="Không tìm thấy dữ liệu kết quả trong phiên hiện tại." />
-        <Banner tone="warning">Bạn vừa refresh trang hoặc truy cập trực tiếp nên state kết quả đã mất.</Banner>
+      <div style={{ maxWidth: 1100, margin: "0 auto", padding: 16 }}>
+        <PageHeader title="Kết quả" subtitle="Đang tải kết quả bài làm..." />
+      </div>
+    );
+  }
+
+  if (error || !detail) {
+    return (
+      <div style={{ maxWidth: 1100, margin: "0 auto", padding: 16, display: "grid", gap: 12 }}>
+        <PageHeader title="Kết quả" subtitle="Không thể hiển thị chi tiết kết quả." />
+        <Banner tone="warning">{error || "Không có dữ liệu kết quả."}</Banner>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <Link to="/quiz"><Button>Làm quiz</Button></Link>
           <Link to="/assessments"><Button>Bài assessments</Button></Link>
-          <Link to="/learning-path"><Button variant="primary">Đến lộ trình học</Button></Link>
         </div>
       </div>
     );
   }
 
-  const normalized = normalizeResult(resultRaw);
-  const level = LEVEL_META[normalized.classification] || LEVEL_META.trung_binh;
-  const weakestTopicName = normalized.weakTopics[0]?.topic || "Nền tảng";
-
-  const gotoTutor = () => {
-    localStorage.setItem("tutor_topic_prefill", weakestTopicName);
-    navigate("/tutor");
-  };
-
   return (
-    <div style={{ maxWidth: 980, margin: "0 auto", padding: 16, display: "grid", gap: 16 }}>
-      <PageHeader title={header.title} subtitle={header.subtitle} breadcrumbs={["Học sinh", "Kết quả"]} />
+    <div style={{ maxWidth: 1100, margin: "0 auto", padding: 16, display: "grid", gap: 16 }}>
+      <PageHeader
+        title={`Kết quả: ${detail.quiz_title || `Quiz #${detail.quiz_id}`}`}
+        subtitle={`Điểm ${Math.round(asNumber(detail.total_score_percent, detail.score_percent))}% · ${detail.level_label || level.label}`}
+        breadcrumbs={["Học sinh", "Kết quả"]}
+      />
 
-      {normalized.timedOut && <Banner tone="warning">⏱ Hết thời gian làm bài. Hệ thống đã tự nộp bài.</Banner>}
+      {detail.timed_out && <Banner tone="warning">⏱ Bài làm đã quá thời gian cho phép, hệ thống ghi nhận là nộp trễ.</Banner>}
 
-      <Card className="stack" style={{ padding: 16 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
+      <Card style={{ padding: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <div>
-            <div style={{ fontSize: 14, color: "#64748b" }}>Điểm tổng</div>
-            <div style={{ fontSize: 34, fontWeight: 800 }}>{normalized.scorePercent}%</div>
-            <div style={{ marginTop: 8, width: 220, height: 10, borderRadius: 999, background: "#e2e8f0", overflow: "hidden" }}>
-              <div style={{ width: `${normalized.scorePercent}%`, background: "#4f46e5", height: "100%" }} />
+            <div style={{ color: "#64748b", fontSize: 14 }}>Điểm tổng</div>
+            <div style={{ fontSize: 36, fontWeight: 800 }}>{Math.round(asNumber(detail.total_score_percent, detail.score_percent))}%</div>
+            <div style={{ color: "#334155" }}>
+              {asNumber(detail.score_points, 0)} / {asNumber(detail.max_points, 0)} điểm
             </div>
           </div>
-          <ProgressRing score={normalized.scorePercent} />
+          <span style={{ padding: "6px 12px", borderRadius: 999, fontWeight: 700, background: level.bg, color: level.fg }}>
+            Level: {detail.level_label || level.label}
+          </span>
         </div>
-        {(normalized.mcqScorePercent != null || normalized.essayScorePercent != null) && (
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-            {normalized.mcqScorePercent != null && <span>MCQ: <b>{clampPercent(normalized.mcqScorePercent)}%</b></span>}
-            {normalized.essayScorePercent != null && <span>Essay: <b>{clampPercent(normalized.essayScorePercent)}%</b></span>}
-          </div>
-        )}
       </Card>
 
-      <Card style={{ padding: 16 }}>
-        <span style={{ padding: "4px 12px", borderRadius: 999, background: level.bg, color: level.tone, fontWeight: 700 }}>
-          Phân loại: {level.label}
-        </span>
-      </Card>
-
-      <Card style={{ padding: 16 }}>
-        <h3 style={{ marginTop: 0 }}>Breakdown theo độ khó</h3>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ textAlign: "left", borderBottom: "1px solid #e2e8f0" }}>
-              <th style={{ padding: "8px 4px" }}>Độ khó</th>
-              <th style={{ padding: "8px 4px" }}>Đúng/Tổng</th>
-              <th style={{ padding: "8px 4px" }}>Tỷ lệ</th>
-            </tr>
-          </thead>
-          <tbody>
-            {DIFFICULTIES.map((difficulty) => {
-              const row = normalized.byDifficulty[difficulty];
-              const label = difficulty === "easy" ? "Dễ" : difficulty === "medium" ? "Trung bình" : "Khó";
-              return (
-                <tr key={difficulty} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                  <td style={{ padding: "10px 4px" }}>{label}</td>
-                  <td style={{ padding: "10px 4px" }}>{row.correct}/{row.total}</td>
-                  <td style={{ padding: "10px 4px" }}>{row.percentage}%</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </Card>
-
-      <Card style={{ padding: 16 }}>
-        <h3 style={{ marginTop: 0 }}>Topic yếu nhất (top 8)</h3>
-        {normalized.weakTopics.length ? (
-          <div style={{ display: "grid", gap: 8 }}>
-            {normalized.weakTopics.map((topic) => (
-              <div key={topic.topic} style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px solid #f1f5f9", paddingBottom: 6 }}>
-                <span>{topic.topic}</span>
-                <span><b>{topic.percentage}%</b> ({topic.correct}/{topic.total})</span>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p>Chưa có dữ liệu theo topic.</p>
-        )}
-      </Card>
-
-      {normalized.recommendations.length > 0 && (
-        <Card style={{ padding: 16 }}>
-          <h3 style={{ marginTop: 0 }}>Gợi ý học tập</h3>
-          <ul style={{ margin: 0, paddingLeft: 18 }}>
-            {normalized.recommendations.map((item, idx) => (
-              <li key={`rec-${idx}`}>{typeof item === "string" ? item : item?.text || item?.title || JSON.stringify(item)}</li>
-            ))}
-          </ul>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
+        <Card style={{ padding: 16, minHeight: 320 }}>
+          <h3 style={{ marginTop: 0 }}>Phân bố theo chủ đề</h3>
+          <ResponsiveContainer width="100%" height={260}>
+            <PieChart>
+              <Pie data={topicChartData} dataKey="percent" nameKey="name" outerRadius={95} label={(v) => `${v.name}: ${Math.round(v.percent)}%`}>
+                {topicChartData.map((_, index) => (
+                  <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                ))}
+              </Pie>
+              <Tooltip formatter={(value) => `${Number(value).toFixed(2)}%`} />
+            </PieChart>
+          </ResponsiveContainer>
         </Card>
-      )}
+
+        <Card style={{ padding: 16, minHeight: 320 }}>
+          <h3 style={{ marginTop: 0 }}>Kết quả theo độ khó</h3>
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={difficultyChartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="name" />
+              <YAxis domain={[0, 100]} />
+              <Tooltip formatter={(value) => `${Number(value).toFixed(2)}%`} />
+              <Bar dataKey="percent" fill="#4f46e5" radius={[8, 8, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </Card>
+      </div>
+
+      <Card style={{ padding: 16 }}>
+        <h3 style={{ marginTop: 0 }}>Chi tiết từng câu</h3>
+        <Accordion>
+          {(Array.isArray(detail.questions_detail) ? detail.questions_detail : []).map((q, idx) => {
+            const selectedIdx = q.student_answer_idx;
+            const correctIdx = q.correct_answer_idx;
+            const isMcq = String(q.type || "").toLowerCase() === "mcq";
+            return (
+              <AccordionItem
+                key={q.question_id || idx}
+                defaultOpen={idx === 0}
+                title={`Câu ${q.order_no || idx + 1}: ${q.question_text || ""}`}
+                right={q.is_correct == null ? "Tự luận" : q.is_correct ? "✅ Đúng" : "❌ Sai"}
+              >
+                <div style={{ display: "grid", gap: 8 }}>
+                  <div style={{ fontSize: 13, color: "#64748b" }}>
+                    Topic: <b>{q.topic || "N/A"}</b> · Bloom: <b>{q.bloom_level || "understand"}</b> · Difficulty: <b>{DIFFICULTY_LABELS[q.difficulty] || q.difficulty}</b>
+                  </div>
+
+                  {isMcq ? (
+                    <div style={{ display: "grid", gap: 6 }}>
+                      {(Array.isArray(q.options) ? q.options : []).map((opt, optIdx) => {
+                        const isSelected = selectedIdx === optIdx;
+                        const isCorrect = correctIdx === optIdx;
+                        const bg = isCorrect ? "#dcfce7" : isSelected ? "#fee2e2" : "#f8fafc";
+                        const border = isCorrect ? "1px solid #16a34a" : isSelected ? "1px solid #dc2626" : "1px solid #e2e8f0";
+                        return (
+                          <div key={optIdx} style={{ padding: "8px 10px", borderRadius: 10, background: bg, border }}>
+                            <b>{String.fromCharCode(65 + optIdx)}.</b> {opt}
+                            {isSelected && <span style={{ marginLeft: 8 }}>(Bạn chọn)</span>}
+                            {isCorrect && <span style={{ marginLeft: 8 }}>(Đáp án đúng)</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div style={{ display: "grid", gap: 6 }}>
+                      <div><b>Bài làm của bạn:</b> {q.student_answer_text || "(Không có nội dung)"}</div>
+                      <div><b>Điểm:</b> {q.score_earned}/{q.score_max}</div>
+                    </div>
+                  )}
+
+                  {q.explanation && (
+                    <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", padding: 10, borderRadius: 10 }}>
+                      <b>Giải thích:</b> {q.explanation}
+                    </div>
+                  )}
+
+                  {Array.isArray(q.sources) && q.sources.length > 0 && (
+                    <div style={{ fontSize: 13, color: "#334155" }}>
+                      <b>Nguồn tham chiếu:</b>
+                      <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                        {q.sources.map((s, sourceIdx) => (
+                          <li key={sourceIdx}>chunk_id: {s?.chunk_id ?? "N/A"}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              </AccordionItem>
+            );
+          })}
+        </Accordion>
+      </Card>
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <Link to="/learning-path"><Button variant="primary">Đi đến lộ trình học</Button></Link>
-        <Button onClick={gotoTutor}>Học với AI Tutor theo topic yếu nhất</Button>
+        <Link to="/learning-path"><Button variant="primary">Đi tới Learning Path</Button></Link>
+        <Button
+          onClick={() => {
+            localStorage.setItem("tutor_topic_prefill", weakestTopic);
+            navigate("/tutor");
+          }}
+        >
+          Hỏi Tutor
+        </Button>
       </div>
     </div>
   );
