@@ -4,6 +4,7 @@ import asyncio
 import json
 import math
 import re
+import time
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -14,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.agent_log import AgentLog
 from app.models.classroom import ClassroomMember
+from app.models.document import Document
 from app.models.document_topic import DocumentTopic
 from app.models.learning_plan import LearningPlan
 from app.schemas.tutor import TutorChatData, TutorGenerateQuestionsData
@@ -139,6 +141,7 @@ class OffTopicDetector:
 _off_topic_detector = OffTopicDetector()
 
 _LOCAL_SESSION_STORE: Dict[str, Dict[str, Any]] = {}
+_TOPIC_GATE_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
 def _session_key(user_id: int) -> str:
@@ -179,6 +182,141 @@ def _save_tutor_session(user_id: int, data: Dict[str, Any], ttl_sec: int = 60 * 
             cli.setex(key, int(ttl_sec), json.dumps(payload, ensure_ascii=False))
         except Exception:
             pass
+
+
+def _topic_gate_cache_key(*, question: str, topic: Optional[str], document_ids: Optional[List[int]]) -> str:
+    ids = [str(int(x)) for x in (document_ids or []) if x is not None]
+    ids.sort()
+    raw = f"{(question or '').strip().lower()}|{(topic or '').strip().lower()}|{','.join(ids)}"
+    return f"tutor:topic_gate:{raw}"
+
+
+def _topic_gate_cache_get(key: str) -> Optional[Dict[str, Any]]:
+    now = time.time()
+    cli = _get_redis_client()
+    if cli is not None:
+        try:
+            raw = cli.get(key)
+            if raw:
+                val = json.loads(raw)
+                if isinstance(val, dict):
+                    return val
+        except Exception:
+            pass
+    local = _TOPIC_GATE_CACHE.get(key)
+    if not isinstance(local, dict):
+        return None
+    if float(local.get("expires_at", 0.0) or 0.0) <= now:
+        _TOPIC_GATE_CACHE.pop(key, None)
+        return None
+    out = dict(local)
+    out.pop("expires_at", None)
+    return out
+
+
+def _topic_gate_cache_set(key: str, value: Dict[str, Any], ttl_sec: int = 60 * 30) -> None:
+    payload = dict(value or {})
+    payload.pop("expires_at", None)
+    cli = _get_redis_client()
+    if cli is not None:
+        try:
+            cli.setex(key, int(ttl_sec), json.dumps(payload, ensure_ascii=False))
+        except Exception:
+            pass
+    _TOPIC_GATE_CACHE[key] = {**payload, "expires_at": time.time() + int(ttl_sec)}
+
+
+def _topic_lexical_overlap(question: str, topic: Optional[str], context_lines: List[str]) -> bool:
+    q_tokens = _tokenize_vi(question)
+    if not q_tokens:
+        return True
+    scope_tokens = _tokenize_vi(" ".join([topic or "", *context_lines]))
+    if not scope_tokens:
+        return True
+    overlap = len(q_tokens & scope_tokens)
+    return overlap >= 2 or (overlap >= 1 and len(q_tokens) <= 5)
+
+
+def _is_question_on_topic_llm(db: Session, *, question: str, topic: Optional[str], document_ids: Optional[List[int]]) -> Dict[str, Any]:
+    cache_key = _topic_gate_cache_key(question=question, topic=topic, document_ids=document_ids)
+    cached = _topic_gate_cache_get(cache_key)
+    if cached:
+        return cached
+
+    doc_ids = [int(x) for x in (document_ids or []) if x is not None]
+    docs = db.query(Document.id, Document.title).filter(Document.id.in_(doc_ids)).limit(8).all() if doc_ids else []
+    topic_rows = (
+        db.query(DocumentTopic.title, DocumentTopic.summary, DocumentTopic.keywords)
+        .filter(DocumentTopic.document_id.in_(doc_ids))
+        .order_by(DocumentTopic.extraction_confidence.desc())
+        .limit(5)
+        .all()
+        if doc_ids
+        else []
+    )
+    context_lines: List[str] = []
+    for _, title in docs:
+        if str(title or "").strip():
+            context_lines.append(f"Document: {str(title).strip()}")
+    for t_title, summary, keywords in topic_rows[:5]:
+        kw = ", ".join([str(x).strip() for x in (keywords or []) if str(x).strip()][:8])
+        context_lines.append(
+            f"Topic: {str(t_title or '').strip()} | Summary: {str(summary or '').strip()[:220]} | Keywords: {kw}"
+        )
+
+    fallback = {
+        "is_on_topic": _topic_lexical_overlap(question, topic, context_lines),
+        "reason": "lexical_fallback",
+        "suggested_questions": _suggest_on_topic_questions(topic, question),
+    }
+
+    if not (settings.TUTOR_LLM_OFFTOPIC_ENABLED and llm_available()):
+        _topic_gate_cache_set(cache_key, fallback)
+        return fallback
+
+    try:
+        llm_resp = chat_json(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Bạn là bộ phân loại on-topic cho AI Tutor. "
+                        "Bạn PHẢI trả về STRICT JSON với đúng schema: "
+                        "{\"is_on_topic\": true|false, \"reason\": \"string\", \"suggested_questions\": [\"string\",\"string\",\"string\"]}. "
+                        "Không trả thêm text ngoài JSON."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "question": question,
+                            "topic": _topic_scope(topic),
+                            "document_ids": doc_ids,
+                            "scope_context": context_lines[:8],
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            temperature=0.0,
+            max_tokens=220,
+        )
+        verdict = {
+            "is_on_topic": bool((llm_resp or {}).get("is_on_topic", True)),
+            "reason": str((llm_resp or {}).get("reason") or "llm_topic_gate"),
+            "suggested_questions": [
+                str(x).strip() for x in ((llm_resp or {}).get("suggested_questions") or []) if str(x).strip()
+            ][:3],
+        }
+        if not verdict["suggested_questions"]:
+            verdict["suggested_questions"] = _suggest_on_topic_questions(topic, question)
+        _topic_gate_cache_set(cache_key, verdict)
+        return verdict
+    except Exception:
+        fallback["reason"] = "lexical_fallback_after_llm_error"
+        _topic_gate_cache_set(cache_key, fallback)
+        return fallback
 
 
 def _suggest_topics(db: Session, *, document_ids: Optional[List[int]], top_k: int = 3) -> List[str]:
@@ -680,25 +818,20 @@ def tutor_chat(
         ).model_dump()
 
     scope = _topic_scope(topic)
-    filters = {"document_ids": doc_ids} if doc_ids else {}
-    query = f"{topic.strip()}: {q}" if topic and topic.strip() else q
-    rag = corrective_retrieve_and_log(db=db, query=query, top_k=int(max(3, min(20, top_k))), filters=filters, topic=topic)
-
-    off_topic_check = _off_topic_detector.check(question=q, topic=topic or "", rag_results=rag)
-    if off_topic_check["is_off_topic"]:
-        topic_label = topic or "chủ đề học hiện tại"
+    gate_result = _is_question_on_topic_llm(db, question=q, topic=topic, document_ids=doc_ids)
+    suggested_questions = [str(x).strip() for x in (gate_result.get("suggested_questions") or []) if str(x).strip()][:3]
+    if not bool(gate_result.get("is_on_topic", True)):
         refusal = (
-            f"Xin lỗi bạn, câu hỏi này nằm ngoài phạm vi tôi có thể giải đáp trong buổi học này. "
-            f"Tôi chuyên hỗ trợ về '{topic_label}'. "
-            f"Bạn có muốn hỏi về một khía cạnh cụ thể của '{topic_label}' không? "
-            f"Tôi sẵn sàng giải thích chi tiết!"
+            f"Mình xin phép chưa trả lời vì câu hỏi có vẻ ngoài phạm vi chủ đề hiện tại ({scope}). "
+            "Bạn thử một trong các câu gợi ý bên dưới nhé."
         )
+        reason = str(gate_result.get("reason") or "off_topic")
         _log_tutor_flagged_question(
             db,
             user_id=int(user_id),
             question=q,
             topic=topic,
-            reason=str(off_topic_check.get("reason") or "off_topic"),
+            reason=reason,
             suggested_topics=intent_suggestions,
         )
         return TutorChatData(
@@ -706,13 +839,20 @@ def tutor_chat(
             was_answered=False,
             is_off_topic=True,
             refusal_message=refusal,
-            off_topic_reason=str(off_topic_check.get("reason") or "off_topic"),
+            refusal_reason=reason,
+            off_topic_reason=reason,
             suggested_topics=intent_suggestions,
-            follow_up_questions=_suggest_on_topic_questions(topic, q),
+            suggested_questions=suggested_questions,
+            follow_up_questions=suggested_questions,
             quick_check_mcq=[],
             sources=[],
-            retrieval={**(rag.get("corrective") or {}), "off_topic_check": off_topic_check},
+            sources_used=[],
+            retrieval={"topic_gate": gate_result},
         ).model_dump()
+
+    filters = {"document_ids": doc_ids} if doc_ids else {}
+    query = f"{topic.strip()}: {q}" if topic and topic.strip() else q
+    rag = corrective_retrieve_and_log(db=db, query=query, top_k=int(max(3, min(20, top_k))), filters=filters, topic=topic)
 
     corr = rag.get("corrective") or {}
     attempts = corr.get("attempts") or []
