@@ -221,6 +221,7 @@ def generate_diagnostic_pre_payload(
     time_policy: str,
     duration_seconds: int,
     exclude_history: Optional[List[str]] = None,
+    excluded_questions: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Generate a strict diagnostic_pre payload for Assessment Agent contract."""
     topics = [str(t).strip() for t in (selected_topics or []) if str(t).strip()]
@@ -244,18 +245,24 @@ def generate_diagnostic_pre_payload(
 
     lang = "Vietnamese"
     blocked = {str(x).strip() for x in (exclude_history or []) if str(x).strip()}
+    blocked.update({str(x).strip() for x in (excluded_questions or []) if str(x).strip()})
     collected: List[Dict[str, Any]] = []
 
     for _ in range(3):
         prompts_blocked = sorted(list(blocked | {q["fingerprint"] for q in collected}))[:150]
         sys = (
-            "Bạn là Assessment Agent. Tạo BÀI KIỂM TRA ĐẦU VÀO. "
-            "Chỉ dùng thông tin trong evidence_chunks, không bịa. "
-            "Trả JSON hợp lệ duy nhất."
+            "Bạn là giáo viên ra đề. CHỈ dùng evidence_chunks. "
+            "Sinh đề theo 3 độ khó: easy (remember/understand), medium (apply/analyze), "
+            "hard (evaluate/create). "
+            "Phải phủ đều topics giáo viên chọn; mỗi câu có sources (chunk_id). "
+            "Không trùng ý/câu chữ với excluded_questions. "
+            "Trả về JSON hợp lệ duy nhất, có đáp án và giải thích ngắn; essay phải có rubric chấm. "
+            "Nếu evidence không đủ thì giảm số câu hoặc trả lỗi có hướng dẫn, tuyệt đối không bịa."
         )
         user = {
             "selected_topics": topics,
             "evidence_chunks": evidence_chunks,
+            "excluded_questions": prompts_blocked,
             "config": {
                 "easy_count": easy_count,
                 "medium_count": medium_count,
@@ -266,11 +273,14 @@ def generate_diagnostic_pre_payload(
             "exclude_history": prompts_blocked,
             "requirements": [
                 "100% câu hỏi phải map topic thuộc selected_topics.",
+                "Coverage: phân bổ đều topics; topic nào cũng phải có ít nhất 1 câu khi tổng số câu cho phép.",
                 "Mỗi câu có type, stem, explanation, bloom_level, difficulty, topic, sources, estimated_minutes.",
                 "Hard nên có 1-2 essay nếu evidence đủ.",
                 "estimated_minutes trong [1..6].",
                 "sources: ít nhất 1 chunk_id có trong evidence_chunks.",
+                "difficulty mapping bắt buộc: easy→remember/understand; medium→apply/analyze; hard→evaluate/create.",
                 "Với mcq: options + correct_index; với essay: expected_answer + rubric.",
+                "Nếu evidence không đủ thì có thể trả JSON lỗi kèm reason + suggestion; không bịa.",
             ],
             "output_format": {
                 "questions": [
@@ -299,6 +309,9 @@ def generate_diagnostic_pre_payload(
             temperature=0.2,
             max_tokens=2600,
         )
+        if isinstance(obj, dict) and str(obj.get("status") or "").upper() in {"ERROR", "NEED_MORE_EVIDENCE", "NEED_CLEAN_TEXT"}:
+            continue
+
         raw = obj.get("questions") if isinstance(obj, dict) else None
         if not isinstance(raw, list):
             continue
@@ -368,6 +381,16 @@ def generate_diagnostic_pre_payload(
                 "estimated_minutes": est,
                 "fingerprint": fp,
             }
+
+            bloom = str(item.get("bloom_level") or "").strip().lower()
+            allowed_by_difficulty = {
+                "easy": {"remember", "understand"},
+                "medium": {"apply", "analyze"},
+                "hard": {"evaluate", "create"},
+            }
+            if bloom not in allowed_by_difficulty.get(difficulty, set()):
+                continue
+
             if qtype == "mcq":
                 options = q.get("options") if isinstance(q.get("options"), list) else []
                 options = [" ".join(str(o).split()).strip() for o in options if str(o).strip()]
@@ -407,6 +430,11 @@ def generate_diagnostic_pre_payload(
         hard_essays = [q for q in questions if q.get("difficulty") == "hard" and q.get("type") == "essay"]
         if not hard_essays:
             raise HTTPException(status_code=422, detail="Hard section requires essay evidence but none generated")
+
+    if len(topics) <= len(questions):
+        covered_topics = {str(q.get("topic") or "").strip() for q in questions}
+        if any(t not in covered_topics for t in topics):
+            raise HTTPException(status_code=422, detail="Unable to satisfy balanced topic coverage")
 
     total_estimated = sum(int(q.get("estimated_minutes") or 0) for q in questions)
     limit_from_estimate = int(math.ceil(total_estimated * 1.1))

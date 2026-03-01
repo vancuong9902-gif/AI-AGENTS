@@ -66,7 +66,7 @@ def test_generate_diagnostic_pre_payload_respects_counts_and_time(monkeypatch):
                     "expected_answer": "Ý chính",
                     "rubric": [{"criterion": "đúng ý", "points": 5}],
                     "explanation": "exp",
-                    "bloom_level": "analyze",
+                    "bloom_level": "evaluate",
                     "difficulty": "hard",
                     "topic": "Topic B",
                     "sources": [{"chunk_id": 12, "page": 3}],
@@ -104,7 +104,7 @@ def test_generate_diagnostic_pre_payload_requires_hard_essay(monkeypatch):
                     "options": ["A", "B", "C", "D"],
                     "correct_index": 0,
                     "explanation": "exp",
-                    "bloom_level": "analyze",
+                    "bloom_level": "evaluate",
                     "difficulty": "hard",
                     "topic": "Topic A",
                     "sources": [{"chunk_id": 11}],
@@ -127,3 +127,92 @@ def test_generate_diagnostic_pre_payload_requires_hard_essay(monkeypatch):
 
     assert exc.value.status_code == 422
     assert "requires essay" in str(exc.value.detail)
+
+
+def test_generate_diagnostic_pre_payload_rejects_wrong_bloom_for_difficulty(monkeypatch):
+    evidence = [{"chunk_id": 11, "text": "Topic A basics"}]
+
+    def fake_chat_json(*args, **kwargs):
+        return {
+            "questions": [
+                {
+                    "type": "mcq",
+                    "stem": "Câu easy nhưng bloom sai",
+                    "options": ["A", "B", "C", "D"],
+                    "correct_index": 0,
+                    "explanation": "exp",
+                    "bloom_level": "analyze",
+                    "difficulty": "easy",
+                    "topic": "Topic A",
+                    "sources": [{"chunk_id": 11}],
+                    "estimated_minutes": 2,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(agent_service, "chat_json", fake_chat_json)
+
+    with pytest.raises(HTTPException) as exc:
+        agent_service.generate_diagnostic_pre_payload(
+            selected_topics=["Topic A"],
+            evidence_chunks=evidence,
+            config={"easy_count": 1, "medium_count": 0, "hard_count": 0},
+            time_policy="timed",
+            duration_seconds=600,
+            exclude_history=[],
+        )
+
+    assert exc.value.status_code == 422
+    assert "Unable to generate enough" in str(exc.value.detail)
+
+
+def test_generate_diagnostic_pre_payload_requires_topic_coverage(monkeypatch):
+    evidence = [
+        {"chunk_id": 11, "text": "Topic A basics"},
+        {"chunk_id": 12, "text": "Topic B basics"},
+    ]
+
+    def fake_chat_json(*args, **kwargs):
+        return {
+            "questions": [
+                {
+                    "type": "mcq",
+                    "stem": "Câu easy topic A",
+                    "options": ["A", "B", "C", "D"],
+                    "correct_index": 0,
+                    "explanation": "exp",
+                    "bloom_level": "remember",
+                    "difficulty": "easy",
+                    "topic": "Topic A",
+                    "sources": [{"chunk_id": 11}],
+                    "estimated_minutes": 2,
+                },
+                {
+                    "type": "mcq",
+                    "stem": "Câu medium topic A",
+                    "options": ["A", "B", "C", "D"],
+                    "correct_index": 1,
+                    "explanation": "exp",
+                    "bloom_level": "apply",
+                    "difficulty": "medium",
+                    "topic": "Topic A",
+                    "sources": [{"chunk_id": 11}],
+                    "estimated_minutes": 3,
+                },
+            ]
+        }
+
+    monkeypatch.setattr(agent_service, "chat_json", fake_chat_json)
+
+    with pytest.raises(HTTPException) as exc:
+        agent_service.generate_diagnostic_pre_payload(
+            selected_topics=["Topic A", "Topic B"],
+            evidence_chunks=evidence,
+            config={"easy_count": 1, "medium_count": 1, "hard_count": 0},
+            time_policy="timed",
+            duration_seconds=600,
+            exclude_history=[],
+        )
+
+    assert exc.value.status_code == 422
+    assert "coverage" in str(exc.value.detail).lower()
