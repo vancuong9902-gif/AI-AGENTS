@@ -260,6 +260,14 @@ function formatVNDate(dateLike) {
   return d.toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
+function formatApiError(error, fallback = "Đã xảy ra lỗi. Vui lòng thử lại.") {
+  const status = Number(error?.status);
+  if (status === 400 || status === 422) {
+    return error?.message || "Dữ liệu gửi lên chưa hợp lệ. Vui lòng kiểm tra lại thông tin và thử lại.";
+  }
+  return String(error?.message || fallback);
+}
+
 export default function LearningPath() {
   const { userId } = useAuth();
   const nav = useNavigate();
@@ -449,8 +457,11 @@ export default function LearningPath() {
 
   useEffect(() => {
     apiJson(`/lms/student/${userId}/my-path`)
-      .then((d) => setMyPath(d?.data || null))
-      .catch(() => {});
+      .then((d) => setMyPath(d || null))
+      .catch((e) => {
+        setMyPath(null);
+        setError(formatApiError(e, "Không thể tải My Path."));
+      });
   }, [userId]);
 
   useEffect(() => {
@@ -473,7 +484,7 @@ export default function LearningPath() {
     if (!Number.isFinite(cid) || cid <= 0) return;
     apiJson(`/classrooms/${cid}/assessments?kind=final_exam`)
       .then((d) => {
-        const first = Array.isArray(d) ? d[0] : d?.items?.[0] || d?.data?.[0] || null;
+        const first = Array.isArray(d) ? d[0] : d?.items?.[0] || null;
         setFinalExam(first);
       })
       .catch(() => setFinalExam(null));
@@ -486,11 +497,11 @@ export default function LearningPath() {
     try {
       await apiJson(`/learning-plans/${planId}/tasks/complete`, {
         method: "POST",
-        body: JSON.stringify({ user_id: userId, day_index: dayIndex, task_index: taskIndex, completed: !!completed }),
+        body: { user_id: userId, day_index: dayIndex, task_index: taskIndex, completed: !!completed },
       });
       loadTopicProgress();
     } catch (e) {
-      setError(String(e?.message || e));
+      setError(formatApiError(e, "Không thể cập nhật trạng thái nhiệm vụ."));
     }
   }
 
@@ -525,7 +536,7 @@ export default function LearningPath() {
     try {
       const data = await apiJson(`/learning-plans/${planId}/homework/grade`, {
         method: "POST",
-        body: JSON.stringify({ user_id: userId, day_index: dayIndex, answer_text: draft.essay || "", mcq_answers: draft.mcq || {} }),
+        body: { user_id: userId, day_index: dayIndex, answer_text: draft.essay || "", mcq_answers: draft.mcq || {} },
       });
       setHomeworkGrades((g) => ({ ...g, [dayIndex]: data || null }));
 
@@ -534,7 +545,7 @@ export default function LearningPath() {
       if (hwTaskIndex >= 0) await toggleTask(dayIndex, hwTaskIndex, true);
       else loadTopicProgress();
     } catch (e) {
-      setError(String(e?.message || e));
+      setError(formatApiError(e, "Không thể chấm bài tập."));
     } finally {
       setLoading(false);
     }
