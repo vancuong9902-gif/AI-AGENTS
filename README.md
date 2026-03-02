@@ -234,3 +234,10 @@ npm run dev
 - Sao chép `frontend/.env.example` -> `frontend/.env`.
 - `VITE_DEMO_MODE=true` mới bật 2 nút demo đăng nhập (Demo GV cấp sẵn + Demo SV).
 - Mặc định `VITE_DEMO_MODE=false` dùng form email/password + đăng ký SV có MSSV.
+
+## Production redesign artifacts
+
+- Blueprint theo 10 phase: `docs/production_upgrade_blueprint.md`
+- OpenAPI v3 spec draft: `backend/openapi/adaptive_learning_openapi_v1.yaml`
+- Adaptive scoring engine (typed service): `backend/app/services/adaptive_engine.py`
+- Unit tests for adaptive logic: `backend/tests/services/test_adaptive_engine.py`
