@@ -105,6 +105,31 @@ npm install
 npm ci
 ```
 
+### 5.6 Backend/Worker crash với lỗi `set: pipefail: invalid option name`
+
+Triệu chứng thường gặp trên Windows:
+
+- `backend-1 exited with code 2`
+- `worker-1 exited with code 2`
+- log chứa `set: pipefail: invalid option name`
+
+Nguyên nhân: script shell trong `backend/` bị checkout thành CRLF (`\r\n`), trong khi container Linux cần LF (`\n`). Repo đã thêm `.gitattributes` để giữ LF cho `*.sh` và `*.py`, nhưng nếu bạn đã clone trước đó thì cần normalize lại file local:
+
+```bash
+git add --renormalize .
+git commit -m "chore: normalize line endings" # nếu có thay đổi
+docker compose down -v
+docker compose up --build
+```
+
+Nếu không muốn commit local, có thể chạy nhanh:
+
+```bash
+git reset --hard
+docker compose down -v
+docker compose up --build
+```
+
 Nếu còn thiếu package, cài lại nhóm phụ thuộc đang bị thiếu rồi chạy lại `npm ci`:
 
 ```bash
