@@ -249,3 +249,32 @@ Bản refactor kiến trúc enterprise đã được scaffold trong thư mục `
 - Tài liệu thiết kế: `docs/enterprise_multi_agent_architecture.md`
 - Điểm vào demo: `python -m app.interfaces.cli.main`
 - Test deterministic cho orchestration/guardrails: `pytest tests/unit -q`
+
+## AI Teacher Platform (Clean Architecture v2)
+
+Đã bổ sung kiến trúc production-ready cho luồng AI Teacher tại `backend/app/learning_engine` gồm 4 layer:
+- `presentation`
+- `application`
+- `domain`
+- `infrastructure`
+
+### Example endpoints
+- `POST /api/v2/teacher-ai/documents/ingest`
+- `POST /api/v2/teacher-ai/assessments/entrance`
+- `POST /api/v2/teacher-ai/students/evaluate`
+- `POST /api/v2/teacher-ai/exercises/generate`
+- `POST /api/v2/teacher-ai/progress/update`
+- `POST /api/v2/teacher-ai/reports/final`
+
+### Artifacts
+- Architecture blueprint: `docs/ai_teacher_platform_refactor.md`
+- SQL schema: `docs/sql/learning_engine_schema.sql`
+- Internal prompts: `docs/ai_teacher_prompts.md`
+- Deployment guide: `docs/deployment_guide_ai_teacher.md`
+
+### Improvement suggestions
+1. Replace in-memory repositories bằng PostgreSQL adapter (SQLAlchemy AsyncSession).
+2. Cắm Chroma adapter thực tế cho `VectorIndexPort`.
+3. Tách orchestrator jobs sang Celery/RQ workflow với retry + dead-letter queues.
+4. Thêm integration tests cho full student journey (upload -> report).
+5. Thêm CI stage benchmark latency cho multi-agent pipeline.
