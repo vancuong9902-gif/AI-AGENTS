@@ -1,23 +1,41 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 ALLOWED_SELF_REGISTER_ROLES = {"student", "teacher"}
 
 
 class RegisterRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, str_strip_whitespace=True)
+
     email: str
-    password: str = Field(min_length=6, max_length=200)
-    full_name: Optional[str] = None
-    role: str = "student"
+    password: str = Field(min_length=8, max_length=200)
+    full_name: Optional[str] = Field(default=None, validation_alias=AliasChoices("full_name", "name"))
+    role: Literal["student", "teacher"] = "student"
     student_code: Optional[str] = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        v = str(value).strip().lower()
+        if "@" not in v or v.startswith("@") or v.endswith("@"):
+            raise ValueError("Invalid email format")
+        local, domain = v.split("@", 1)
+        if not local or "." not in domain:
+            raise ValueError("Invalid email format")
+        return v
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def normalize_role(cls, value: str) -> str:
+        if value is None:
+            return "student"
+        return str(value).strip().lower()
 
     @model_validator(mode="after")
     def validate_role_and_student_code(self):
-        if self.role not in ALLOWED_SELF_REGISTER_ROLES:
-            raise ValueError("Invalid role")
         if self.role == "student" and not self.student_code:
             raise ValueError("student_code is required for student role")
         return self

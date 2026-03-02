@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
@@ -9,6 +11,7 @@ from app.models.user import User
 from app.schemas.auth import AuthResponse, LoginRequest, RegisterRequest, TokenResponse, UserOut
 
 router = APIRouter(tags=["auth"])
+logger = logging.getLogger("app.auth")
 
 
 def _user_out(u: User) -> UserOut:
@@ -24,18 +27,19 @@ def _user_out(u: User) -> UserOut:
 
 @router.post("/auth/register")
 def register(request: Request, payload: RegisterRequest, db: Session = Depends(get_db)):
+    logger.info("auth.register.attempt email=%s role=%s request_id=%s", payload.email, payload.role, request.state.request_id)
     existing = db.query(User).filter(User.email == str(payload.email)).first()
     if existing:
-        raise HTTPException(status_code=400, detail="Email already exists")
+        raise HTTPException(status_code=400, detail={"code": "EMAIL_EXISTS", "message": "Email already exists", "field": "email"})
 
     role = str(payload.role or "student").strip().lower()
     if role not in {"student", "teacher"}:
-        raise HTTPException(status_code=400, detail="Invalid role")
+        raise HTTPException(status_code=400, detail={"code": "INVALID_ROLE", "message": "Invalid role", "field": "role", "allowed": ["student", "teacher"]})
 
     student_code_raw = payload.student_code
     student_code = str(student_code_raw).strip() if student_code_raw else None
     if role == "student" and not student_code:
-        raise HTTPException(status_code=400, detail="student_code is required for student role")
+        raise HTTPException(status_code=400, detail={"code": "STUDENT_CODE_REQUIRED", "message": "student_code is required for student role", "field": "student_code"})
 
     u = User(
         email=str(payload.email),
@@ -48,6 +52,7 @@ def register(request: Request, payload: RegisterRequest, db: Session = Depends(g
     db.add(u)
     db.commit()
     db.refresh(u)
+    logger.info("auth.register.success user_id=%s role=%s request_id=%s", u.id, u.role, request.state.request_id)
 
     token = TokenResponse(access_token=create_access_token(subject=str(u.id)))
     out = AuthResponse(token=token, user=_user_out(u)).model_dump()
