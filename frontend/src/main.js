@@ -18,12 +18,12 @@ function authHeaders(json = false) {
 async function api(path, options = {}) {
   const response = await fetch(path, options);
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload?.error?.message || payload?.detail || 'Request failed');
+  if (!response.ok) throw new Error(payload?.error?.message || payload?.error || payload?.detail?.message || payload?.detail || 'Request failed');
   return payload;
 }
 
 async function login(email, password) {
-  const payload = await api('/api/login', {
+  const payload = await api('/api/auth/login', {
     method: 'POST',
     headers: authHeaders(true),
     body: JSON.stringify({ email, password }),
