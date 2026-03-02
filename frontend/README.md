@@ -1,16 +1,35 @@
-# React + Vite
+# Frontend cơ bản (Vite + Vanilla JS)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Frontend đã được rút gọn để tập trung vào các chức năng cơ bản:
 
-Currently, two official plugins are available:
+- Đăng nhập bằng email + password qua `POST /api/login`.
+- Sau khi đăng nhập: hiển thị dữ liệu từ backend:
+  - `GET /api/assessments` (cần token)
+  - `GET /api/exams/templates` (công khai)
+- Có các nút thao tác mẫu để tương tác API (`Làm bài kiểm tra`, `Tải tài liệu`).
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## Chạy local
 
-## React Compiler
+```bash
+npm install
+npm run dev
+```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Mặc định frontend chạy tại `http://localhost:5173`.
 
-## Expanding the ESLint configuration
+## Cấu hình backend
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Dùng proxy của Vite:
+
+- Mặc định proxy đến `http://localhost:8000`
+- Có thể đổi bằng biến môi trường `VITE_API_ORIGIN`
+
+Ví dụ:
+
+```bash
+VITE_API_ORIGIN=http://localhost:8000 npm run dev
+```
+
+## Tài khoản demo
+
+Nếu backend đã seed dữ liệu demo, bạn có thể dùng tài khoản tương ứng trong backend để đăng nhập.
