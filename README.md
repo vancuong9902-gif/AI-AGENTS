@@ -278,3 +278,13 @@ cp .env.example backend/.env
 3. Tách orchestrator jobs sang Celery/RQ workflow với retry + dead-letter queues.
 4. Thêm integration tests cho full student journey (upload -> report).
 5. Thêm CI stage benchmark latency cho multi-agent pipeline.
+
+## Node.js LMS Scaffold (experimental)
+
+Repository now includes a TypeScript Node/React scaffold for an AI-powered LMS:
+- `backend/src/server.ts`: Express APIs for auth/teacher/student.
+- `backend/src/prisma/schema.prisma`: LMS Prisma schema.
+- `backend/src/services/ai-agent.service.ts`: Claude integration class with retry/backoff.
+- `frontend/src`: React auth flow and role-based dashboards.
+
+This scaffold is additive and can be run independently from the original FastAPI stack.
