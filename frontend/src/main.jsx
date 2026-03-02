@@ -5,6 +5,15 @@ import './styles.css';
 
 const api = axios.create({ baseURL: '/api' });
 
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token');
+  if (token) {
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
 function App() {
   const [token, setToken] = React.useState(localStorage.getItem('token') || '');
   const [user, setUser] = React.useState(null);
@@ -17,7 +26,7 @@ function App() {
 
   React.useEffect(() => {
     if (!token) return;
-    api.get('/auth/me', { headers: { Authorization: `Bearer ${token}` } }).then((r) => setUser(r.data.data)).catch(() => logout());
+    api.get('/auth/me').then((r) => setUser(r.data.data)).catch(() => logout());
   }, [token]);
 
   React.useEffect(() => {
@@ -32,12 +41,12 @@ function App() {
 
   const logout = () => { localStorage.removeItem('token'); setToken(''); setUser(null); setExam(null); setTopics([]); };
 
-  const authHeaders = { Authorization: `Bearer ${token}` };
+  const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
 
   async function login(e) {
     e.preventDefault();
     const form = new FormData(e.target);
-    const r = await api.post('/login', { email: form.get('email'), password: form.get('password') });
+    const r = await api.post('/auth/login', { email: form.get('email'), password: form.get('password') });
     localStorage.setItem('token', r.data.data.access_token);
     setToken(r.data.data.access_token);
     setMessage('');
