@@ -13,12 +13,7 @@ const loginLimiter = rateLimit({
   message: { message: 'Too many login attempts, please try again later' }
 });
 
-router.post('/register', registerValidator, (req, res, next) => {
-  if (Object.prototype.hasOwnProperty.call(req.body, 'role')) {
-    return res.status(400).json({ message: 'Role cannot be set via register' });
-  }
-  return register(req, res, next);
-});
+router.post('/register', registerValidator, register);
 
 router.post('/login', loginLimiter, loginValidator, login);
 
