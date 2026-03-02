@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
+from collections import deque
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, Request
@@ -55,6 +57,8 @@ class _RedisRateLimiter:
     def __init__(self, redis_url: str, rate_per_minute: int) -> None:
         self._rate = max(1, int(rate_per_minute))
         self._client = None
+        self._fallback_buckets: dict[str, deque[float]] = {}
+        self._fallback_lock = threading.Lock()
         try:
             import redis as _redis
 
@@ -62,12 +66,23 @@ class _RedisRateLimiter:
             c.ping()
             self._client = c
         except Exception:
-            logger.warning("Redis unavailable – rate limiter disabled (allow-all)")
+            logger.warning("Redis unavailable – rate limiter falling back to in-memory mode")
+
+    def _allow_fallback(self, key: str, capacity: int) -> bool:
+        now = time.time()
+        with self._fallback_lock:
+            bucket = self._fallback_buckets.setdefault(key, deque())
+            while bucket and bucket[0] <= now - 60:
+                bucket.popleft()
+            if len(bucket) >= capacity:
+                return False
+            bucket.append(now)
+            return True
 
     def allow(self, key: str, rate_per_minute: int | None = None) -> bool:
-        if self._client is None:
-            return True
         capacity = max(1, int(rate_per_minute)) if rate_per_minute else self._rate
+        if self._client is None:
+            return self._allow_fallback(key, capacity)
         now = time.time()
         rkey = f"rl:{key}"
         try:
