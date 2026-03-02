@@ -1,0 +1,4 @@
+# Root convenience requirements for academic setup.
+# Installs backend runtime + optional evaluation toolkit.
+-r backend/requirements.txt
+-r requirements.toolkit.txt
