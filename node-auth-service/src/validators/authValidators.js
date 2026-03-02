@@ -4,7 +4,17 @@ const emailRule = body('email').isEmail().withMessage('Invalid email format').no
 const passwordRule = body('password')
   .isLength({ min: 6 })
   .withMessage('Password must be at least 6 characters');
-const nameRule = body('name').trim().notEmpty().withMessage('Name is required');
+const fullNameRule = body('fullName').trim().notEmpty().withMessage('Full name is required');
+
+const disallowExtraFields = (allowedFields) => (req, res, next) => {
+  const extraFields = Object.keys(req.body || {}).filter((field) => !allowedFields.includes(field));
+  if (extraFields.length > 0) {
+    return res.status(400).json({
+      message: `Unexpected field(s): ${extraFields.join(', ')}`
+    });
+  }
+  return next();
+};
 
 const handleValidation = (req, res, next) => {
   const errors = validationResult(req);
@@ -14,9 +24,26 @@ const handleValidation = (req, res, next) => {
   return next();
 };
 
-const registerValidator = [nameRule, emailRule, passwordRule, handleValidation];
-const loginValidator = [emailRule, passwordRule, handleValidation];
-const createTeacherValidator = [nameRule, emailRule, passwordRule, handleValidation];
+const registerValidator = [
+  disallowExtraFields(['email', 'password', 'fullName']),
+  fullNameRule,
+  emailRule,
+  passwordRule,
+  handleValidation
+];
+const loginValidator = [
+  disallowExtraFields(['email', 'password']),
+  emailRule,
+  passwordRule,
+  handleValidation
+];
+const createTeacherValidator = [
+  disallowExtraFields(['email', 'password', 'name']),
+  body('name').trim().notEmpty().withMessage('Name is required'),
+  emailRule,
+  passwordRule,
+  handleValidation
+];
 
 module.exports = {
   registerValidator,

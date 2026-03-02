@@ -55,11 +55,10 @@ function App() {
   async function register(e) {
     e.preventDefault();
     const form = new FormData(e.target);
-    const name = String(form.get('name') || '').trim();
+    const fullName = String(form.get('fullName') || '').trim();
     const email = String(form.get('email') || '').trim();
     const password = String(form.get('password') || '');
-    const role = String(form.get('role') || 'student');
-    const payload = { name: name, email: email, password: password, role: role };
+    const payload = { fullName: fullName, email: email, password: password };
 
     try {
       await api.post('/auth/register', payload, { headers: { 'Content-Type': 'application/json' } });
@@ -99,7 +98,7 @@ function App() {
 
   if (!token) return <div className="shell"><h1>AI LMS Demo</h1>{message && <p>{message}</p>}
     {mode === 'login' ? <form onSubmit={login} className="stack"><input name="email" placeholder="email" /><input name="password" type="password" placeholder="password" /><button>Login</button><button type="button" onClick={() => setMode('register')}>Go register</button></form>
-      : <form onSubmit={register} className="stack"><input name="name" placeholder="Full name" /><input name="email" placeholder="email" /><input name="password" type="password" placeholder="password" /><select name="role"><option value="teacher">teacher</option><option value="student">student</option></select><button>Register</button><button type="button" onClick={() => setMode('login')}>Back</button></form>}
+      : <form onSubmit={register} className="stack"><input name="fullName" placeholder="Full name" /><input name="email" placeholder="email" /><input name="password" type="password" placeholder="password" /><button>Register</button><button type="button" onClick={() => setMode('login')}>Back</button></form>}
   </div>;
 
   if (!user) return <div className="shell">Loading...</div>;

@@ -5,7 +5,7 @@ const { signToken } = require('../utils/jwt');
 const SALT_ROUNDS = 12;
 
 const register = async (req, res) => {
-  const { name, email, password } = req.body;
+  const { fullName, email, password } = req.body;
 
   try {
     const [existing] = await pool.execute('SELECT id FROM users WHERE email = ?', [email]);
@@ -16,7 +16,7 @@ const register = async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
     await pool.execute(
       'INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)',
-      [name, email, hashedPassword, 'student']
+      [fullName, email, hashedPassword, 'student']
     );
 
     return res.status(201).json({ message: 'Student registered successfully' });
