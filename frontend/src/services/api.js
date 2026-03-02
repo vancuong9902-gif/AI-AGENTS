@@ -41,8 +41,8 @@ export function registerApi(payload) {
   });
 }
 
-export function withAuthHeaders(extraHeaders = {}) {
-  const token = localStorage.getItem('token');
+export function withAuthHeaders(extraHeaders = {}, tokenOverride) {
+  const token = tokenOverride || localStorage.getItem('token');
   if (!token) {
     return extraHeaders;
   }
@@ -51,4 +51,10 @@ export function withAuthHeaders(extraHeaders = {}) {
     ...extraHeaders,
     Authorization: `Bearer ${token}`,
   };
+}
+
+export function meApi(tokenOverride) {
+  return request('/auth/me', {
+    headers: withAuthHeaders({}, tokenOverride),
+  });
 }
