@@ -2,12 +2,10 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
 import AuthCard from '../components/AuthCard';
-import { loginApi } from '../services/api';
+import { loginApi, meApi } from '../services/api';
 
-function resolveAuthPayload(data) {
-  const token = data?.token?.access_token || data?.token || data?.access_token || data?.data?.token?.access_token || data?.data?.token || data?.data?.access_token;
-  const user = data?.user || data?.data?.user || null;
-  return { token, user };
+function resolveLoginToken(response) {
+  return response?.data?.access_token || response?.access_token || null;
 }
 
 export default function Login() {
@@ -24,10 +22,18 @@ export default function Login() {
 
     try {
       const response = await loginApi(form);
-      const { token, user } = resolveAuthPayload(response);
+      const token = resolveLoginToken(response);
 
-      if (!token || !user?.role) {
+      if (!token) {
         setError('Phản hồi đăng nhập không hợp lệ.');
+        return;
+      }
+
+      const meResponse = await meApi(token);
+      const user = meResponse?.data || null;
+
+      if (!user?.role) {
+        setError('Không thể tải thông tin người dùng.');
         return;
       }
 
