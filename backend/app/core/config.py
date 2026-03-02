@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     JWT_SECRET_KEY: str = "dev-secret-change-me"
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
+    COOKIE_SECURE: bool = False
     ADMIN_EMAIL: str = "admin@demo.local"
     ADMIN_PASSWORD: str = "admin123456"
 
