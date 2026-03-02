@@ -1,0 +1,8 @@
+# Normalize text files and prevent Windows CRLF from breaking Linux containers.
+* text=auto
+
+# Shell scripts executed inside Linux containers must stay LF.
+*.sh text eol=lf
+
+# Keep Python source LF as well (avoid parser/runtime issues and flaky linting in CI).
+*.py text eol=lf
