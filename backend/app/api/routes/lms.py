@@ -35,7 +35,6 @@ from app.api.deps import get_current_user_optional
 from app.db.session import get_db
 from app.models.attempt import Attempt
 from app.models.classroom import Classroom, ClassroomMember
-from app.models.classroom import ClassroomMember
 from app.models.classroom_assessment import ClassroomAssessment
 from app.mas.base import AgentContext
 from app.mas.contracts import Event
@@ -141,8 +140,6 @@ class SubmitAttemptByIdIn(BaseModel):
 class AttemptHeartbeatIn(BaseModel):
     answers: list[dict] = Field(default_factory=list)
 
-class HeartbeatAttemptIn(BaseModel):
-    answers: list[dict] = Field(default_factory=list)
 def _attempt_status_payload(*, started: UserSession, duration_seconds: int) -> dict:
     now = datetime.now(timezone.utc)
     started_at = started.started_at or now
@@ -165,6 +162,9 @@ def _attempt_status_payload(*, started: UserSession, duration_seconds: int) -> d
         "server_time": now.isoformat(),
         "remaining_seconds": remaining_seconds,
         "timed_out": bool(remaining_seconds is not None and remaining_seconds <= 0),
+        "locked": bool(getattr(started, "locked_at", None)),
+        "deadline_utc": deadline.isoformat(),
+        "server_now": now.isoformat(),
     }
 
 def _normalize_synced_diagnostic(base: dict) -> dict:
@@ -1009,20 +1009,25 @@ def start_attempt(request: Request, payload: StartAttemptIn, db: Session = Depen
     if int(duration_seconds or 0) > 0:
         deadline_utc = started_at + timedelta(seconds=int(duration_seconds))
 
-    return {
-        "request_id": request.state.request_id,
-        "data": {
-            "attempt_id": int(session.id),
-            "quiz_id": quiz_id,
-            "student_id": student_id,
-            "start_time": started_at.isoformat(),
-            "duration_seconds": int(duration_seconds or 0),
-            "server_now": server_now.isoformat(),
-            "deadline_utc": deadline_utc.isoformat(),
-        },
-        "data": _attempt_status_payload(started=session, duration_seconds=int(duration_seconds or 0)),
-        "error": None,
+    status_payload = _attempt_status_payload(started=session, duration_seconds=int(duration_seconds or 0))
+    payload_data = {
+        "attempt_id": int(session.id),
+        "quiz_id": quiz_id,
+        "student_id": student_id,
+        "start_time": started_at.isoformat(),
+        "duration_seconds": int(duration_seconds or 0),
+        "server_now": server_now.isoformat(),
+        "deadline_utc": deadline_utc.isoformat(),
     }
+    payload_data.update(
+        {
+            "remaining_seconds": status_payload.get("remaining_seconds"),
+            "timed_out": status_payload.get("timed_out"),
+            "locked": status_payload.get("locked"),
+            "status": status_payload,
+        }
+    )
+    return {"request_id": request.state.request_id, "data": payload_data, "error": None}
 
 
 @router.post("/attempts/{attempt_id}/heartbeat")
@@ -1080,52 +1085,15 @@ def get_attempt_timer_status(request: Request, attempt_id: int, db: Session = De
         if hasattr(db, "refresh"):
             db.refresh(started)
 
-
-def heartbeat_attempt(request: Request, attempt_id: int, payload: HeartbeatAttemptIn, db: Session = Depends(get_db)):
-    started = db.query(UserSession).filter(UserSession.id == int(attempt_id)).first()
-    if not started:
-        raise HTTPException(status_code=404, detail="Attempt not found")
-
-    quiz_id = _attempt_quiz_id(started)
-    quiz = db.query(QuizSet).filter(QuizSet.id == int(quiz_id)).first()
-    if not quiz:
-        raise HTTPException(status_code=404, detail="Quiz not found")
-
-    now = datetime.now(timezone.utc)
-    started_at = _normalize_started_at_utc(started, now)
-    elapsed = max(0, int((now - started_at).total_seconds()))
-    duration_seconds = int(_quiz_duration_map(quiz) or 0)
-
-    locked = False
-    if duration_seconds > 0 and elapsed >= duration_seconds:
-        locked = True
-        if started.locked_at is None:
-            started.locked_at = now
-        if started.ended_at is None:
-            started.ended_at = now
-    elif started.locked_at is not None:
-        locked = True
-
-    started.last_heartbeat_at = now
-    if not locked:
-        started.answers_snapshot_json = payload.answers or []
-
-    db.add(started)
-    db.commit()
-
-    elapsed_seconds = max(0, int((now - started_at).total_seconds()))
-    time_left_seconds = max(0, int(duration_seconds) - elapsed_seconds) if duration_seconds > 0 else 0
-
-    return {
-        "request_id": request.state.request_id,
-        "data": {
-            "server_now": datetime.now(timezone.utc).isoformat(),
+    status_payload = _attempt_status_payload(started=started, duration_seconds=int(duration_seconds or 0))
+    status_payload.update(
+        {
             "elapsed_seconds": elapsed_seconds,
+            "time_left_seconds": max(0, time_left_seconds),
             "remaining_seconds": max(0, time_left_seconds),
-            "locked": bool(getattr(started, "locked_at", None)),
-        },
-        "error": None,
-    }
+        }
+    )
+    return {"request_id": request.state.request_id, "data": status_payload, "error": None}
 
 
 @router.get("/attempts/{attempt_id}/status")

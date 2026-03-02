@@ -47,9 +47,12 @@ class Settings(BaseSettings):
     # /api/auth/* routes are NOT mounted when disabled.
     # Flip AUTH_ENABLED=true to expose email/password + JWT auth endpoints.
     AUTH_ENABLED: bool = False
+    DEMO_SEED: bool = False
     JWT_SECRET_KEY: str = "dev-secret-change-me"
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
+    ADMIN_EMAIL: str = "admin@demo.local"
+    ADMIN_PASSWORD: str = "admin123456"
 
     # ===== LLM settings =====
     # OPENAI_API_KEY:

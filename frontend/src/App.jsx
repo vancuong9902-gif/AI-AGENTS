@@ -82,7 +82,7 @@ function App() {
               <NotificationBell />
               <div className='user-pill'>
                 <strong>{displayName}</strong>
-                <span>{role === 'teacher' ? 'Giáo viên' : role === 'student' ? 'Học viên' : 'Khách'}</span>
+                <span>{role === 'teacher' ? 'Giáo viên' : role === 'student' ? 'Học viên' : role === 'admin' ? 'Quản trị' : 'Khách'}</span>
               </div>
               <button type='button' className='logout-btn focus-ring' onClick={() => { logout(); navigate('/'); }}>
                 <FiLogOut /> Đăng xuất
