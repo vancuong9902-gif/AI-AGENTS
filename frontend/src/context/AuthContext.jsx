@@ -39,6 +39,7 @@ export function AuthProvider({ children }) {
       user,
       token,
       role: user?.role || localStorage.getItem('role') || null,
+      userId: user?.id || user?.userId || null,
       login,
       logout,
     }),
