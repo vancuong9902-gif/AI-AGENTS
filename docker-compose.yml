@@ -44,7 +44,7 @@ services:
       ASYNC_QUEUE_ENABLED: "true"
       REDIS_URL: redis://redis:6379/0
 
-    command: ["/usr/local/bin/run_app_script.sh", "/app/start.sh"]
+    command: ["/usr/local/bin/start_backend.sh"]
     depends_on:
       db:
         condition: service_healthy
@@ -78,7 +78,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
-    command: ["/usr/local/bin/run_app_script.sh", "/app/worker_start.sh"]
+    command: ["/usr/local/bin/start_worker.sh"]
     healthcheck:
       test: ["CMD-SHELL", "python -c \"from app.infra.queue import get_redis_conn; get_redis_conn().ping()\" || exit 1"]
       interval: 10s
