@@ -4350,4 +4350,66 @@ def generate_topic_map_from_extracted_text(
     # Quality gate: keep a practical number of topics, avoid empty items.
     out_topics = [t for t in out_topics if t.get("title") and t.get("summary")]
     return {"topics": out_topics[: max(12, min(60, int(max_topics)))]}
+
+
+def analyze_semantic_content(raw_pdf_text: str, *, max_topics: int = 12) -> Dict[str, Any]:
+    """Extract semantic learning topics from raw PDF text with structured JSON output."""
+    text = str(raw_pdf_text or "").strip()
+    if not text:
+        return {"topics": []}
+
+    extracted = extract_topics(text, include_details=True, max_topics=max(1, int(max_topics)))
+    raw_topics = extracted.get("topics") if isinstance(extracted, dict) else []
+    if not isinstance(raw_topics, list):
+        raw_topics = []
+
+    def _difficulty_from_item(item: Dict[str, Any]) -> int:
+        corpus = " ".join(
+            [
+                str(item.get("title") or ""),
+                str(item.get("summary") or ""),
+                " ".join([str(x) for x in (item.get("key_points") or [])]),
+            ]
+        ).lower()
+        score = 2
+        if re.search(r"\b(cơ\s*bản|nhập\s*môn|giới\s*thiệu|overview|basic|intro)\b", corpus):
+            score -= 1
+        if re.search(r"\b(phân\s*tích|ứng\s*dụng|vận\s*dụng|intermediate|problem\s*solving)\b", corpus):
+            score += 1
+        if re.search(r"\b(chuyên\s*sâu|tối\s*ưu|đánh\s*đổi|advanced|proof|complex)\b", corpus):
+            score += 1
+        if len((item.get("definitions") or [])) >= 4:
+            score += 1
+        return max(1, min(5, int(score)))
+
+    topics: List[Dict[str, Any]] = []
+    for item in raw_topics[: max(1, int(max_topics))]:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+
+        subtopics = [str(x).strip() for x in (item.get("subtopics") or []) if str(x).strip()][:8]
+        objectives = [str(x).strip() for x in (item.get("key_points") or []) if str(x).strip()][:6]
+        if not objectives:
+            objectives = [str(x).strip() for x in (item.get("outline") or []) if str(x).strip()][:6]
+        if not objectives and str(item.get("summary") or "").strip():
+            objectives = [str(item.get("summary") or "").strip()[:220]]
+
+        difficulty = _difficulty_from_item(item)
+        content_len = int(item.get("content_len") or item.get("body_len") or 0)
+        estimated_minutes = max(15, min(180, int(round(max(content_len, 350) / 35))))
+
+        topics.append(
+            {
+                "title": title,
+                "subtopics": subtopics,
+                "objectives": objectives,
+                "difficulty": difficulty,
+                "estimated_time_minutes": estimated_minutes,
+            }
+        )
+
+    return {"topics": topics}
     
