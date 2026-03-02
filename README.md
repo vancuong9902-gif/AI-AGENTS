@@ -82,6 +82,36 @@ docker compose up --build -d worker
 docker compose up -d --build backend
 ```
 
+### 5.4 Lỗi `pytest` / `pytest-cov` ở backend
+
+Khi CI hoặc local báo lỗi liên quan `pytest`/`pytest-cov`, chạy lần lượt:
+
+```bash
+cd backend
+pip show pytest pytest-cov
+pip install pytest-cov
+pytest --cov=app --cov-report=term-missing --cov-fail-under=70 -q
+```
+
+Nếu vẫn lỗi, kiểm tra lại `backend/pytest.ini` để chắc rằng các tham số coverage không bị cấu hình sai.
+
+### 5.5 Lỗi `npm ci` / lệch `package-lock.json` ở frontend
+
+Khi `npm ci` fail do lockfile không đồng bộ:
+
+```bash
+cd frontend
+npm install
+npm ci
+```
+
+Nếu còn thiếu package, cài lại nhóm phụ thuộc đang bị thiếu rồi chạy lại `npm ci`:
+
+```bash
+npm install recharts@2.15.4 clsx@2.1.1 eventemitter3@4.0.7 lodash@4.17.23 react-is@18.3.1 react-smooth@4.0.4 recharts-scale@0.4.5 tiny-invariant@1.3.3 victory-vendor@36.9.2 fast-equals@5.4.0 prop-types@15.8.1 react-transition-group@4.4.5 loose-envify@1.4.0 object-assign@4.1.1 @babel/runtime@7.28.6 dom-helpers@5.2.1 decimal.js-light@2.5.1 @types/d3-array@3.2.2 @types/d3-ease@3.0.2 @types/d3-interpolate@3.0.4 @types/d3-scale@4.0.9 @types/d3-shape@3.1.8 @types/d3-time@3.0.4 @types/d3-timer@3.0.2 d3-array@3.2.4 d3-ease@3.0.1 d3-interpolate@3.0.1 d3-scale@4.0.2 d3-shape@3.2.0 d3-time@3.1.0 d3-timer@3.0.1 @types/d3-color@3.1.3 @types/d3-path@3.1.1 internmap@2.0.3 d3-color@3.1.0 d3-format@3.1.2 d3-time-format@4.1.0 d3-path@3.1.0
+npm ci
+```
+
 
 ### 4.4 Auth router gate (`AUTH_ENABLED`)
 
