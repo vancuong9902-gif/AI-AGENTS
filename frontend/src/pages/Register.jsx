@@ -5,7 +5,7 @@ import { registerApi } from '../services/api';
 
 export default function Register() {
   const navigate = useNavigate();
-  const [form, setForm] = useState({ name: '', email: '', password: '' });
+  const [form, setForm] = useState({ full_name: '', email: '', password: '', student_code: '' });
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
@@ -39,8 +39,16 @@ export default function Register() {
         <label>
           Họ và tên
           <input
-            value={form.name}
-            onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
+            value={form.full_name}
+            onChange={(event) => setForm((prev) => ({ ...prev, full_name: event.target.value }))}
+            required
+          />
+        </label>
+        <label>
+          Mã sinh viên
+          <input
+            value={form.student_code}
+            onChange={(event) => setForm((prev) => ({ ...prev, student_code: event.target.value }))}
             required
           />
         </label>
