@@ -305,7 +305,8 @@ async def _security_headers_middleware(request: Request, call_next):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-    response.headers.pop("server", None)
+    if "server" in response.headers:
+        del response.headers["server"]
     return response
 
 
@@ -377,4 +378,3 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
             error={"code": "INTERNAL_ERROR", "message": "Internal server error"},
         ),
     )
-
