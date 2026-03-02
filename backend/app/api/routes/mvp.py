@@ -9,8 +9,10 @@ from pypdf import PdfReader
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_roles
+from app.core.config import settings
 from app.models.mvp import Course, Exam, Question, Result, Topic
 from app.models.user import User
+from app.services.llm_service import chat_json, llm_available
 
 router = APIRouter(prefix="/mvp", tags=["mvp"])
 
@@ -29,6 +31,42 @@ def _extract_pdf_text(upload: UploadFile) -> str:
 
 
 def _generate_topics(text: str) -> list[dict[str, Any]]:
+    if llm_available():
+        try:
+            result = chat_json(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Bạn là chuyên gia giáo dục. Phân tích tài liệu và tạo danh sách chủ đề học tập. "
+                            "Trả về JSON với key 'topics' là mảng, mỗi phần tử gồm: "
+                            "'title' (tên chủ đề ngắn gọn), "
+                            "'summary' (tóm tắt 2-3 câu), "
+                            "'exercises' (mảng 3 bài tập thực hành cụ thể từ nội dung). "
+                            "Tạo 5-8 chủ đề bám sát tài liệu. CHỈ trả về JSON thuần, không có text thừa."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Tài liệu:\n{text[:6000]}\n\nTạo danh sách topics học tập.",
+                    },
+                ],
+                max_tokens=2000,
+                temperature=0.4,
+            )
+            topics = result.get("topics", [])
+            if isinstance(topics, list) and len(topics) >= 3:
+                return [
+                    {
+                        "title": str(t.get("title", f"Topic {i+1}")),
+                        "summary": str(t.get("summary", "")),
+                        "exercises": list(t.get("exercises", [])) if isinstance(t.get("exercises"), list) else [],
+                    }
+                    for i, t in enumerate(topics[:10])
+                ]
+        except Exception:
+            pass
+
     chunks = [c.strip() for c in re.split(r"(?<=[.!?])\s+", text) if c.strip()][:40]
     topics: list[dict[str, Any]] = []
     step = max(1, len(chunks) // 8)
@@ -52,6 +90,50 @@ def _generate_topics(text: str) -> list[dict[str, Any]]:
 
 
 def _generate_questions(text: str) -> list[dict[str, Any]]:
+    if llm_available():
+        try:
+            result = chat_json(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Bạn là giáo viên tạo bài kiểm tra trắc nghiệm. "
+                            "Trả về JSON với key 'questions' là mảng 10 câu hỏi, mỗi câu gồm: "
+                            "'question' (câu hỏi rõ ràng bằng tiếng Việt), "
+                            "'options' (mảng đúng 4 string: ['A. ...', 'B. ...', 'C. ...', 'D. ...']), "
+                            "'answer' (phải khớp chính xác 1 trong 4 options), "
+                            "'difficulty' (easy/medium/hard, tỉ lệ: 4 easy, 3 medium, 3 hard). "
+                            "Câu hỏi phải bám sát nội dung tài liệu. CHỈ trả về JSON thuần."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Tài liệu:\n{text[:6000]}\n\nTạo 10 câu hỏi trắc nghiệm.",
+                    },
+                ],
+                max_tokens=3000,
+                temperature=0.3,
+            )
+            questions = result.get("questions", [])
+            if isinstance(questions, list) and len(questions) >= 5:
+                valid = []
+                for q in questions[:10]:
+                    opts = q.get("options", [])
+                    ans = q.get("answer", "")
+                    if isinstance(opts, list) and len(opts) == 4 and ans in opts:
+                        valid.append(
+                            {
+                                "question": str(q.get("question", "")),
+                                "options": [str(o) for o in opts],
+                                "answer": str(ans),
+                                "difficulty": str(q.get("difficulty", "medium")),
+                            }
+                        )
+                if len(valid) >= 5:
+                    return valid
+        except Exception:
+            pass
+
     difficulties = ["easy"] * 4 + ["medium"] * 3 + ["hard"] * 3
     seeds = [s.strip() for s in text.split(".") if s.strip()][:10]
     questions = []
@@ -78,6 +160,23 @@ def _classify(score: float) -> str:
 
 @router.post("/courses/upload")
 def upload_course(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db), teacher: User = Depends(require_roles("teacher"))):
+    filename = (file.filename or "").lower()
+    content_type = (file.content_type or "").lower()
+    is_pdf = filename.endswith(".pdf") or content_type == "application/pdf"
+    if not is_pdf:
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
+
+    max_bytes = int(settings.MAX_UPLOAD_MB) * 1024 * 1024
+    content = file.file.read()
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum allowed size is {settings.MAX_UPLOAD_MB}MB.",
+        )
+    import io
+
+    file.file = io.BytesIO(content)
+
     text = _extract_pdf_text(file)
     if not text:
         text = "Demo PDF content placeholder for MVP."
@@ -163,14 +262,72 @@ def list_results(request: Request, page: int = Query(1, ge=1), page_size: int = 
 @router.post("/student/tutor")
 def tutor(payload: dict[str, Any], request: Request, db: Session = Depends(get_db), student: User = Depends(require_roles("student"))):
     _ = student
-    question = (payload.get("question") or "").strip().lower()
+    question = (payload.get("question") or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Question is required.")
+
     course = db.query(Course).order_by(Course.id.desc()).first()
     if not course:
         raise HTTPException(status_code=404, detail="No course available.")
+
+    if llm_available():
+        try:
+            result = chat_json(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Bạn là AI Tutor hỗ trợ học sinh học tập. "
+                            "Chỉ trả lời dựa trên tài liệu được cung cấp, không dùng kiến thức ngoài. "
+                            "Trả về JSON với key 'answer' (string, giải thích rõ ràng bằng tiếng Việt). "
+                            "Nếu câu hỏi ngoài phạm vi tài liệu, trả 'answer': "
+                            "'Câu hỏi này nằm ngoài nội dung tài liệu hiện tại. "
+                            "Vui lòng hỏi về nội dung trong tài liệu.'"
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Tài liệu tham khảo:\n{course.source_text[:4000]}\n\nCâu hỏi: {question}",
+                    },
+                ],
+                max_tokens=800,
+                temperature=0.5,
+            )
+            answer = str(result.get("answer") or "Tôi không thể trả lời câu hỏi này lúc này.")
+            return {"request_id": _rid(request), "data": {"answer": answer}, "error": None}
+        except Exception:
+            pass
+
     source = course.source_text.lower()
-    tokens = [t for t in re.findall(r"\w+", question) if len(t) > 4]
+    tokens = [t for t in re.findall(r"\w+", question.lower()) if len(t) > 4]
     if not tokens or not any(t in source for t in tokens):
-        answer = "This question is outside the current course scope."
+        answer = "Câu hỏi này nằm ngoài phạm vi nội dung tài liệu hiện tại."
     else:
-        answer = f"Based on course text: {course.source_text[:220]}..."
+        answer = f"Dựa trên tài liệu: {course.source_text[:300]}..."
     return {"request_id": _rid(request), "data": {"answer": answer}, "error": None}
+
+
+@router.get("/student/status")
+def student_status(
+    request: Request,
+    db: Session = Depends(get_db),
+    student: User = Depends(require_roles("student")),
+):
+    _ = student
+    course = db.query(Course).order_by(Course.id.desc()).first()
+    has_course = course is not None
+    has_topics = False
+    has_exam = False
+    if course:
+        has_topics = db.query(Topic).filter(Topic.course_id == course.id).count() > 0
+        has_exam = db.query(Exam).filter(Exam.course_id == course.id).count() > 0
+    return {
+        "request_id": _rid(request),
+        "data": {
+            "ready": has_course and has_topics and has_exam,
+            "has_course": has_course,
+            "has_topics": has_topics,
+            "has_exam": has_exam,
+        },
+        "error": None,
+    }
