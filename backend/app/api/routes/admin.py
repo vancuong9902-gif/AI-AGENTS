@@ -192,3 +192,24 @@ def get_agent_dashboard(
         },
         "error": None,
     }
+
+
+@router.post("/admin/create-teacher")
+def create_teacher_simple(
+    request: Request,
+    payload: AdminCreateTeacherRequest,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    return create_teacher(request=request, payload=payload, db=db, _admin=admin)
+
+
+@router.get("/users")
+def list_users_simple(
+    request: Request,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    return list_users(request=request, q=None, role=None, limit=limit, offset=offset, db=db, _admin=admin)
