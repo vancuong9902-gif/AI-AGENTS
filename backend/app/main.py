@@ -129,6 +129,17 @@ def _include_api_routers(fastapi_app: FastAPI, auth_enabled: bool) -> None:
         fastapi_app.include_router(auth_router, prefix="/api")
 
 
+def _log_registered_routes(fastapi_app: FastAPI) -> None:
+    route_lines: list[str] = []
+    for route in fastapi_app.routes:
+        methods = getattr(route, "methods", None)
+        if not methods:
+            continue
+        route_lines.append(f"{','.join(sorted(methods)):<20} {route.path}")
+
+    logger.info("Registered routes:\n%s", "\n".join(sorted(route_lines)))
+
+
 def _resolve_cors_origins() -> list[str]:
     origin = (settings.FRONTEND_ORIGIN or "").strip()
     if origin:
@@ -230,6 +241,7 @@ async def _lifespan(app: FastAPI):
         _bootstrap_demo_users()
     if not settings.AUTH_ENABLED and settings.ENV.lower() not in {"prod", "production"}:
         logger.warning("⚠️ AUTH_ENABLED=false – Set true before deploying to production!")
+    _log_registered_routes(app)
     yield
 
 
@@ -253,6 +265,11 @@ def create_app(auth_enabled: Optional[bool] = None) -> FastAPI:
 
     _include_api_routers(app, settings.AUTH_ENABLED if auth_enabled is None else auth_enabled)
     setup_observability(app)
+
+    @app.get("/")
+    def root() -> dict[str, str]:
+        return {"message": "API running"}
+
     return app
 
 
