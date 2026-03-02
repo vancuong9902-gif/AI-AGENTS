@@ -65,6 +65,12 @@ def login_json(request: Request, payload: LoginRequest, db: Session = Depends(ge
     return {"request_id": request.state.request_id, "data": out, "error": None}
 
 
+
+
+@router.post("/login")
+def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)):
+    """Simple JSON login endpoint for student/teacher/admin."""
+    return login_json(request=request, payload=payload, db=db)
 @router.post("/auth/login")
 def login_form(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     u = db.query(User).filter(User.email == str(form_data.username)).first()

@@ -88,3 +88,16 @@ def require_admin(user: User = Depends(require_user)) -> User:
     if role != "admin":
         raise HTTPException(status_code=403, detail="Admin role required")
     return user
+
+
+def require_roles(*allowed_roles: str):
+    normalized = {_normalize_role(role) for role in allowed_roles}
+    normalized.discard(None)
+
+    def _checker(user: User = Depends(require_user)) -> User:
+        role = _normalize_role(getattr(user, "role", None))
+        if role not in normalized:
+            raise HTTPException(status_code=403, detail="Insufficient role")
+        return user
+
+    return _checker
