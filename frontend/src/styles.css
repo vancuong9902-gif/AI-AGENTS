@@ -43,6 +43,7 @@ body { margin: 0; }
 }
 
 .stack { display: grid; gap: 10px; }
+.row { display: flex; gap: 10px; }
 
 input, button {
   width: 100%;
@@ -59,9 +60,20 @@ button {
   cursor: pointer;
 }
 
+button:disabled {
+  background: #94a3b8;
+  cursor: not-allowed;
+}
+
 button.ghost {
   width: auto;
   background: #0f172a;
+  padding: 8px 14px;
+}
+
+button.warning {
+  width: auto;
+  background: #b45309;
   padding: 8px 14px;
 }
 
@@ -69,3 +81,110 @@ button.ghost {
 .error { color: #b91c1c; }
 
 button.full { width: 100%; }
+
+.alert {
+  padding: 12px 16px;
+  border-radius: 8px;
+  margin: 12px 0;
+  font-weight: 500;
+}
+
+.alert-success { background: #dcfce7; color: #166534; }
+.alert-error { background: #fee2e2; color: #991b1b; }
+.alert-info { background: #dbeafe; color: #1e3a8a; }
+
+.loading {
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.step-indicator {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.step-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+
+.step-pending .step-dot { background: #94a3b8; }
+.step-in-progress .step-dot { background: #2563eb; }
+.step-done .step-dot { background: #16a34a; }
+
+.topic-card { margin-bottom: 12px; }
+.topic-summary { color: #64748b; font-size: 14px; margin: 8px 0; }
+.topic-exercises { padding-left: 16px; margin: 0; }
+.topic-exercises li { font-size: 13px; margin: 4px 0; }
+
+.question-count {
+  color: #1e3a8a;
+  font-weight: 600;
+}
+
+.question-text {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.option-btn {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.option-btn.selected {
+  border: 2px solid #2563eb;
+  background: #bfdbfe;
+}
+
+.result-card {
+  max-width: 320px;
+}
+
+.result-score {
+  font-size: 30px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.level-beginner {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.level-intermediate {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.level-advanced {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.health-pill {
+  margin: 0;
+  font-weight: 600;
+}
+
+.health-pill.online { color: #166534; }
+.health-pill.offline { color: #991b1b; }
+.health-pill.checking { color: #92400e; }
