@@ -44,7 +44,14 @@ RUN set -eux; \
 COPY requirements.txt requirements.semantic.txt ./
 
 # Install core deps + semantic RAG deps (faiss-cpu, openai, ...)
-RUN pip install --no-cache-dir -r requirements.txt -r requirements.semantic.txt
+# Retry to mitigate transient Docker Desktop I/O issues on Windows hosts.
+RUN set -eux; \
+    for i in 1 2 3; do \
+      pip install --no-cache-dir --retries 10 --timeout 120 -r requirements.txt -r requirements.semantic.txt && break; \
+      if [ "$i" -eq 3 ]; then exit 1; fi; \
+      echo "pip install failed (attempt $i), retrying..."; \
+      sleep 5; \
+    done
 
 COPY . .
 
