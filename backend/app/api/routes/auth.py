@@ -6,9 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_user
-from app.core.security import create_access_token, get_password_hash, verify_password
+from app.core.security import create_access_token, get_password_hash
 from app.models.user import User
 from app.schemas.auth import AuthResponse, LoginRequest, RegisterRequest, TokenResponse, UserOut
+from app.services.auth_service import authenticate_user, build_auth_response
 
 router = APIRouter(tags=["auth"])
 logger = logging.getLogger("app.auth")
@@ -61,16 +62,8 @@ def register(request: Request, payload: RegisterRequest, db: Session = Depends(g
 
 @router.post("/auth/login-json")
 def login_json(request: Request, payload: LoginRequest, db: Session = Depends(get_db)):
-    u = db.query(User).filter(User.email == str(payload.email)).first()
-    if not u or not getattr(u, "password_hash", None):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    if not verify_password(payload.password, str(u.password_hash)):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    if not bool(getattr(u, "is_active", True)):
-        raise HTTPException(status_code=403, detail="User is inactive")
-
-    token = TokenResponse(access_token=create_access_token(subject=str(u.id)))
-    out = AuthResponse(token=token, user=_user_out(u)).model_dump()
+    user = authenticate_user(db, payload)
+    out = build_auth_response(user)
     return {"request_id": request.state.request_id, "data": out, "error": None}
 
 
@@ -99,14 +92,11 @@ async def login_form(request: Request, db: Session = Depends(get_db)):
     if not email or not password:
         raise HTTPException(status_code=422, detail="email/username and password are required")
 
-    u = db.query(User).filter(User.email == email).first()
-    if not u or not getattr(u, "password_hash", None):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    if not verify_password(password, str(u.password_hash)):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+    payload = LoginRequest(email=email, password=password)
+    user = authenticate_user(db, payload)
 
-    token = TokenResponse(access_token=create_access_token(subject=str(u.id)))
-    out = {"access_token": token.access_token, "token_type": token.token_type, "role": getattr(u, "role", "student") or "student"}
+    token = TokenResponse(access_token=create_access_token(subject=str(user.id)))
+    out = {"access_token": token.access_token, "token_type": token.token_type, "role": getattr(user, "role", "student") or "student"}
     return {"request_id": request.state.request_id, "data": out, "error": None}
 
 
