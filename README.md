@@ -137,6 +137,31 @@ npm install recharts@2.15.4 clsx@2.1.1 eventemitter3@4.0.7 lodash@4.17.23 react-
 npm ci
 ```
 
+### 5.7 Lỗi `TLS handshake timeout` khi pull base image Python
+
+Nếu bạn gặp lỗi tương tự:
+
+- `failed to resolve source metadata for docker.io/library/python:3.12-slim-bookworm`
+- `net/http: TLS handshake timeout`
+
+Nguyên nhân thường là mạng tới Docker Hub không ổn định (đặc biệt ở một số mạng công ty/VPN).
+
+Repo đã đổi mặc định base image backend/worker sang mirror `public.ecr.aws` để giảm lỗi này.
+
+Bạn có thể chạy lại:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+Nếu muốn ép lại Docker Hub (khi mạng ổn định), override build arg:
+
+```bash
+PYTHON_BASE_IMAGE=python:3.12-slim-bookworm docker compose build --no-cache backend worker
+docker compose up --build
+```
+
 
 ### 4.4 Auth router gate (`AUTH_ENABLED`)
 

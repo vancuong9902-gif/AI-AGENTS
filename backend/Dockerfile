@@ -1,5 +1,7 @@
 # Pin to Debian bookworm for more stable apt packages (python:3.12-slim may track Debian testing).
-FROM python:3.12-slim-bookworm
+# Default to AWS Public ECR mirror to reduce Docker Hub TLS/rate-limit issues on some networks.
+ARG PYTHON_BASE_IMAGE=public.ecr.aws/docker/library/python:3.12-slim-bookworm
+FROM ${PYTHON_BASE_IMAGE}
 
 WORKDIR /app
 
