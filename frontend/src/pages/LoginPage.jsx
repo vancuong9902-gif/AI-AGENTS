@@ -5,20 +5,21 @@ import { useAuth } from '../auth';
 
 export default function LoginPage({ navigate }) {
   const { login } = useAuth();
-  const [email, setEmail] = React.useState('');
-  const [password, setPassword] = React.useState('');
+  const [form, setForm] = React.useState({ email: '', password: '' });
   const [error, setError] = React.useState('');
   const [loading, setLoading] = React.useState(false);
 
-  const onSubmit = async (event) => {
-    event.preventDefault();
-    setLoading(true);
+  const onSubmit = async (e) => {
+    e.preventDefault();
     setError('');
+    setLoading(true);
     try {
-      const response = await authApi.login({ email, password });
-      const data = response.data.data;
-      await login(data.token?.access_token, data.user);
-      navigate(data.user.role === 'teacher' ? '/teacher' : '/student');
+      const res = await authApi.login(form);
+      const data = res.data.data || res.data;
+      const token = data.token?.access_token || data.access_token;
+      const user = data.user || data;
+      await login(token, user);
+      navigate(user.role === 'teacher' ? '/teacher' : '/student');
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -27,20 +28,38 @@ export default function LoginPage({ navigate }) {
   };
 
   return (
-    <div className="shell auth-form">
-      <form className="card" onSubmit={onSubmit}>
-        <h2>Login</h2>
+    <div className="auth-wrap">
+      <div className="auth-card">
+        <div className="auth-logo">
+          <h1>🎓 AI LMS</h1>
+          <p>Hệ thống học tập thông minh</p>
+        </div>
+        <h2 className="auth-title">Đăng nhập</h2>
+        <p className="auth-sub">Chào mừng trở lại!</p>
+
         <Alert type="error" message={error} />
-        <div className="form-group">
-          <label htmlFor="email">Email</label>
-          <input id="email" value={email} onChange={(e) => setEmail(e.target.value)} type="email" required />
+
+        <form onSubmit={onSubmit} className="stack" style={{ gap: 14 }}>
+          <div className="form-group">
+            <label>Email</label>
+            <input type="email" placeholder="email@example.com" value={form.email}
+              onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} required />
+          </div>
+          <div className="form-group">
+            <label>Mật khẩu</label>
+            <input type="password" placeholder="••••••••" value={form.password}
+              onChange={(e) => setForm((p) => ({ ...p, password: e.target.value }))} required />
+          </div>
+          <button type="submit" disabled={loading}>
+            {loading ? '⏳ Đang đăng nhập...' : '🔑 Đăng nhập'}
+          </button>
+        </form>
+
+        <div className="auth-footer">
+          Chưa có tài khoản?{' '}
+          <button className="link" onClick={() => navigate('/register')}>Đăng ký ngay</button>
         </div>
-        <div className="form-group">
-          <label htmlFor="password">Password</label>
-          <input id="password" value={password} onChange={(e) => setPassword(e.target.value)} type="password" required />
-        </div>
-        <button disabled={loading} type="submit">{loading ? 'Signing in...' : 'Sign in'}</button>
-      </form>
+      </div>
     </div>
   );
 }
