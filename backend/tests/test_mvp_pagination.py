@@ -11,9 +11,7 @@ from app.models.user import User
 
 
 def _register_and_login(client: TestClient, email: str, role: str):
-    payload = {"email": email, "password": "password123", "role": role, "full_name": role}
-    if role == "student":
-        payload["student_code"] = "S001"
+    payload = {"name": role, "email": email, "password": "password123", "role": role}
     client.post('/api/auth/register', json=payload)
     r = client.post('/api/login', json={"email": email, "password": "password123"})
     body = r.json()["data"]

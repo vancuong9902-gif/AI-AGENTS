@@ -13,7 +13,7 @@ def test_register_schema_accepts_name_alias_and_teacher_role():
         }
     )
 
-    assert payload.full_name == "cuong"
+    assert payload.name == "cuong"
     assert payload.role == "teacher"
 
 

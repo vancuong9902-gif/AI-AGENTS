@@ -55,11 +55,29 @@ function App() {
   async function register(e) {
     e.preventDefault();
     const form = new FormData(e.target);
-    const payload = { email: form.get('email'), password: form.get('password'), role: form.get('role'), full_name: form.get('full_name') };
-    if (payload.role === 'student') payload.student_code = `S-${Date.now()}`;
-    await api.post('/auth/register', payload);
-    setMode('login');
-    setMessage('Registration successful. Please login.');
+    const name = String(form.get('name') || '').trim();
+    const email = String(form.get('email') || '').trim();
+    const password = String(form.get('password') || '');
+    const role = String(form.get('role') || 'student');
+    const payload = { name: name, email: email, password: password, role: role };
+
+    try {
+      await api.post('/auth/register', payload, { headers: { 'Content-Type': 'application/json' } });
+      setMode('login');
+      setMessage('Registration successful. Please login.');
+    } catch (error) {
+      const response = error?.response;
+      if (response?.status === 422) {
+        console.error('Register validation error details:', response.data?.detail || response.data);
+      }
+      const detail = response?.data?.detail;
+      const backendMessage = typeof detail === 'string'
+        ? detail
+        : Array.isArray(detail)
+          ? detail.map((item) => item?.msg || JSON.stringify(item)).join('; ')
+          : detail?.message || response?.data?.error?.message || error.message;
+      setMessage(`Registration failed: ${backendMessage}`);
+    }
   }
 
   async function uploadPdf(e) {
@@ -81,7 +99,7 @@ function App() {
 
   if (!token) return <div className="shell"><h1>AI LMS Demo</h1>{message && <p>{message}</p>}
     {mode === 'login' ? <form onSubmit={login} className="stack"><input name="email" placeholder="email" /><input name="password" type="password" placeholder="password" /><button>Login</button><button type="button" onClick={() => setMode('register')}>Go register</button></form>
-      : <form onSubmit={register} className="stack"><input name="full_name" placeholder="Full name" /><input name="email" placeholder="email" /><input name="password" type="password" placeholder="password" /><select name="role"><option value="teacher">teacher</option><option value="student">student</option></select><button>Register</button><button type="button" onClick={() => setMode('login')}>Back</button></form>}
+      : <form onSubmit={register} className="stack"><input name="name" placeholder="Full name" /><input name="email" placeholder="email" /><input name="password" type="password" placeholder="password" /><select name="role"><option value="teacher">teacher</option><option value="student">student</option></select><button>Register</button><button type="button" onClick={() => setMode('login')}>Back</button></form>}
   </div>;
 
   if (!user) return <div className="shell">Loading...</div>;
