@@ -196,7 +196,7 @@ npm run dev
 Core endpoints under `/api/mvp`:
 
 - `POST /api/auth/register`
-- `POST /api/login`
+- `POST /api/auth/login`
 - `POST /api/mvp/courses/upload` (teacher)
 - `POST /api/mvp/courses/{course_id}/generate-topics` (teacher)
 - `POST /api/mvp/courses/{course_id}/generate-entry-test` (teacher)

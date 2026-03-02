@@ -185,9 +185,17 @@ def _bootstrap_demo_users() -> None:
     db = SessionLocal()
     try:
         # Ensure teacher id=1
+        demo_password_hash = get_password_hash("password")
         t = db.query(User).filter(User.id == 1).first()
         if not t:
-            t = User(id=1, email="teacher1@demo.local", full_name="Teacher 1", role="teacher", is_active=True)
+            t = User(
+                id=1,
+                email="teacher1@demo.local",
+                full_name="Teacher 1",
+                role="teacher",
+                is_active=True,
+                password_hash=demo_password_hash,
+            )
             db.add(t)
             db.commit()
         else:
@@ -197,6 +205,9 @@ def _bootstrap_demo_users() -> None:
                 changed = True
             if not getattr(t, "email", None):
                 t.email = "teacher1@demo.local"
+                changed = True
+            if not getattr(t, "password_hash", None):
+                t.password_hash = demo_password_hash
                 changed = True
             if changed:
                 db.commit()
