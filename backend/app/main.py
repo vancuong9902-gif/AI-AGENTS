@@ -42,6 +42,7 @@ from app.api.routes.admin import router as admin_router
 from app.api.routes.notifications import router as notifications_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.ai_smart_lms import router as ai_smart_lms_router
+from app.api.routes.mvp import router as mvp_router
 from app.learning_engine.presentation.router import router as teacher_ai_router
 from app.db.session import SessionLocal
 from app.models.user import User
@@ -129,6 +130,7 @@ def _include_api_routers(fastapi_app: FastAPI, auth_enabled: bool) -> None:
     if auth_enabled:
         fastapi_app.include_router(auth_router, prefix="/api")
     fastapi_app.include_router(ai_smart_lms_router, prefix="/api")
+    fastapi_app.include_router(mvp_router, prefix="/api")
 
 
 def _log_registered_routes(fastapi_app: FastAPI) -> None:

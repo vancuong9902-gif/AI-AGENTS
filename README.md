@@ -190,6 +190,41 @@ npm run dev
 
 ---
 
+
+## DEMO MVP API (New)
+
+Core endpoints under `/api/mvp`:
+
+- `POST /api/auth/register`
+- `POST /api/login`
+- `POST /api/mvp/courses/upload` (teacher)
+- `POST /api/mvp/courses/{course_id}/generate-topics` (teacher)
+- `POST /api/mvp/courses/{course_id}/generate-entry-test` (teacher)
+- `GET /api/mvp/student/course` (student)
+- `GET /api/mvp/student/exams/latest` (student)
+- `POST /api/mvp/student/exams/{exam_id}/submit` (student)
+- `GET /api/mvp/teacher/results?page=1&page_size=10` (teacher, paginated)
+- `POST /api/mvp/student/tutor`
+
+Sample response (topics):
+
+```json
+{
+  "data": {
+    "topics": [
+      {"title": "Topic 1", "summary": "...", "exercises": ["Exercise 1.1", "Exercise 1.2", "Exercise 1.3"]}
+    ]
+  }
+}
+```
+
+Simple local run:
+
+```bash
+cd backend && cp .env.example .env && pip install -r requirements.txt && uvicorn app.main:app --reload
+cd frontend && npm install && npm run dev
+```
+
 ## 7) Demo Instructions (for Thesis Defense)
 
 ### 7.1 Suggested Demo Storyline

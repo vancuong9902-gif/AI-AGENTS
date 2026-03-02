@@ -27,3 +27,5 @@ from app.models.notification import Notification, NotificationType
 from app.models.topic_material_cache import TopicMaterialCache
 
 from app.models.quiz_session import QuizSession
+
+from app.models.mvp import Course, Topic, Exam, Question, Result
