@@ -66,7 +66,7 @@ function RouterView({ path, navigate }) {
 function App() {
   const { path, navigate } = usePathname();
   React.useEffect(() => {
-    if (!['/', '/login', '/register', '/teacher', '/teacher/results', '/student'].includes(path)) {
+    if (!['/', '/login', '/register', '/teacher', '/teacher/results', '/student', '/teacher/classrooms'].includes(path)) {
       navigate('/', true);
     }
   }, [path, navigate]);
