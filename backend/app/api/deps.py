@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Optional
 
 from fastapi import Depends, Header, HTTPException, Request
@@ -43,7 +44,7 @@ def _resolve_jwt_user(db: Session, token: Optional[str]) -> Optional[User]:
 
 
 def get_current_user_optional(
-    request: Request,
+    request: Request = None,
     db: Session = Depends(get_db),
     token: Optional[str] = Depends(oauth2_scheme),
     x_user_id: Optional[str] = Header(default=None, alias="X-User-Id"),
@@ -52,7 +53,7 @@ def get_current_user_optional(
     if settings.AUTH_ENABLED:
         return _resolve_jwt_user(db, token)
 
-    if not x_user_id:
+    if not x_user_id and request is not None:
         guest_token = request.cookies.get("guest_session")
         if guest_token:
             payload = safe_decode_token(guest_token)
@@ -64,6 +65,9 @@ def get_current_user_optional(
                 x_user_role = _normalize_role(payload.get("role"))
 
     if not x_user_id:
+        # Demo mode fallback: avoid 401/422 on endpoints that require a user.
+        if request is not None:
+            return SimpleNamespace(id=2, role="student", is_active=True)
         return None
     try:
         uid = int(str(x_user_id).strip())
