@@ -1,23 +1,15 @@
 import { Navigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
-import Card from '../ui/Card';
-import Button from '../ui/Button';
 
-export default function ProtectedRoute({ children, allow }) {
-  const { role } = useAuth();
+export default function ProtectedRoute({ allowedRoles, children }) {
+  const { token, role } = useAuth();
 
-  if (!role) return <Navigate to='/' />;
+  if (!token) {
+    return <Navigate to='/login' replace />;
+  }
 
-  if (!allow.includes(role)) {
-    return (
-      <div className='container'>
-        <Card className='stack-md'>
-          <h2>Bạn chưa có quyền truy cập</h2>
-          <p className='page-subtitle'>Vui lòng đăng nhập bằng tài khoản phù hợp để tiếp tục.</p>
-          <div><Button onClick={() => window.history.back()}>Quay lại</Button></div>
-        </Card>
-      </div>
-    );
+  if (allowedRoles && !allowedRoles.includes(role)) {
+    return <Navigate to='/login' replace />;
   }
 
   return children;
