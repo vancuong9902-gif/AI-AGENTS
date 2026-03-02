@@ -8,6 +8,7 @@ Create Date: 2026-02-28
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 from sqlalchemy.dialects import postgresql
 
 
@@ -19,10 +20,15 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "quiz_sets",
-        sa.Column("duration_seconds", sa.Integer(), nullable=False, server_default=sa.text("1800")),
-    )
+    conn = op.get_bind()
+    inspector = inspect(conn)
+
+    quiz_set_columns = {col["name"] for col in inspector.get_columns("quiz_sets")}
+    if "duration_seconds" not in quiz_set_columns:
+        op.add_column(
+            "quiz_sets",
+            sa.Column("duration_seconds", sa.Integer(), nullable=False, server_default=sa.text("1800")),
+        )
 
     op.execute(
         """
@@ -32,17 +38,27 @@ def upgrade() -> None:
         """
     )
 
-    op.add_column(
-        "document_topics",
-        sa.Column(
-            "metadata_json",
-            postgresql.JSONB(astext_type=sa.Text()),
-            nullable=False,
-            server_default=sa.text("'{}'::jsonb"),
-        ),
-    )
+    document_topic_columns = {col["name"] for col in inspector.get_columns("document_topics")}
+    if "metadata_json" not in document_topic_columns:
+        op.add_column(
+            "document_topics",
+            sa.Column(
+                "metadata_json",
+                postgresql.JSONB(astext_type=sa.Text()),
+                nullable=False,
+                server_default=sa.text("'{}'::jsonb"),
+            ),
+        )
 
 
 def downgrade() -> None:
-    op.drop_column("document_topics", "metadata_json")
-    op.drop_column("quiz_sets", "duration_seconds")
+    conn = op.get_bind()
+    inspector = inspect(conn)
+
+    document_topic_columns = {col["name"] for col in inspector.get_columns("document_topics")}
+    if "metadata_json" in document_topic_columns:
+        op.drop_column("document_topics", "metadata_json")
+
+    quiz_set_columns = {col["name"] for col in inspector.get_columns("quiz_sets")}
+    if "duration_seconds" in quiz_set_columns:
+        op.drop_column("quiz_sets", "duration_seconds")
