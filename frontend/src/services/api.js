@@ -28,9 +28,17 @@ async function request(path, options = {}) {
 }
 
 export function loginApi(payload) {
+  const params = new URLSearchParams({
+    username: payload?.email || '',
+    password: payload?.password || '',
+  });
+
   return request('/auth/login', {
     method: 'POST',
-    body: JSON.stringify(payload),
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: params.toString(),
   });
 }
 
