@@ -10,7 +10,8 @@
     "lint": "node --check vite.config.js"
   },
   "devDependencies": {
-    "vite": "^7.2.4"
+    "vite": "^7.2.4",
+    "@vitejs/plugin-react": "^4.3.4"
   },
   "dependencies": {
     "react": "^18.3.1",
