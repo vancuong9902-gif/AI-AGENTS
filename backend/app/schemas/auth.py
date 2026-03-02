@@ -42,8 +42,29 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     email: str
     password: str
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str) -> str:
+        v = str(value).strip().lower()
+        if "@" not in v or v.startswith("@") or v.endswith("@"):
+            raise ValueError("Invalid email format")
+        local, domain = v.split("@", 1)
+        if not local or "." not in domain:
+            raise ValueError("Invalid email format")
+        return v
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        v = str(value)
+        if not v.strip():
+            raise ValueError("Password is required")
+        return v
 
 
 class TokenResponse(BaseModel):
