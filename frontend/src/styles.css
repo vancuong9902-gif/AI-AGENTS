@@ -43,7 +43,8 @@ label {
   font-size: 14px;
 }
 
-input {
+input,
+select {
   padding: 10px;
   border: 1px solid #d1d5db;
   border-radius: 8px;
@@ -97,4 +98,13 @@ button.secondary {
 
 .error {
   color: #b91c1c;
+}
+
+.hidden {
+  display: none;
+}
+
+label .error {
+  min-height: 16px;
+  font-size: 12px;
 }
