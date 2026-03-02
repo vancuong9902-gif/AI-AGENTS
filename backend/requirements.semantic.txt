@@ -1,5 +1,4 @@
-# Optional extras for semantic RAG (FAISS + embeddings)
-numpy>=1.26.0,<3.0.0
-# NOTE: faiss-cpu wheels may not be available on every Windows setup.
-# If pip fails, keep keyword mode (default) or install FAISS via conda.
-faiss-cpu>=1.8.0,<2.0.0
+# Semantic RAG dependencies pinned for stable wheels on Debian Bookworm + Python 3.11.
+# Keep numpy 1.26.x to avoid ABI/runtime mismatch with older FAISS wheels.
+numpy==1.26.4
+faiss-cpu==1.8.0.post1
