@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_user
@@ -71,12 +70,29 @@ def login_json(request: Request, payload: LoginRequest, db: Session = Depends(ge
 def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)):
     """Simple JSON login endpoint for student/teacher/admin."""
     return login_json(request=request, payload=payload, db=db)
+
+
 @router.post("/auth/login")
-def login_form(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    u = db.query(User).filter(User.email == str(form_data.username)).first()
+async def login_form(request: Request, db: Session = Depends(get_db)):
+    content_type = (request.headers.get("content-type") or "").lower()
+
+    if "application/json" in content_type:
+        raw_payload = await request.json()
+        payload = LoginRequest.model_validate(raw_payload)
+        email = str(payload.email)
+        password = payload.password
+    else:
+        form = await request.form()
+        email = str(form.get("username") or form.get("email") or "")
+        password = str(form.get("password") or "")
+
+    if not email or not password:
+        raise HTTPException(status_code=422, detail="email/username and password are required")
+
+    u = db.query(User).filter(User.email == email).first()
     if not u or not getattr(u, "password_hash", None):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    if not verify_password(form_data.password, str(u.password_hash)):
+    if not verify_password(password, str(u.password_hash)):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     token = TokenResponse(access_token=create_access_token(subject=str(u.id)))
