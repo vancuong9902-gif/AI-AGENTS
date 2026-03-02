@@ -305,7 +305,7 @@ def search(db: Session, query: str, top_k: int = 5, filters: Optional[Dict[str, 
     # Over-fetch to allow filtering.
     fetch_n = max(int(top_k) * 10, 50)
 
-    q_vec = np.array([embed_text(str(query), model=EMBED_MODEL)], dtype="float32")
+    q_vec = np.array([embed_text(str(query), model=_embed_model())], dtype="float32")
     q_vec = _normalize(q_vec)
 
     with _lock:
