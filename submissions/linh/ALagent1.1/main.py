@@ -23,5 +23,4 @@ def get_diagnostic_questions():
 
 @app.post("/profile/diagnostic")
 def diagnostic_test(req: DiagnosticRequest):
-    score, level = evaluate_answers(req.answers)
-    return {"score": score, "level": level}
+    return evaluate_answers(req.answers)
