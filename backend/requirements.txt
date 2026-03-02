@@ -23,6 +23,7 @@ openai>=1.30.0,<2.0.0
 
 # Auth (optional, Mode A keeps demo headers working)
 passlib[bcrypt]==1.7.4
+bcrypt==3.2.2
 python-jose[cryptography]==3.3.0
 
 # Async queue (event-driven infra)
