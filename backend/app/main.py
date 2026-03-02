@@ -41,6 +41,7 @@ from app.api.routes.lms import router as lms_router
 from app.api.routes.admin import router as admin_router
 from app.api.routes.notifications import router as notifications_router
 from app.api.routes.auth import router as auth_router
+from app.learning_engine.presentation.router import router as teacher_ai_router
 from app.db.session import SessionLocal
 from app.models.user import User
 from app.services import vector_store
@@ -123,6 +124,7 @@ def _include_api_routers(fastapi_app: FastAPI, auth_enabled: bool) -> None:
     fastapi_app.include_router(teacher_assessments_router, prefix="/api")
     fastapi_app.include_router(admin_router, prefix="/api")
     fastapi_app.include_router(notifications_router, prefix="/api")
+    fastapi_app.include_router(teacher_ai_router, prefix="/api/v2")
     if auth_enabled:
         fastapi_app.include_router(auth_router, prefix="/api")
 
