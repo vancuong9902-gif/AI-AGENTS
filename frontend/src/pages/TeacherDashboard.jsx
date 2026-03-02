@@ -14,6 +14,7 @@ export default function TeacherDashboard() {
   const [activeTab, setActiveTab] = React.useState('upload');
   const [courseId, setCourseId] = React.useState(null);
   const [topics, setTopics] = React.useState([]);
+  const [exam, setExam] = React.useState(null);
   const [entryMessage, setEntryMessage] = React.useState('');
   const [results, setResults] = React.useState([]);
   const [page, setPage] = React.useState(1);
@@ -52,6 +53,7 @@ export default function TeacherDashboard() {
       const response = await mvpApi.uploadCourse(formData);
       setCourseId(response.data.data.course_id);
       setTopics([]);
+      setExam(null);
       setEntryMessage('');
       setAlert({ type: 'success', message: 'PDF uploaded successfully.' });
     } catch (err) {
@@ -80,7 +82,9 @@ export default function TeacherDashboard() {
     setLoading(true);
     try {
       const response = await mvpApi.generateEntryTest(courseId);
-      const questionCount = response.data.data.questions?.length || 0;
+      const payload = response.data.data;
+      const questionCount = payload.questions?.length || 0;
+      setExam(payload);
       setEntryMessage(`Entry test ready with ${questionCount} questions.`);
       setAlert({ type: 'success', message: 'Generated entry test successfully.' });
     } catch (err) {
@@ -108,10 +112,29 @@ export default function TeacherDashboard() {
       {activeTab === 'upload' && (
         <div className="card stack">
           <input type="file" accept="application/pdf" onChange={(e) => onUpload(e.target.files?.[0])} />
+          {courseId && (
+            <div className="teacher-checklist">
+              <div className="checklist-item done">
+                <span className="check-icon">✅</span>
+                <span>Tài liệu đã upload</span>
+              </div>
+              <div className={`checklist-item ${topics.length > 0 ? 'done' : 'pending'}`}>
+                <span className="check-icon">{topics.length > 0 ? '✅' : '⬜'}</span>
+                <span>Nội dung khoá học {topics.length > 0 ? 'đã tạo' : 'chưa tạo'}</span>
+              </div>
+              <div className={`checklist-item ${exam ? 'done' : 'pending'}`}>
+                <span className="check-icon">{exam ? '✅' : '⬜'}</span>
+                <span>Bài kiểm tra đầu vào {exam ? 'đã tạo' : 'chưa tạo'}</span>
+              </div>
+            </div>
+          )}
           <div className="row">
             <button disabled={!courseId || loading} onClick={generateTopics}>Generate Course Topics</button>
             <button disabled={!courseId || loading} onClick={generateExam}>Generate Entry Test</button>
           </div>
+          {courseId && topics.length > 0 && exam && (
+            <div className="ready-banner">🎉 Khoá học đã sẵn sàng! Học sinh có thể bắt đầu học và làm bài kiểm tra.</div>
+          )}
           {entryMessage && <p>{entryMessage}</p>}
           <div className="stack">
             {topics.map((topic) => (

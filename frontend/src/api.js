@@ -62,6 +62,7 @@ export const mvpApi = {
     params: { page, page_size: pageSize },
   }),
   getCourse: () => api.get('/mvp/student/course'),
+  getStudentStatus: () => api.get('/mvp/student/status'),
   getLatestExam: () => api.get('/mvp/student/exams/latest'),
   submitExam: (examId, answers) => api.post(`/mvp/student/exams/${examId}/submit`, { answers }),
   askTutor: (question) => api.post('/mvp/student/tutor', { question }),

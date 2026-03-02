@@ -16,6 +16,8 @@ function levelClass(level) {
 }
 
 export default function StudentDashboard() {
+  const [status, setStatus] = React.useState(null);
+  const [checking, setChecking] = React.useState(false);
   const [course, setCourse] = React.useState(null);
   const [openTopics, setOpenTopics] = React.useState({});
   const [exam, setExam] = React.useState(null);
@@ -26,6 +28,45 @@ export default function StudentDashboard() {
   const [question, setQuestion] = React.useState('');
   const [conversation, setConversation] = React.useState([]);
   const [alert, setAlert] = React.useState({ type: 'info', message: '' });
+
+  const loadStudentCourse = async () => {
+    setAlert({ type: 'info', message: '' });
+    try {
+      const response = await mvpApi.getCourse();
+      setCourse(response.data.data);
+      setResult(null);
+      setExam(null);
+    } catch (err) {
+      setAlert({ type: 'error', message: getErrorMessage(err) });
+    }
+  };
+
+  const recheckStatus = async () => {
+    setChecking(true);
+    try {
+      const response = await mvpApi.getStudentStatus();
+      setStatus(response.data.data);
+    } catch (_err) {
+      // keep previous state
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  React.useEffect(() => {
+    const init = async () => {
+      setChecking(true);
+      try {
+        const response = await mvpApi.getStudentStatus();
+        setStatus(response.data.data);
+      } catch (err) {
+        setAlert({ type: 'error', message: getErrorMessage(err) });
+      } finally {
+        setChecking(false);
+      }
+    };
+    init();
+  }, []);
 
   React.useEffect(() => {
     if (!exam) return;
@@ -39,18 +80,6 @@ export default function StudentDashboard() {
       submitExam();
     }
   }, [timer]);
-
-  const loadCourse = async () => {
-    setAlert({ type: 'info', message: '' });
-    try {
-      const response = await mvpApi.getCourse();
-      setCourse(response.data.data);
-      setResult(null);
-      setExam(null);
-    } catch (err) {
-      setAlert({ type: 'error', message: getErrorMessage(err) });
-    }
-  };
 
   const startExam = async () => {
     setAlert({ type: 'info', message: '' });
@@ -94,87 +123,136 @@ export default function StudentDashboard() {
   const current = exam?.questions?.[questionIndex];
   const progress = exam ? ((questionIndex + 1) / exam.questions.length) * 100 : 0;
 
+  const renderWaitingState = () => {
+    if (!status || status.ready) return null;
+
+    if (!status.has_course) {
+      return (
+        <div className="waiting-state">
+          <div className="waiting-icon">🕐</div>
+          <h3>Giáo viên chưa tải tài liệu lên</h3>
+          <p>Vui lòng quay lại sau khi giáo viên chuẩn bị xong tài liệu học.</p>
+          <button onClick={recheckStatus} disabled={checking}>{checking ? 'Đang kiểm tra...' : '🔄 Kiểm tra lại'}</button>
+        </div>
+      );
+    }
+
+    if (status.has_course && !status.has_topics) {
+      return (
+        <div className="waiting-state">
+          <div className="waiting-icon">📄</div>
+          <h3>Tài liệu đã được tải lên</h3>
+          <p>Giáo viên đang chuẩn bị nội dung khoá học. Vui lòng chờ.</p>
+          <button onClick={recheckStatus} disabled={checking}>{checking ? 'Đang kiểm tra...' : '🔄 Kiểm tra lại'}</button>
+        </div>
+      );
+    }
+
+    if (status.has_topics && !status.has_exam) {
+      return (
+        <div className="waiting-state">
+          <div className="waiting-icon">📚</div>
+          <h3>Nội dung khoá học đã sẵn sàng</h3>
+          <p>Giáo viên chưa tạo bài kiểm tra đầu vào.</p>
+          <div className="row waiting-actions">
+            <button onClick={loadStudentCourse}>Xem tài liệu</button>
+            <button disabled title="Chờ giáo viên tạo bài kiểm tra">Bài kiểm tra chưa sẵn sàng</button>
+          </div>
+          <button onClick={recheckStatus} disabled={checking}>{checking ? 'Đang kiểm tra...' : '🔄 Kiểm tra lại'}</button>
+        </div>
+      );
+    }
+
+    return null;
+  };
+
+  const waitingState = renderWaitingState();
+
   return (
     <div className="shell stack">
       <h1>Student Dashboard</h1>
       <Alert type={alert.type} message={alert.message} />
 
-      <section className="card stack">
-        <h2>Course Content</h2>
-        <button onClick={loadCourse}>Load My Course</button>
-        {!course?.topics?.length && course?.message && <p>{course.message}</p>}
-        <div>
-          {(course?.topics || []).map((topic, idx) => (
-            <div key={topic.title} className={`accordion-item ${openTopics[idx] ? 'open' : ''}`}>
-              <div className="accordion-header" onClick={() => setOpenTopics((prev) => ({ ...prev, [idx]: !prev[idx] }))}>
-                <span>{topic.title}</span>
-                <span>{openTopics[idx] ? '−' : '+'}</span>
-              </div>
-              <div className="accordion-body">
-                <p>{topic.summary}</p>
-                <ul>{(topic.exercises || []).map((exercise) => <li key={exercise}>{exercise}</li>)}</ul>
-              </div>
+      {waitingState || (
+        <>
+          <section className="card stack">
+            <h2>Course Content</h2>
+            <button onClick={loadStudentCourse}>Load My Course</button>
+            {!course?.topics?.length && course?.message && <p>{course.message}</p>}
+            <div>
+              {(course?.topics || []).map((topic, idx) => (
+                <div key={topic.title} className={`accordion-item ${openTopics[idx] ? 'open' : ''}`}>
+                  <div className="accordion-header" onClick={() => setOpenTopics((prev) => ({ ...prev, [idx]: !prev[idx] }))}>
+                    <span>{topic.title}</span>
+                    <span>{openTopics[idx] ? '−' : '+'}</span>
+                  </div>
+                  <div className="accordion-body">
+                    <p>{topic.summary}</p>
+                    <ul>{(topic.exercises || []).map((exercise) => <li key={exercise}>{exercise}</li>)}</ul>
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-      </section>
+          </section>
 
-      {course && (
-        <section className="card stack">
-          <h2>Entry Test</h2>
-          {!exam && <button onClick={startExam}>Start Entry Test</button>}
-          {exam && current && (
-            <div className="stack">
-              <div className="progress-bar"><div className="progress-fill" style={{ width: `${progress}%` }} /></div>
-              <p>Question {questionIndex + 1} / {exam.questions.length}</p>
-              <p className={`timer ${timer <= 60 ? 'urgent' : ''}`}>{formatTime(timer)}</p>
-              <h3>{current.question}</h3>
-              <div className="stack">
-                {current.options.map((option) => (
-                  <label key={option} className="option-row">
-                    <input
-                      type="radio"
-                      name={`q-${current.id}`}
-                      checked={answers[current.id] === option}
-                      onChange={() => setAnswers((prev) => ({ ...prev, [current.id]: option }))}
-                    />
-                    <span>{option}</span>
-                  </label>
+          {course && (
+            <section className="card stack">
+              <h2>Entry Test</h2>
+              {!exam && <button onClick={startExam}>Start Entry Test</button>}
+              {exam && current && (
+                <div className="stack">
+                  <div className="progress-bar"><div className="progress-fill" style={{ width: `${progress}%` }} /></div>
+                  <p>Question {questionIndex + 1} / {exam.questions.length}</p>
+                  <p className={`timer ${timer <= 60 ? 'urgent' : ''}`}>{formatTime(timer)}</p>
+                  <h3>{current.question}</h3>
+                  <div className="stack">
+                    {current.options.map((option) => (
+                      <label key={option} className="option-row">
+                        <input
+                          type="radio"
+                          name={`q-${current.id}`}
+                          checked={answers[current.id] === option}
+                          onChange={() => setAnswers((prev) => ({ ...prev, [current.id]: option }))}
+                        />
+                        <span>{option}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <div className="row">
+                    <button disabled={questionIndex === 0} onClick={() => setQuestionIndex((v) => v - 1)}>Prev</button>
+                    {questionIndex < exam.questions.length - 1 ? (
+                      <button onClick={() => setQuestionIndex((v) => v + 1)}>Next</button>
+                    ) : (
+                      <button onClick={submitExam}>Submit</button>
+                    )}
+                  </div>
+                </div>
+              )}
+              {result && (
+                <div className="card stack">
+                  <p>Score: {result.score}/10</p>
+                  <span className={`badge ${levelClass(result.level)}`}>{result.level}</span>
+                </div>
+              )}
+            </section>
+          )}
+
+          {course && (
+            <section className="card stack">
+              <h2>AI Tutor</h2>
+              <div className="row">
+                <input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Ask a question about the course..." />
+                <button onClick={askTutor}>Ask Tutor</button>
+                <button className="ghost" onClick={() => setConversation([])}>Clear conversation</button>
+              </div>
+              <div className="chat-messages">
+                {conversation.map((msg, idx) => (
+                  <div key={idx} className={`chat-bubble ${msg.role === 'user' ? 'user' : 'bot'}`}>{msg.text}</div>
                 ))}
               </div>
-              <div className="row">
-                <button disabled={questionIndex === 0} onClick={() => setQuestionIndex((v) => v - 1)}>Prev</button>
-                {questionIndex < exam.questions.length - 1 ? (
-                  <button onClick={() => setQuestionIndex((v) => v + 1)}>Next</button>
-                ) : (
-                  <button onClick={submitExam}>Submit</button>
-                )}
-              </div>
-            </div>
+            </section>
           )}
-          {result && (
-            <div className="card stack">
-              <p>Score: {result.score}/10</p>
-              <span className={`badge ${levelClass(result.level)}`}>{result.level}</span>
-            </div>
-          )}
-        </section>
-      )}
-
-      {course && (
-        <section className="card stack">
-          <h2>AI Tutor</h2>
-          <div className="row">
-            <input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Ask a question about the course..." />
-            <button onClick={askTutor}>Ask Tutor</button>
-            <button className="ghost" onClick={() => setConversation([])}>Clear conversation</button>
-          </div>
-          <div className="chat-messages">
-            {conversation.map((msg, idx) => (
-              <div key={idx} className={`chat-bubble ${msg.role === 'user' ? 'user' : 'bot'}`}>{msg.text}</div>
-            ))}
-          </div>
-        </section>
+        </>
       )}
     </div>
   );

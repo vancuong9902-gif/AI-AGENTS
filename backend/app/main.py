@@ -383,6 +383,23 @@ async def request_id_middleware(request: Request, call_next):
             resp_429.headers["Retry-After"] = "60"
             return resp_429
 
+    mvp_upload_paths = {"/api/mvp/courses/upload", "/api/mvp/courses"}
+    if request.url.path in mvp_upload_paths and request.method == "POST":
+        client_key = request.client.host if request.client else "unknown"
+        bucket_key = f"mvp_upload:{client_key}"
+        if not rate_limiter.allow(bucket_key, 10):
+            return JSONResponse(
+                status_code=429,
+                content=envelope(
+                    request_id=req_id,
+                    data=None,
+                    error={
+                        "code": "RATE_LIMITED",
+                        "message": "Upload limit exceeded. Please wait before uploading again.",
+                    },
+                ),
+            )
+
     try:
         response = await call_next(request)
     except Exception:
