@@ -13,7 +13,7 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
-app.use('/', authRoutes);
+app.use('/auth', authRoutes);
 app.use('/admin', adminRoutes);
 
 app.use((err, _req, res, _next) => {
