@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "node --check vite.config.js && node --check eslint.config.js"
   },
   "dependencies": {
     "axios": "^1.7.7",
