@@ -2,10 +2,14 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
 import AuthCard from '../components/AuthCard';
-import { loginApi, meApi } from '../services/api';
+import { loginApi } from '../services/api';
 
 function resolveLoginToken(response) {
   return response?.data?.access_token || response?.access_token || null;
+}
+
+function resolveRole(response) {
+  return response?.data?.role || response?.role || null;
 }
 
 export default function Login() {
@@ -23,25 +27,22 @@ export default function Login() {
     try {
       const response = await loginApi(form);
       const token = resolveLoginToken(response);
+      const role = resolveRole(response);
 
-      if (!token) {
+      if (!token || !role) {
         setError('Phản hồi đăng nhập không hợp lệ.');
         return;
       }
 
-      const meResponse = await meApi(token);
-      const user = meResponse?.data || null;
-
-      if (!user?.role) {
-        setError('Không thể tải thông tin người dùng.');
-        return;
-      }
-
+      const user = {
+        email: form.email,
+        role,
+      };
       login({ token, user });
 
-      if (user.role === 'admin') navigate('/admin/dashboard');
-      else if (user.role === 'teacher') navigate('/teacher/dashboard');
-      else navigate('/student/dashboard');
+      if (role === 'student') navigate('/student');
+      else if (role === 'teacher') navigate('/teacher');
+      else navigate('/login');
     } catch (apiError) {
       if (apiError.status === 401) {
         setError('Sai email hoặc mật khẩu');

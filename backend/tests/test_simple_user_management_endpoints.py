@@ -21,13 +21,13 @@ def test_teacher_creation_and_user_listing_are_admin_guarded():
     assert "Depends(require_admin)" in src
 
 
-def test_users_endpoint_has_pagination_and_registration_forces_student_role():
+def test_users_endpoint_has_pagination_and_registration_supports_student_teacher_roles():
     admin_src = ADMIN_PATH.read_text(encoding="utf-8")
     auth_src = AUTH_PATH.read_text(encoding="utf-8")
 
     assert "limit: int = Query" in admin_src
     assert "offset: int = Query" in admin_src
-    assert 'role="student"' in auth_src
+    assert 'if role not in {"student", "teacher"}:' in auth_src
 
 
 def test_role_check_dependency_helper_exists():
