@@ -1,0 +1,181 @@
+{
+  "report_metadata": {
+    "title": "Final Performance Report",
+    "report_type": "capstone_evaluation",
+    "generated_at": "2026-03-02",
+    "version": "1.0.0",
+    "language": "en"
+  },
+  "final_score": {
+    "value": 87,
+    "scale": 100,
+    "grade": "A-",
+    "status": "pass_with_distinction",
+    "summary": "Strong end-to-end delivery with reliable execution quality, minor consistency and hardening gaps remaining."
+  },
+  "skill_radar_analysis": {
+    "max_score_per_skill": 10,
+    "skills": [
+      {
+        "skill": "Problem Solving",
+        "score": 9,
+        "evidence": "Resolved high-priority defects and converged on actionable fixes quickly."
+      },
+      {
+        "skill": "Backend Engineering",
+        "score": 8,
+        "evidence": "Implemented API robustness patterns including pagination and safer response behavior."
+      },
+      {
+        "skill": "Frontend Consistency",
+        "score": 8,
+        "evidence": "UI is mostly coherent with improved loading/error/empty states and reusable components."
+      },
+      {
+        "skill": "Testing & QA",
+        "score": 8,
+        "evidence": "Coverage quality improved, especially around list pagination and key regression paths."
+      },
+      {
+        "skill": "DevOps & CI",
+        "score": 7,
+        "evidence": "Baseline CI checks exist; opportunities remain for stricter quality gates and matrix expansion."
+      },
+      {
+        "skill": "Code Hygiene",
+        "score": 9,
+        "evidence": "BOM cleanup and recurrence prevention controls demonstrate strong engineering discipline."
+      },
+      {
+        "skill": "Documentation",
+        "score": 8,
+        "evidence": "README and environment setup are improved and easier for new contributors."
+      },
+      {
+        "skill": "System Design",
+        "score": 8,
+        "evidence": "Architecture choices are pragmatic and support iterative scaling across agents/services."
+      }
+    ],
+    "aggregate_average": 8.1,
+    "interpretation": "Performance is well-balanced across delivery, reliability, and maintainability, with strongest outcomes in problem solving and code hygiene."
+  },
+  "strengths": [
+    "High-priority issue resolution is fast and practical, reducing user-facing risk.",
+    "Good balance between feature velocity and stability protections (tests + safer API behavior).",
+    "Solid engineering hygiene practices, including prevention mechanisms not just one-off fixes.",
+    "Documentation quality supports smoother onboarding and reproducible local setup."
+  ],
+  "weaknesses": [
+    "CI depth is still moderate; quality gates can miss edge regressions under broader environments.",
+    "Frontend consistency is improved but still uneven in a few cross-page interactions.",
+    "Observability and production diagnostics could be stronger for faster incident triage."
+  ],
+  "improvement_recommendations": [
+    {
+      "priority": "high",
+      "recommendation": "Expand CI pipeline to include lint + test + build matrices and enforce required checks before merge.",
+      "expected_impact": "Lower regression rate and more predictable release quality."
+    },
+    {
+      "priority": "high",
+      "recommendation": "Standardize frontend state handling patterns (loading/error/empty) in shared UI wrappers.",
+      "expected_impact": "More consistent UX and reduced page-level implementation drift."
+    },
+    {
+      "priority": "medium",
+      "recommendation": "Strengthen observability with structured logging, request correlation IDs, and focused dashboard alerts.",
+      "expected_impact": "Faster debugging and improved production reliability."
+    },
+    {
+      "priority": "medium",
+      "recommendation": "Add contract tests for core API payloads and pagination behavior across all list endpoints.",
+      "expected_impact": "Improved compatibility confidence for frontend and integrations."
+    },
+    {
+      "priority": "low",
+      "recommendation": "Introduce periodic architecture review checkpoints tied to milestone exits.",
+      "expected_impact": "Sustained system clarity as scope and team size grow."
+    }
+  ],
+  "suggested_next_learning_path": {
+    "track_name": "Reliability-First Full-Stack Progression",
+    "duration_weeks": 6,
+    "weekly_plan": [
+      {
+        "week": 1,
+        "focus": "CI hardening and quality gates",
+        "outcomes": [
+          "Define mandatory checks",
+          "Introduce matrix builds",
+          "Publish failure triage guide"
+        ]
+      },
+      {
+        "week": 2,
+        "focus": "API contract discipline",
+        "outcomes": [
+          "Add schema/contract tests",
+          "Verify pagination defaults and limits",
+          "Document endpoint versioning rules"
+        ]
+      },
+      {
+        "week": 3,
+        "focus": "Frontend state architecture",
+        "outcomes": [
+          "Adopt reusable async-state container patterns",
+          "Unify empty/error/loading UX",
+          "Reduce duplicated page-level logic"
+        ]
+      },
+      {
+        "week": 4,
+        "focus": "Observability baseline",
+        "outcomes": [
+          "Implement structured logs",
+          "Add key service health metrics",
+          "Create alert thresholds for core flows"
+        ]
+      },
+      {
+        "week": 5,
+        "focus": "Performance and resilience",
+        "outcomes": [
+          "Run targeted load tests",
+          "Optimize high-latency service paths",
+          "Validate graceful degradation behavior"
+        ]
+      },
+      {
+        "week": 6,
+        "focus": "Capstone consolidation",
+        "outcomes": [
+          "Ship one reliability-focused feature end-to-end",
+          "Present metrics before/after",
+          "Publish retrospective and next-cycle backlog"
+        ]
+      }
+    ]
+  },
+  "pdf_render_hints": {
+    "sections_order": [
+      "report_metadata",
+      "final_score",
+      "skill_radar_analysis",
+      "strengths",
+      "weaknesses",
+      "improvement_recommendations",
+      "suggested_next_learning_path"
+    ],
+    "charts": [
+      {
+        "type": "radar",
+        "source": "skill_radar_analysis.skills",
+        "label_key": "skill",
+        "value_key": "score",
+        "max_value": 10
+      }
+    ]
+  }
+}
