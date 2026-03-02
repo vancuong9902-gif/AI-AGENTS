@@ -14,5 +14,9 @@ fi
 
 tmp_script="$(mktemp)"
 trap 'rm -f "$tmp_script"' EXIT
-tr -d '\r' <"$script_path" >"$tmp_script"
+
+# Guard against Windows checkout issues when files are bind-mounted from host:
+# - CRLF can make `set -o pipefail` become `pipefail\r` (invalid option name)
+# - UTF-8 BOM can break shebang / first-token parsing in shell scripts
+tr -d '\r' <"$script_path" | sed '1s/^\xEF\xBB\xBF//' >"$tmp_script"
 exec bash "$tmp_script"
