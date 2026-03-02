@@ -1,6 +1,6 @@
 """week17 topic draft publish fields
 
-Revision ID: a9b8c7d6e5f4
+Revision ID: a9b8c7d6e5f5
 Revises: f7a8b9c0d1e2
 Create Date: 2026-03-01
 """
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 
-revision = 'a9b8c7d6e5f4'
+revision = 'a9b8c7d6e5f5'
 down_revision = 'f7a8b9c0d1e2'
 branch_labels = None
 depends_on = None

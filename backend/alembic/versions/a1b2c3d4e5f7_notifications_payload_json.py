@@ -1,6 +1,6 @@
 """notifications payload_json alignment
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: a1b2c3d4e5f7
 Revises: f1a2b3c4d5e7
 Create Date: 2026-03-01
 """
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 
-revision = "a1b2c3d4e5f6"
+revision = "a1b2c3d4e5f7"
 down_revision = "f1a2b3c4d5e7"
 branch_labels = None
 depends_on = None

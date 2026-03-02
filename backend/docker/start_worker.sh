@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
 REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
