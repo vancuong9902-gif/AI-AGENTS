@@ -38,8 +38,7 @@ services:
     environment:
       APP_NAME: AI Learning Agent
       ENV: dev
-      FRONTEND_ORIGIN: http://localhost:5173
-      BACKEND_CORS_ORIGINS: '["http://localhost:5173","http://127.0.0.1:5173"]'
+      BACKEND_CORS_ORIGINS: '["http://localhost:5173","http://frontend:5173"]'
       MAX_UPLOAD_MB: "20"
       RATE_LIMIT_REQUESTS_PER_MINUTE: "60"
       DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/ai_agent
@@ -98,8 +97,7 @@ services:
     build:
       context: ./frontend
     environment:
-      # FE chạy trên browser, nên vẫn gọi về localhost:8000
-      VITE_API_BASE_URL: /api
+      VITE_API_URL: /api
       VITE_BACKEND_PROXY_TARGET: http://backend:8000
     depends_on:
       backend:
