@@ -10,11 +10,10 @@ ALLOWED_SELF_REGISTER_ROLES = {"student", "teacher"}
 class RegisterRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, str_strip_whitespace=True)
 
+    name: str = Field(min_length=1, max_length=255, validation_alias=AliasChoices("name", "full_name"))
     email: str
     password: str = Field(min_length=8, max_length=200)
-    full_name: Optional[str] = Field(default=None, validation_alias=AliasChoices("full_name", "name"))
     role: Literal["student", "teacher"] = "student"
-    student_code: Optional[str] = Field(default=None, min_length=1, max_length=64)
 
     @field_validator("email")
     @classmethod
@@ -35,9 +34,10 @@ class RegisterRequest(BaseModel):
         return str(value).strip().lower()
 
     @model_validator(mode="after")
-    def validate_role_and_student_code(self):
-        if self.role == "student" and not self.student_code:
-            raise ValueError("student_code is required for student role")
+    def validate_name(self):
+        self.name = str(self.name).strip()
+        if not self.name:
+            raise ValueError("Name is required")
         return self
 
 

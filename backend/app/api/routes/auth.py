@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_user
@@ -26,8 +26,12 @@ def _user_out(u: User) -> UserOut:
     )
 
 
-@router.post("/auth/register")
-def register(request: Request, payload: RegisterRequest, db: Session = Depends(get_db)):
+@router.post("/auth/register", status_code=status.HTTP_201_CREATED)
+def register(
+    request: Request,
+    payload: RegisterRequest = Body(..., media_type="application/json"),
+    db: Session = Depends(get_db),
+):
     request_id = getattr(request.state, "request_id", "n/a")
     logger.info("auth.register.attempt email=%s role=%s request_id=%s", payload.email, payload.role, request_id)
     existing = db.query(User).filter(User.email == str(payload.email)).first()
@@ -38,16 +42,12 @@ def register(request: Request, payload: RegisterRequest, db: Session = Depends(g
     if role not in {"student", "teacher"}:
         raise HTTPException(status_code=400, detail={"code": "INVALID_ROLE", "message": "Invalid role", "field": "role", "allowed": ["student", "teacher"]})
 
-    student_code_raw = payload.student_code
-    student_code = str(student_code_raw).strip() if student_code_raw else None
-    if role == "student" and not student_code:
-        raise HTTPException(status_code=400, detail={"code": "STUDENT_CODE_REQUIRED", "message": "student_code is required for student role", "field": "student_code"})
 
     u = User(
         email=str(payload.email),
-        full_name=payload.full_name,
+        full_name=payload.name,
         role=role,
-        student_code=student_code,
+        student_code=None,
         password_hash=get_password_hash(payload.password),
         is_active=True,
     )
