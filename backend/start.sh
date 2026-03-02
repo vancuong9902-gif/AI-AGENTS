@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
 # -----------------------------
@@ -30,7 +30,7 @@ done
 
 
 # DB migration (safe to run repeatedly)
-alembic upgrade head
+alembic upgrade heads
 
 if [ "${RELOAD:-0}" = "1" ]; then
   exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
