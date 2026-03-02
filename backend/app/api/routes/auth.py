@@ -28,14 +28,19 @@ def register(request: Request, payload: RegisterRequest, db: Session = Depends(g
     if existing:
         raise HTTPException(status_code=400, detail="Email already exists")
 
-    student_code = str(payload.student_code or "").strip()
-    if not student_code:
-        raise HTTPException(status_code=400, detail="student_code is required")
+    role = str(payload.role or "student").strip().lower()
+    if role not in {"student", "teacher"}:
+        raise HTTPException(status_code=400, detail="Invalid role")
+
+    student_code_raw = payload.student_code
+    student_code = str(student_code_raw).strip() if student_code_raw else None
+    if role == "student" and not student_code:
+        raise HTTPException(status_code=400, detail="student_code is required for student role")
 
     u = User(
         email=str(payload.email),
         full_name=payload.full_name,
-        role="student",
+        role=role,
         student_code=student_code,
         password_hash=get_password_hash(payload.password),
         is_active=True,
@@ -96,7 +101,7 @@ async def login_form(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     token = TokenResponse(access_token=create_access_token(subject=str(u.id)))
-    out = {"access_token": token.access_token, "token_type": token.token_type}
+    out = {"access_token": token.access_token, "token_type": token.token_type, "role": getattr(u, "role", "student") or "student"}
     return {"request_id": request.state.request_id, "data": out, "error": None}
 
 

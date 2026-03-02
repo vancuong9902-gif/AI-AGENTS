@@ -4,12 +4,23 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, model_validator
 
+ALLOWED_SELF_REGISTER_ROLES = {"student", "teacher"}
+
 
 class RegisterRequest(BaseModel):
     email: str
     password: str = Field(min_length=6, max_length=200)
     full_name: Optional[str] = None
-    student_code: str = Field(min_length=1, max_length=64)
+    role: str = "student"
+    student_code: Optional[str] = Field(default=None, min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_role_and_student_code(self):
+        if self.role not in ALLOWED_SELF_REGISTER_ROLES:
+            raise ValueError("Invalid role")
+        if self.role == "student" and not self.student_code:
+            raise ValueError("student_code is required for student role")
+        return self
 
 
 class LoginRequest(BaseModel):

@@ -9,11 +9,11 @@ LMS_PATH = Path(__file__).resolve().parents[1] / "app" / "api" / "routes" / "lms
 SCHEMA_AUTH_PATH = Path(__file__).resolve().parents[1] / "app" / "schemas" / "auth.py"
 
 
-def test_register_student_requires_student_code_schema_and_fixed_role():
+def test_register_student_requires_student_code_schema_and_valid_role_guard():
     schema_src = SCHEMA_AUTH_PATH.read_text(encoding="utf-8")
     auth_src = AUTH_PATH.read_text(encoding="utf-8")
     assert "student_code" in schema_src
-    assert 'role="student"' in auth_src
+    assert 'if role not in {"student", "teacher"}:' in auth_src
 
 
 def test_admin_create_teacher_route_exists_and_is_admin_guarded():

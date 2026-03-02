@@ -5,7 +5,13 @@ import { registerApi } from '../services/api';
 
 export default function Register() {
   const navigate = useNavigate();
-  const [form, setForm] = useState({ full_name: '', email: '', password: '', student_code: '' });
+  const [form, setForm] = useState({
+    full_name: '',
+    email: '',
+    password: '',
+    role: 'student',
+    student_code: '',
+  });
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
@@ -15,7 +21,14 @@ export default function Register() {
     setIsLoading(true);
 
     try {
-      await registerApi(form);
+      const payload = {
+        full_name: form.full_name,
+        email: form.email,
+        password: form.password,
+        role: form.role,
+        ...(form.role === 'student' ? { student_code: form.student_code } : {}),
+      };
+      await registerApi(payload);
       navigate('/login');
     } catch (apiError) {
       const rawMessage = String(apiError?.payload?.message || apiError?.payload?.detail || apiError.message || '').toLowerCase();
@@ -32,7 +45,7 @@ export default function Register() {
   return (
     <AuthCard
       title='Tạo tài khoản'
-      subtitle='Đăng ký tài khoản mới, mặc định quyền student.'
+      subtitle='Đăng ký tài khoản mới và chọn vai trò phù hợp.'
       footer={<p>Đã có tài khoản? <Link to='/login'>Đăng nhập</Link></p>}
     >
       <form className='auth-form' onSubmit={onSubmit}>
@@ -45,13 +58,25 @@ export default function Register() {
           />
         </label>
         <label>
-          Mã sinh viên
-          <input
-            value={form.student_code}
-            onChange={(event) => setForm((prev) => ({ ...prev, student_code: event.target.value }))}
-            required
-          />
+          Vai trò
+          <select
+            value={form.role}
+            onChange={(event) => setForm((prev) => ({ ...prev, role: event.target.value }))}
+          >
+            <option value='student'>student</option>
+            <option value='teacher'>teacher</option>
+          </select>
         </label>
+        {form.role === 'student' ? (
+          <label>
+            Mã sinh viên
+            <input
+              value={form.student_code}
+              onChange={(event) => setForm((prev) => ({ ...prev, student_code: event.target.value }))}
+              required
+            />
+          </label>
+        ) : null}
         <label>
           Email
           <input
