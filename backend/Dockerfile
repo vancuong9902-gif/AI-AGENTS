@@ -54,9 +54,10 @@ RUN set -eux; \
     done
 
 COPY . .
+COPY docker/run_app_script.sh /usr/local/bin/run_app_script.sh
 
-RUN chmod +x /app/start.sh
+RUN chmod +x /app/start.sh /app/worker_start.sh /usr/local/bin/run_app_script.sh
 
 EXPOSE 8000
 
-CMD ["bash", "/app/start.sh"]
+CMD ["/usr/local/bin/run_app_script.sh", "/app/start.sh"]
