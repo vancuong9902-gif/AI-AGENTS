@@ -1,40 +1,49 @@
-import { useEffect, useState } from "react";
-import { AuthContext } from "./authContextBase";
+import { useMemo, useState } from 'react';
+import { AuthContext } from './authContextBase';
 
-export function AuthProvider({ children }) {
-  const [role, setRole] = useState(() => localStorage.getItem("role") || null); // "student" | "teacher"
-  const [userId, setUserId] = useState(() => {
-    const v = localStorage.getItem("user_id");
-    const n = v ? Number(v) : 1;
-    return Number.isFinite(n) ? n : 1;
-  });
+function parseStoredUser() {
+  const stored = localStorage.getItem('user');
+  if (!stored) {
+    return null;
+  }
 
-  const [fullName, setFullName] = useState(() => localStorage.getItem("full_name") || null);
-
-  useEffect(() => {
-    if (role) localStorage.setItem("role", role);
-    else localStorage.removeItem("role");
-  }, [role]);
-
-  useEffect(() => {
-    localStorage.setItem("user_id", String(userId ?? 1));
-  }, [userId]);
-
-  useEffect(() => {
-    if (fullName) localStorage.setItem("full_name", fullName);
-    else localStorage.removeItem("full_name");
-  }, [fullName]);
-
-  const logout = () => {
-    setFullName(null);
-    setRole(null);
-    // keep userId as-is for demo convenience
-  };
-
-  return (
-    <AuthContext.Provider value={{ role, setRole, userId, setUserId, fullName, setFullName, logout }}>
-      {children}
-    </AuthContext.Provider>
-  );
+  try {
+    return JSON.parse(stored);
+  } catch {
+    return null;
+  }
 }
 
+export function AuthProvider({ children }) {
+  const [token, setToken] = useState(() => localStorage.getItem('token'));
+  const [user, setUser] = useState(parseStoredUser);
+
+  const login = ({ token: nextToken, user: nextUser }) => {
+    setToken(nextToken);
+    setUser(nextUser);
+    localStorage.setItem('token', nextToken);
+    localStorage.setItem('role', nextUser?.role || 'student');
+    localStorage.setItem('user', JSON.stringify(nextUser || null));
+  };
+
+  const logout = () => {
+    setToken(null);
+    setUser(null);
+    localStorage.removeItem('token');
+    localStorage.removeItem('role');
+    localStorage.removeItem('user');
+  };
+
+  const value = useMemo(
+    () => ({
+      user,
+      token,
+      role: user?.role || localStorage.getItem('role') || null,
+      login,
+      logout,
+    }),
+    [token, user],
+  );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
