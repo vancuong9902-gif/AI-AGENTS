@@ -1,60 +1,67 @@
-# Pin to Debian bookworm for more stable apt packages (python:3.12-slim may track Debian testing).
-# Default to AWS Public ECR mirror to reduce Docker Hub TLS/rate-limit issues on some networks.
-ARG PYTHON_BASE_IMAGE=public.ecr.aws/docker/library/python:3.12-slim-bookworm
-FROM ${PYTHON_BASE_IMAGE}
+# syntax=docker/dockerfile:1.7
+# Python 3.11 currently has the most predictable wheel coverage for FAISS + scientific stack.
+ARG PYTHON_BASE_IMAGE=public.ecr.aws/docker/library/python:3.11-slim-bookworm
+
+FROM ${PYTHON_BASE_IMAGE} AS base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DEFAULT_TIMEOUT=120
 
 WORKDIR /app
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
-# (Optional) curl is handy for local debugging inside the container.
-# OCR: install Tesseract + English, and ensure Vietnamese traineddata exists (download fallback).
+# Runtime-only system dependencies for OCR/PDF and plotting.
 RUN set -eux; \
     apt-get update -o Acquire::Retries=5; \
     apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
-        fonts-dejavu-core \
-        fonts-noto-core \
-        tesseract-ocr \
-        tesseract-ocr-eng \
-        poppler-utils; \
-    # Vietnamese pack can be missing in some repos/images; install if available.
-    (apt-get install -y --no-install-recommends tesseract-ocr-vie || true); \
-    # Ensure ENG/VIE traineddata exist (fallback: download from official tessdata_fast).
-    # NOTE: Some Debian builds don't support `tesseract --print-tessdata-dir`, so we locate tessdata via dpkg.
-    TESSDATA_FILE="$(dpkg -L tesseract-ocr-eng | grep -m1 'tessdata/eng\.traineddata' || true)"; \
-    TESSDATA_DIR="$(dirname "$TESSDATA_FILE" 2>/dev/null || true)"; \
-    if [ -z "$TESSDATA_DIR" ] || [ "$TESSDATA_DIR" = "." ]; then \
-      TESSDATA_DIR="/usr/share/tesseract-ocr/5/tessdata"; \
-    fi; \
-    mkdir -p "$TESSDATA_DIR"; \
-    if [ ! -f "$TESSDATA_DIR/eng.traineddata" ]; then \
-      curl -L --retry 5 --retry-delay 2 \
-        https://github.com/tesseract-ocr/tessdata_fast/raw/main/eng.traineddata \
-        -o "$TESSDATA_DIR/eng.traineddata"; \
-    fi; \
-    if [ ! -f "$TESSDATA_DIR/vie.traineddata" ]; then \
-      curl -L --retry 5 --retry-delay 2 \
-        https://github.com/tesseract-ocr/tessdata_fast/raw/main/vie.traineddata \
-        -o "$TESSDATA_DIR/vie.traineddata"; \
-    fi; \
+      ca-certificates \
+      curl \
+      fonts-dejavu-core \
+      fonts-noto-core \
+      libfreetype6 \
+      libjpeg62-turbo \
+      liblcms2-2 \
+      libopenjp2-7 \
+      libpng16-16 \
+      libtiff6 \
+      libwebp7 \
+      libxml2 \
+      libxslt1.1 \
+      poppler-utils \
+      tesseract-ocr \
+      tesseract-ocr-eng \
+      tesseract-ocr-vie; \
     rm -rf /var/lib/apt/lists/*
 
-# Copy both requirement sets (core + semantic RAG extras)
+FROM base AS builder
+
+# Tools only needed while installing (avoid carrying into runtime image).
+RUN set -eux; \
+    apt-get update -o Acquire::Retries=5; \
+    apt-get install -y --no-install-recommends \
+      build-essential \
+      gcc \
+      pkg-config; \
+    rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt requirements.semantic.txt ./
 
-# Install core deps + semantic RAG deps (faiss-cpu, openai, ...)
-# Retry to mitigate transient Docker Desktop I/O issues on Windows hosts.
-RUN set -eux; \
-    for i in 1 2 3; do \
-      pip install --no-cache-dir --retries 10 --timeout 120 -r requirements.txt -r requirements.semantic.txt && break; \
-      if [ "$i" -eq 3 ]; then exit 1; fi; \
-      echo "pip install failed (attempt $i), retrying..."; \
-      sleep 5; \
-    done
+# Install to a dedicated virtualenv for clean copy into runtime image.
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
 
+RUN --mount=type=cache,target=/root/.cache/pip \
+    set -eux; \
+    pip install --upgrade pip setuptools wheel; \
+    pip install --prefer-binary --retries 10 -r requirements.txt -r requirements.semantic.txt
+
+FROM base AS runtime
+
+ENV PATH="/opt/venv/bin:${PATH}"
+
+COPY --from=builder /opt/venv /opt/venv
 COPY . .
 COPY docker/run_app_script.sh /usr/local/bin/run_app_script.sh
 COPY docker/start_backend.sh /usr/local/bin/start_backend.sh
@@ -69,4 +76,5 @@ RUN chmod +x \
 
 EXPOSE 8000
 
+# Compose should override with /usr/local/bin/start_backend.sh or /usr/local/bin/start_worker.sh.
 CMD ["/usr/local/bin/start_backend.sh"]
