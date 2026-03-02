@@ -241,3 +241,11 @@ npm run dev
 - OpenAPI v3 spec draft: `backend/openapi/adaptive_learning_openapi_v1.yaml`
 - Adaptive scoring engine (typed service): `backend/app/services/adaptive_engine.py`
 - Unit tests for adaptive logic: `backend/tests/services/test_adaptive_engine.py`
+
+## Enterprise Multi-Agent Refactor (vNext)
+
+Bản refactor kiến trúc enterprise đã được scaffold trong thư mục `app/` theo Clean Architecture + Ports & Adapters.
+
+- Tài liệu thiết kế: `docs/enterprise_multi_agent_architecture.md`
+- Điểm vào demo: `python -m app.interfaces.cli.main`
+- Test deterministic cho orchestration/guardrails: `pytest tests/unit -q`
