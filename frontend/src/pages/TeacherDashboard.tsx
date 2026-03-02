@@ -1,0 +1,1 @@
+export default function TeacherDashboard(){ return <main><header><button onClick={()=>{localStorage.removeItem('token');window.location.href='/login';}}>Đăng xuất</button></header><h1>Bảng điều khiển giáo viên</h1></main>; }

@@ -1,0 +1,204 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  password  String
+  role      Role     @default(STUDENT)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  taughtClasses        Class[]              @relation("TeacherClasses")
+  enrollments          Enrollment[]
+  testAttempts         TestAttempt[]
+  studySessions        StudySession[]
+  chatMessages         ChatMessage[]
+  exerciseSubmissions  ExerciseSubmission[]
+}
+
+enum Role {
+  TEACHER
+  STUDENT
+}
+
+model Class {
+  id          String   @id @default(cuid())
+  name        String
+  subject     String
+  description String?
+  inviteCode  String   @unique
+  maxStudents Int      @default(50)
+  isActive    Boolean  @default(true)
+  teacherId   String
+  teacher     User     @relation("TeacherClasses", fields: [teacherId], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  enrollments Enrollment[]
+  documents   Document[]
+  tests       Test[]
+}
+
+model Enrollment {
+  id        String   @id @default(cuid())
+  studentId String
+  classId   String
+  level     String?
+  joinedAt  DateTime @default(now())
+  student   User     @relation(fields: [studentId], references: [id])
+  class     Class    @relation(fields: [classId], references: [id])
+
+  @@unique([studentId, classId])
+}
+
+model Document {
+  id          String    @id @default(cuid())
+  classId     String
+  filename    String
+  filepath    String
+  fileSize    Int
+  status      DocStatus @default(PROCESSING)
+  processedAt DateTime?
+  createdAt   DateTime  @default(now())
+  class       Class     @relation(fields: [classId], references: [id])
+  topics      Topic[]
+}
+
+enum DocStatus {
+  PROCESSING
+  READY
+  ERROR
+}
+
+model Topic {
+  id            String         @id @default(cuid())
+  documentId     String
+  title          String
+  summary        String         @db.Text
+  studyBasic     String         @db.Text
+  studyInter     String         @db.Text
+  studyAdv       String         @db.Text
+  isActive       Boolean        @default(true)
+  order          Int            @default(0)
+  createdAt      DateTime       @default(now())
+  document       Document       @relation(fields: [documentId], references: [id])
+  questions      Question[]
+  exercises      Exercise[]
+  studySessions  StudySession[]
+}
+
+model Question {
+  id            String     @id @default(cuid())
+  topicId       String
+  text          String     @db.Text
+  optionA       String
+  optionB       String
+  optionC       String
+  optionD       String
+  correctAnswer String
+  explanation   String     @db.Text
+  difficulty    Difficulty
+  usedInEntry   Boolean    @default(false)
+  usedInFinal   Boolean    @default(false)
+  createdAt     DateTime   @default(now())
+  topic         Topic      @relation(fields: [topicId], references: [id])
+}
+
+model Exercise {
+  id           String                @id @default(cuid())
+  topicId      String
+  prompt       String                @db.Text
+  sampleAnswer String                @db.Text
+  hints        String                @db.Text
+  difficulty   Difficulty
+  createdAt    DateTime              @default(now())
+  topic        Topic                 @relation(fields: [topicId], references: [id])
+  submissions  ExerciseSubmission[]
+}
+
+model ExerciseSubmission {
+  id           String   @id @default(cuid())
+  exerciseId   String
+  studentId    String
+  answer       String   @db.Text
+  score        Float?
+  feedback     String?  @db.Text
+  submittedAt  DateTime @default(now())
+  exercise     Exercise @relation(fields: [exerciseId], references: [id])
+  student      User     @relation(fields: [studentId], references: [id])
+
+  @@unique([exerciseId, studentId])
+}
+
+enum Difficulty {
+  BASIC
+  INTERMEDIATE
+  ADVANCED
+}
+
+model Test {
+  id         String   @id @default(cuid())
+  classId    String
+  type       TestType
+  duration   Int
+  basicCount Int      @default(5)
+  interCount Int      @default(5)
+  advCount   Int      @default(5)
+  isActive   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  class      Class    @relation(fields: [classId], references: [id])
+  attempts   TestAttempt[]
+}
+
+enum TestType {
+  ENTRY
+  FINAL
+}
+
+model TestAttempt {
+  id          String    @id @default(cuid())
+  testId      String
+  studentId   String
+  answers     Json
+  score       Float
+  maxScore    Float
+  percentage  Float
+  startedAt   DateTime
+  submittedAt DateTime?
+  timeTaken   Int?
+  breakdown   Json
+  test        Test      @relation(fields: [testId], references: [id])
+  student     User      @relation(fields: [studentId], references: [id])
+
+  @@unique([testId, studentId])
+}
+
+model StudySession {
+  id        String    @id @default(cuid())
+  studentId String
+  classId   String
+  topicId   String?
+  startTime DateTime  @default(now())
+  endTime   DateTime?
+  duration  Int?
+  student   User      @relation(fields: [studentId], references: [id])
+  topic     Topic?    @relation(fields: [topicId], references: [id])
+}
+
+model ChatMessage {
+  id        String   @id @default(cuid())
+  studentId String
+  classId   String
+  role      String
+  content   String   @db.Text
+  createdAt DateTime @default(now())
+  student   User     @relation(fields: [studentId], references: [id])
+}
