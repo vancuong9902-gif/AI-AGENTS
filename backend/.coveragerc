@@ -1,21 +1,7 @@
 [run]
+branch = True
 source = app
 omit =
-    # App bootstrap / runtime wiring (validated via smoke tests, not unit-level logic).
     app/main.py
-    app/worker.py
-    app/tasks/*
-    # Alembic/env bootstrapping and migration scripts are deployment infra.
-    app/db/init_db.py
-    # Route layer is primarily HTTP wiring/dependency glue; core logic is tested in services.
-    app/api/routes/*
-    # External-integration orchestration (LLM/document pipelines) relies on runtime infra,
-    # covered by targeted helper tests; exclude unstable glue paths from global gate.
-    app/services/document_pipeline.py
-    app/services/quiz_service.py
-    app/services/learning_plan_service.py
-    app/services/llm_service.py
-
-[report]
-show_missing = True
-skip_empty = True
+    app/db/*
+    migrations/*
