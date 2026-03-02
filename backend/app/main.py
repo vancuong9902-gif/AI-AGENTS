@@ -10,8 +10,13 @@ from collections import deque
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, Request
+from fastapi.exception_handlers import (
+    http_exception_handler as fastapi_http_exception_handler,
+    request_validation_exception_handler as fastapi_request_validation_exception_handler,
+)
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -103,6 +108,22 @@ class _RedisRateLimiter:
 
 
 rate_limiter = _RedisRateLimiter(settings.REDIS_URL, settings.RATE_LIMIT_REQUESTS_PER_MINUTE)
+
+_DOCS_INTERNAL_PATH_PREFIXES = (
+    "/docs",
+    "/redoc",
+    "/openapi.json",
+    "/docs/oauth2-redirect",
+    "/api/v1/docs",
+    "/api/v1/redoc",
+    "/api/v1/openapi.json",
+)
+
+
+def _is_internal_docs_path(path: str) -> bool:
+    return path.startswith(_DOCS_INTERNAL_PATH_PREFIXES)
+
+
 def _include_api_routers(fastapi_app: FastAPI, auth_enabled: bool) -> None:
     fastapi_app.include_router(health_router, prefix="/api")
     fastapi_app.include_router(health_router)
@@ -267,10 +288,28 @@ def create_app(auth_enabled: Optional[bool] = None) -> FastAPI:
         title=settings.APP_NAME,
         version="0.4.0",
         lifespan=_lifespan,
-        openapi_url="/api/v1/openapi.json",
-        docs_url="/api/v1/docs",
-        redoc_url="/api/v1/redoc",
+        openapi_url="/openapi.json",
+        docs_url="/docs",
+        redoc_url="/redoc",
     )
+
+    @app.get("/api/v1/openapi.json", include_in_schema=False)
+    def openapi_legacy_alias() -> dict[str, Any]:
+        return app.openapi()
+
+    @app.get("/api/v1/docs", include_in_schema=False)
+    def docs_legacy_alias():
+        return get_swagger_ui_html(
+            openapi_url="/openapi.json",
+            title=f"{settings.APP_NAME} - Swagger UI",
+        )
+
+    @app.get("/api/v1/redoc", include_in_schema=False)
+    def redoc_legacy_alias():
+        return get_redoc_html(
+            openapi_url="/openapi.json",
+            title=f"{settings.APP_NAME} - ReDoc",
+        )
 
     app.add_middleware(
         CORSMiddleware,
@@ -347,6 +386,8 @@ async def request_id_middleware(request: Request, call_next):
     try:
         response = await call_next(request)
     except Exception:
+        if _is_internal_docs_path(request.url.path):
+            raise
         logger.exception("Unhandled exception in request pipeline", exc_info=True)
         response = JSONResponse(
             status_code=500,
@@ -390,6 +431,9 @@ async def _security_headers_middleware(request: Request, call_next):
 
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    if _is_internal_docs_path(request.url.path):
+        return await fastapi_http_exception_handler(request, exc)
+
     req_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     is_production = settings.ENV.lower() in {"prod", "production"}
 
@@ -419,6 +463,9 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    if _is_internal_docs_path(request.url.path):
+        return await fastapi_request_validation_exception_handler(request, exc)
+
     req_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     logger.warning(
         json.dumps(
