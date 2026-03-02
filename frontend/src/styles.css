@@ -1,110 +1,69 @@
 :root {
-  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  color-scheme: light;
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+  background: #f4f7ff;
   color: #1f2937;
-  background: #f3f4f6;
 }
 
-* {
-  box-sizing: border-box;
-}
+* { box-sizing: border-box; }
+body { margin: 0; }
 
-body {
-  margin: 0;
-}
-
-.container {
-  max-width: 900px;
+.shell {
+  max-width: 1080px;
   margin: 0 auto;
   padding: 24px;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.grid {
   display: grid;
   gap: 16px;
 }
 
+.two-col {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
 .card {
-  background: white;
-  border-radius: 12px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
   padding: 16px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.05);
 }
 
-.narrow {
+.auth-card {
   max-width: 420px;
-  margin: 40px auto;
 }
 
-.stack {
-  display: grid;
-  gap: 12px;
-}
+.stack { display: grid; gap: 10px; }
 
-label {
-  display: grid;
-  gap: 6px;
-  font-size: 14px;
-}
-
-input,
-select {
+input, button {
+  width: 100%;
   padding: 10px;
+  border-radius: 10px;
   border: 1px solid #d1d5db;
-  border-radius: 8px;
 }
 
 button {
   border: 0;
-  border-radius: 8px;
-  padding: 10px 12px;
+  background: #2563eb;
+  color: #fff;
   font-weight: 600;
   cursor: pointer;
-  background: #2563eb;
-  color: white;
 }
 
-button.secondary {
-  background: #374151;
+button.ghost {
+  width: auto;
+  background: #0f172a;
+  padding: 8px 14px;
 }
 
-.row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.between {
-  justify-content: space-between;
-}
-
-.list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 8px;
-}
-
-.list li {
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  padding: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.muted {
-  color: #6b7280;
-}
-
-.error {
-  color: #b91c1c;
-}
-
-.hidden {
-  display: none;
-}
-
-label .error {
-  min-height: 16px;
-  font-size: 12px;
-}
+.muted { color: #64748b; }
+.error { color: #b91c1c; }
