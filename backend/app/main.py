@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.config import settings
+from app.core.security import get_password_hash
 from app.core.logging import configure_logging
 from app.core.observability import setup_observability
 from app.api.routes.health import router as health_router
@@ -133,6 +134,30 @@ def _resolve_cors_origins() -> list[str]:
     return [o for o in settings.BACKEND_CORS_ORIGINS if o != "*"]
 
 
+def _seed_admin_user() -> None:
+    db = SessionLocal()
+    try:
+        admin_email = (settings.ADMIN_EMAIL or "admin@demo.local").strip()
+        existing = db.query(User).filter(User.email == admin_email).first()
+        if existing:
+            changed = False
+            if existing.role != "admin":
+                existing.role = "admin"
+                changed = True
+            if not getattr(existing, "password_hash", None):
+                existing.password_hash = get_password_hash(settings.ADMIN_PASSWORD)
+                changed = True
+            if changed:
+                db.add(existing)
+                db.commit()
+            return
+
+        db.add(User(email=admin_email, full_name="System Admin", role="admin", password_hash=get_password_hash(settings.ADMIN_PASSWORD), is_active=True))
+        db.commit()
+    finally:
+        db.close()
+
+
 def _bootstrap_demo_users() -> None:
     """Create demo users/classroom (safe to run repeatedly).
 
@@ -198,7 +223,9 @@ def _bootstrap_demo_users() -> None:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     vector_store.load_if_exists()
-    _bootstrap_demo_users()
+    _seed_admin_user()
+    if settings.ENV.lower() == "dev" and settings.DEMO_SEED:
+        _bootstrap_demo_users()
     if not settings.AUTH_ENABLED and settings.ENV.lower() not in {"prod", "production"}:
         logger.warning("⚠️ AUTH_ENABLED=false – Set true before deploying to production!")
     yield

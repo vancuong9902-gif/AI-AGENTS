@@ -9,15 +9,7 @@ from app.core.security import create_access_token, get_password_hash, verify_pas
 from app.models.user import User
 from app.schemas.auth import AuthResponse, LoginRequest, RegisterRequest, TokenResponse, UserOut
 
-
 router = APIRouter(tags=["auth"])
-
-
-def _normalize_role(role: str | None) -> str:
-    r = (role or "student").strip().lower()
-    if r not in {"student", "teacher"}:
-        raise HTTPException(status_code=400, detail="Invalid role. Use 'student' or 'teacher'.")
-    return r
 
 
 def _user_out(u: User) -> UserOut:
@@ -26,21 +18,26 @@ def _user_out(u: User) -> UserOut:
         email=str(u.email),
         full_name=u.full_name,
         role=getattr(u, "role", "student") or "student",
+        student_code=getattr(u, "student_code", None),
         is_active=bool(getattr(u, "is_active", True)),
     )
 
 
 @router.post("/auth/register")
 def register(request: Request, payload: RegisterRequest, db: Session = Depends(get_db)):
-    role = _normalize_role(payload.role)
     existing = db.query(User).filter(User.email == str(payload.email)).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email already exists")
 
+    student_code = str(payload.student_code or "").strip()
+    if not student_code:
+        raise HTTPException(status_code=400, detail="student_code is required")
+
     u = User(
         email=str(payload.email),
         full_name=payload.full_name,
-        role=role,
+        role="student",
+        student_code=student_code,
         password_hash=get_password_hash(payload.password),
         is_active=True,
     )
@@ -70,7 +67,6 @@ def login_json(request: Request, payload: LoginRequest, db: Session = Depends(ge
 
 @router.post("/auth/login")
 def login_form(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    # OAuth2PasswordRequestForm uses fields: username, password
     u = db.query(User).filter(User.email == str(form_data.username)).first()
     if not u or not getattr(u, "password_hash", None):
         raise HTTPException(status_code=401, detail="Invalid credentials")

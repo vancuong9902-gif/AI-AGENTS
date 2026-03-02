@@ -1,68 +1,86 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
 import Card from '../ui/Card';
 import Button from '../ui/Button';
 import PageHeader from '../ui/PageHeader';
+import { apiJson } from '../lib/api';
+
+const DEMO_MODE = String(import.meta?.env?.VITE_DEMO_MODE || 'false').toLowerCase() === 'true';
 
 export default function Login() {
   const navigate = useNavigate();
-  const { role, setRole, userId, setUserId, fullName, setFullName } = useAuth();
+  const { setRole, setUserId, fullName, setFullName } = useAuth();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [studentCode, setStudentCode] = useState('');
+  const [isRegister, setIsRegister] = useState(false);
+  const [error, setError] = useState('');
 
-  const [localRole, setLocalRole] = useState(role || 'student');
-  const [localId, setLocalId] = useState(String(userId ?? 1));
-  const [localName, setLocalName] = useState(fullName || '');
+  const saveAuth = (data) => {
+    const token = data?.token?.access_token;
+    if (token) localStorage.setItem('token', token);
+    const user = data?.user || {};
+    setUserId(Number(user.id || 1));
+    setRole(user.role || 'student');
+    setFullName(user.full_name || null);
+    localStorage.setItem('role', user.role || 'student');
+    navigate('/home');
+  };
 
-  const parsedId = useMemo(() => {
-    const n = Number(localId);
-    return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
-  }, [localId]);
+  const doAuth = async (e) => {
+    e.preventDefault();
+    setError('');
+    try {
+      if (isRegister) {
+        const data = await apiJson('/auth/register', {
+          method: 'POST',
+          body: { email, password, full_name: fullName || null, student_code: studentCode },
+        });
+        saveAuth(data);
+      } else {
+        const data = await apiJson('/auth/login-json', { method: 'POST', body: { email, password } });
+        saveAuth(data);
+      }
+    } catch (err) {
+      setError(err?.message || 'Đăng nhập thất bại');
+    }
+  };
 
-  const submit = (e) => {
-    e?.preventDefault?.();
-    if (!parsedId) return;
-    setUserId(parsedId);
-    setRole(localRole);
-    setFullName((localName || '').trim() || null);
-    if (localRole === 'teacher') navigate('/home');
-    else navigate('/home');
+  const runDemo = (role) => {
+    localStorage.removeItem('token');
+    setRole(role);
+    setUserId(role === 'teacher' ? 1 : 2);
+    setFullName(role === 'teacher' ? 'Demo Giáo viên' : 'Demo Học viên');
+    navigate('/home');
   };
 
   return (
     <div className='container grid-12'>
       <Card className='span-12'>
-        <PageHeader
-          title='Đăng nhập bản demo'
-          subtitle='Chọn vai trò và mã người dùng để bắt đầu trải nghiệm hệ thống.'
-          breadcrumbs={['Trang chủ']}
-        />
+        <PageHeader title='Đăng nhập' subtitle='Đăng nhập bằng email/mật khẩu. Sinh viên tự đăng ký cần MSSV.' breadcrumbs={['Trang chủ']} />
       </Card>
 
-      <Card className='span-8 stack-md'>
-        <form className='stack-md' onSubmit={submit}>
-          <div className='grid-12'>
-            <label className='input-wrap span-6' htmlFor='role'>
-              <span className='input-label'>Vai trò</span>
-              <select id='role' value={localRole} className='input' onChange={(e) => setLocalRole(e.target.value)}>
-                <option value='student'>Học viên</option>
-                <option value='teacher'>Giáo viên</option>
-              </select>
-            </label>
-            <label className='input-wrap span-6' htmlFor='user-id'>
-              <span className='input-label'>Mã người dùng</span>
-              <input id='user-id' value={localId} onChange={(e) => setLocalId(e.target.value)} className='input' placeholder='Ví dụ: 1' />
-              {!parsedId ? <span className='input-helper'>Mã người dùng phải là số dương.</span> : null}
-            </label>
-          </div>
-
-          <label className='input-wrap' htmlFor='full-name'>
-            <span className='input-label'>Tên hiển thị (tuỳ chọn)</span>
-            <input id='full-name' value={localName} onChange={(e) => setLocalName(e.target.value)} className='input' placeholder='Ví dụ: Nguyễn Văn A' />
-          </label>
-
+      {DEMO_MODE ? (
+        <Card className='span-8 stack-md'>
           <div className='row'>
-            <Button variant='primary' type='submit' disabled={!parsedId}>Đăng nhập</Button>
-            <span className='page-subtitle'>Gợi ý: tài khoản giáo viên demo thường dùng mã 1.</span>
+            <Button onClick={() => runDemo('teacher')}>Demo GV (được cấp sẵn)</Button>
+            <Button variant='secondary' onClick={() => runDemo('student')}>Demo SV</Button>
+          </div>
+        </Card>
+      ) : null}
+
+      <Card className='span-8 stack-md'>
+        <form className='stack-md' onSubmit={doAuth}>
+          <label className='input-wrap'><span className='input-label'>Email</span><input className='input' value={email} onChange={(e) => setEmail(e.target.value)} /></label>
+          <label className='input-wrap'><span className='input-label'>Mật khẩu</span><input type='password' className='input' value={password} onChange={(e) => setPassword(e.target.value)} /></label>
+          {isRegister ? (
+            <label className='input-wrap'><span className='input-label'>MSSV</span><input className='input' value={studentCode} onChange={(e) => setStudentCode(e.target.value)} required /></label>
+          ) : null}
+          {error ? <span className='input-helper'>{error}</span> : null}
+          <div className='row'>
+            <Button type='submit'>{isRegister ? 'Đăng ký SV' : 'Đăng nhập'}</Button>
+            <Button type='button' variant='ghost' onClick={() => setIsRegister((v) => !v)}>{isRegister ? 'Đã có tài khoản?' : 'Tạo tài khoản SV'}</Button>
           </div>
         </form>
       </Card>

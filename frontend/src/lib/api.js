@@ -12,10 +12,11 @@ export function buildAuthHeaders(extra = {}) {
   const headers = { ...extra, "Cache-Control": "no-cache" };
   const token = localStorage.getItem("token") || localStorage.getItem("access_token") || localStorage.getItem("jwt");
   if (token && !headers.Authorization) headers.Authorization = `Bearer ${token}`;
+  const demoMode = String(import.meta?.env?.VITE_DEMO_MODE || "false").toLowerCase() === "true";
   const uid = localStorage.getItem("user_id");
   const role = localStorage.getItem("role");
-  if (uid && !headers["X-User-Id"]) headers["X-User-Id"] = uid;
-  if (role && !headers["X-User-Role"]) headers["X-User-Role"] = role;
+  if (demoMode && uid && !headers["X-User-Id"]) headers["X-User-Id"] = uid;
+  if (demoMode && role && !headers["X-User-Role"]) headers["X-User-Role"] = role;
   return headers;
 }
 

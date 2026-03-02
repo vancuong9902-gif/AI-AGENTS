@@ -211,7 +211,7 @@ def export_classroom_gradebook_xlsx(db: Session, classroom_id: int) -> Path:
 
         ws_gradebook.append([
             index,
-            uid,
+            (student.student_code or uid),
             student.full_name or f"Hoc sinh {uid}",
             student.email,
             round(pre_score, 2) if pre_score is not None else None,
@@ -238,7 +238,7 @@ def export_classroom_gradebook_xlsx(db: Session, classroom_id: int) -> Path:
     for student in students:
         uid = int(student.id)
         mastery_map = student_topic_map.get(uid, {})
-        row = [uid, student.full_name or f"Hoc sinh {uid}"]
+        row = [student.student_code or uid, student.full_name or f"Hoc sinh {uid}"]
         for topic in ordered_topics:
             mastery_value = mastery_map.get(topic)
             row.append(round(mastery_value, 2) if mastery_value is not None else None)

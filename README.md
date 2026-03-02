@@ -162,3 +162,25 @@ npm run dev
 - `docs/CONTRIBUTING.md`
 - `docs/reports/weekly_template.md`
 - `.github/pull_request_template.md`
+
+## Auth + phân quyền (Admin/Teacher/Student)
+
+### Backend env tối thiểu
+- Sao chép `backend/.env.example` -> `backend/.env`.
+- Cấu hình bắt buộc:
+  - `AUTH_ENABLED=true` để dùng JWT.
+  - `ADMIN_EMAIL`, `ADMIN_PASSWORD` để seed tài khoản admin mặc định khi startup.
+  - `DEMO_SEED=true` chỉ dùng khi `ENV=dev` để tạo dữ liệu demo.
+
+### Luồng tài khoản
+- `/api/auth/register`: chỉ đăng ký **student** và bắt buộc `student_code` (MSSV).
+- Admin quản lý user qua:
+  - `POST /api/admin/users/teachers`
+  - `POST /api/admin/users/students`
+  - `GET /api/admin/users`
+  - `PATCH /api/admin/users/{id}`
+
+### Frontend env
+- Sao chép `frontend/.env.example` -> `frontend/.env`.
+- `VITE_DEMO_MODE=true` mới bật 2 nút demo đăng nhập (Demo GV cấp sẵn + Demo SV).
+- Mặc định `VITE_DEMO_MODE=false` dùng form email/password + đăng ký SV có MSSV.
