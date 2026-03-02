@@ -11,6 +11,8 @@
   - `GET /students/{id}/recommendations`
   - `GET /teacher/reports`
 - Bổ sung test topic split stability.
+- Nâng `tools/strip_bom.py` với chế độ `--check` để CI/pre-commit có thể chặn file `.py` chứa BOM trước khi merge.
+- Thêm test `backend/tests/test_strip_bom_tool.py` để đảm bảo chế độ check/fix của công cụ BOM hoạt động đúng và tránh tái diễn lỗi encoding.
 
 ## Frontend
 - Chuẩn hóa design system trong `ui/theme.css` (tokens + utilities + reusable styles).
