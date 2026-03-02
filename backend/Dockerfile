@@ -55,9 +55,16 @@ RUN set -eux; \
 
 COPY . .
 COPY docker/run_app_script.sh /usr/local/bin/run_app_script.sh
+COPY docker/start_backend.sh /usr/local/bin/start_backend.sh
+COPY docker/start_worker.sh /usr/local/bin/start_worker.sh
 
-RUN chmod +x /app/start.sh /app/worker_start.sh /usr/local/bin/run_app_script.sh
+RUN chmod +x \
+    /app/start.sh \
+    /app/worker_start.sh \
+    /usr/local/bin/run_app_script.sh \
+    /usr/local/bin/start_backend.sh \
+    /usr/local/bin/start_worker.sh
 
 EXPOSE 8000
 
-CMD ["/usr/local/bin/run_app_script.sh", "/app/start.sh"]
+CMD ["/usr/local/bin/start_backend.sh"]
