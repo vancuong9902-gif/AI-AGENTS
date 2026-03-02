@@ -32,11 +32,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
+          npm install
+          npm ci
 
       - name: Lint
         run: npm run lint
@@ -62,7 +59,9 @@ jobs:
           cache-dependency-path: backend/requirements-dev.txt
 
       - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+        run: |
+          pip install -r requirements-dev.txt
+          pip install pytest-cov
 
       - name: Test with coverage
         run: pytest --cov=app --cov-report=term-missing --cov-fail-under=70 -q
