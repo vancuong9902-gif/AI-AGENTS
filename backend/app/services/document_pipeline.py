@@ -4,6 +4,7 @@ import io
 import logging
 import re
 import unicodedata
+from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple, Optional
 
 from fastapi import UploadFile
@@ -278,23 +279,209 @@ def _candidate_page_coverage(chunks: List[Dict[str, Any]], total_pages: int | No
         return min(1.0, cov_pages / float(total_pages))
     return float(cov_pages)
 
-def _chunk_text(text: str, chunk_size: int = 900, overlap: int = 120) -> List[str]:
-    """Smart chunking that avoids breaking across topic/section boundaries.
+@dataclass
+class HeadingCandidate:
+    line_index: int
+    text: str
+    confidence: float
+    source: str
 
-    Why this matters:
-      The app stores topics by (start_chunk_index, end_chunk_index). If the chunker slices
-      purely by characters, a single chunk can contain multiple major headings (e.g. many
-      "Chủ đề:" sections). Topic extraction then merges several topics into one because
-      it sees only the first heading of the chunk.
 
-    Strategy (deterministic):
-      1) Normalize whitespace but preserve newlines.
-      2) If we see strong separator lines (====...), split into segments.
-      3) Otherwise, split into segments at strong heading lines.
-      4) Chunk each segment with overlap, WITHOUT crossing segment boundaries.
+@dataclass
+class TopicSegment:
+    text: str
+    heading: Optional[HeadingCandidate] = None
+
+
+class HeadingDetector:
+    """Hybrid heading detector for noisy educational documents (VN/EN/OCR)."""
+
+    _semantic_keywords = (
+        "định nghĩa", "khái niệm", "mục tiêu", "ví dụ", "bài tập",
+        "conclusion", "summary", "exercise",
+    )
+
+    _heading_regexes = [
+        re.compile(r"^\s*#{1,6}\s+\S+"),
+        re.compile(r"^\s*(?:chương|chapter|unit|lesson|bài|mục|section)\s+(?:[0-9]{1,3}|[ivxlcdm]{1,8})\b(?:\s*[:\-–]\s*\S.*)?$", re.IGNORECASE),
+        re.compile(r"^\s*(?:[0-9]{1,3}(?:\.[0-9]{1,3}){0,5}|[ivxlcdm]{1,8})\s*[\)\.\-–:]\s*\S+", re.IGNORECASE),
+        re.compile(r"^\s*(?:part|phần|appendix|phụ\s*lục)\s*(?:[0-9]{1,3}|[ivxlcdm]{1,8})?(?:\s*[:\-–]\s*\S.*)?$", re.IGNORECASE),
+    ]
+    _separator_rx = re.compile(r"^\s*[=\-_]{8,}\s*$")
+
+    def detect(self, lines: List[str]) -> Dict[int, HeadingCandidate]:
+        candidates: Dict[int, HeadingCandidate] = {}
+        for idx, line in enumerate(lines):
+            text = line.strip()
+            if not text or self._separator_rx.match(text):
+                continue
+
+            confidence, source = self._score_line(lines, idx)
+            if confidence >= 0.45:
+                candidates[idx] = HeadingCandidate(idx, text, confidence, source)
+        return candidates
+
+    def _score_line(self, lines: List[str], idx: int) -> Tuple[float, str]:
+        line = lines[idx].strip()
+        lower = line.lower()
+        if any(rx.match(line) for rx in self._heading_regexes):
+            return 0.95, "regex"
+        if self._is_all_caps_heading(lines, idx):
+            return 0.74, "all_caps"
+        if self._is_blankline_isolated_heading(lines, idx):
+            return 0.66, "blankline_isolated"
+        if any(kw in lower for kw in self._semantic_keywords) and len(line) <= 90 and not line.endswith("."):
+            return 0.58, "semantic_keyword"
+        return 0.0, "none"
+
+    def _is_all_caps_heading(self, lines: List[str], idx: int) -> bool:
+        line = lines[idx].strip()
+        if len(line) < 5 or len(line) > 80:
+            return False
+        alpha = [ch for ch in line if ch.isalpha()]
+        if len(alpha) < 4:
+            return False
+        upper_ratio = sum(ch.isupper() for ch in alpha) / max(1, len(alpha))
+        punct_ratio = sum(not ch.isalnum() and not ch.isspace() for ch in line) / max(1, len(line))
+        return upper_ratio >= 0.85 and punct_ratio <= 0.35 and self._surrounded_by_blank(lines, idx)
+
+    def _is_blankline_isolated_heading(self, lines: List[str], idx: int) -> bool:
+        line = lines[idx].strip()
+        if len(line) > 100 or line.endswith("."):
+            return False
+        if not self._surrounded_by_blank(lines, idx):
+            return False
+        if re.search(r"[,;:]", line) and len(line.split()) > 12:
+            return False
+        return len(line.split()) <= 14
+
+    @staticmethod
+    def _surrounded_by_blank(lines: List[str], idx: int) -> bool:
+        prev_blank = idx == 0 or not lines[idx - 1].strip()
+        next_blank = idx == len(lines) - 1 or not lines[idx + 1].strip()
+        return prev_blank and next_blank
+
+
+class OptionalLLMSemanticSegmenter:
+    """Optional local semantic boundary detection.
+
+    Uses local sentence-transformer embeddings if installed, otherwise no-op.
     """
 
-    def _chunk_chars(seg: str) -> List[str]:
+    def __init__(self) -> None:
+        self._model = None
+        model_name = getattr(settings, "DOC_PIPELINE_LOCAL_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+        if not bool(getattr(settings, "DOC_PIPELINE_USE_LOCAL_SEMANTIC_SEGMENTER", False)):
+            return
+        try:
+            from sentence_transformers import SentenceTransformer
+            self._model = SentenceTransformer(model_name)
+        except Exception as exc:
+            logger.info("Local semantic segmenter unavailable, fallback to rule-based only: %s", exc)
+
+    def boundary_indexes(self, lines: List[str]) -> set[int]:
+        if not self._model:
+            return set()
+        text_lines = [ln.strip() for ln in lines if ln.strip()]
+        if len(text_lines) < 4:
+            return set()
+        try:
+            emb = self._model.encode(text_lines, normalize_embeddings=True)
+        except Exception:
+            return set()
+        boundaries: set[int] = set()
+        shift_threshold = float(getattr(settings, "DOC_PIPELINE_TOPIC_SHIFT_THRESHOLD", 0.36))
+        original_indexes = [i for i, ln in enumerate(lines) if ln.strip()]
+        for i in range(1, len(text_lines)):
+            similarity = float((emb[i - 1] * emb[i]).sum())
+            if (1.0 - similarity) >= shift_threshold:
+                boundaries.add(original_indexes[i])
+        return boundaries
+
+
+class SegmentBuilder:
+    """Build topic-aware segments while protecting semantic boundaries."""
+
+    def __init__(self, heading_detector: HeadingDetector, llm_segmenter: OptionalLLMSemanticSegmenter) -> None:
+        self.heading_detector = heading_detector
+        self.llm_segmenter = llm_segmenter
+
+    def build(self, text: str) -> List[TopicSegment]:
+        normalized = self._normalize(text)
+        if not normalized:
+            return []
+        lines = normalized.split("\n")
+        headings = self.heading_detector.detect(lines)
+        semantic_boundaries = self.llm_segmenter.boundary_indexes(lines)
+
+        segments: List[TopicSegment] = []
+        buffer: List[str] = []
+        current_heading: Optional[HeadingCandidate] = None
+        for idx, line in enumerate(lines):
+            is_boundary = idx in headings or idx in semantic_boundaries
+            if is_boundary and buffer:
+                segments.append(TopicSegment(text="\n".join(buffer).strip(), heading=current_heading))
+                buffer = []
+            if idx in headings:
+                current_heading = headings[idx]
+            buffer.append(line)
+        if buffer:
+            segments.append(TopicSegment(text="\n".join(buffer).strip(), heading=current_heading))
+        return self._safe_merge(segments)
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        text = _sanitize_text(text)
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = re.sub(r"[\t\f\v ]+", " ", text)
+        return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+    def _safe_merge(self, segments: List[TopicSegment]) -> List[TopicSegment]:
+        merged: List[TopicSegment] = []
+        for seg in segments:
+            if not seg.text:
+                continue
+            if not merged:
+                merged.append(seg)
+                continue
+            if self._should_merge(merged[-1], seg):
+                merged[-1] = TopicSegment(text=f"{merged[-1].text}\n{seg.text}".strip(), heading=merged[-1].heading)
+            else:
+                merged.append(seg)
+        return merged
+
+    def _should_merge(self, prev: TopicSegment, current: TopicSegment) -> bool:
+        if len(current.text) >= 220:
+            return False
+        if current.heading is not None:
+            return False
+        first_line = next((ln.strip() for ln in current.text.splitlines() if ln.strip()), "")
+        if re.match(r"^(?:#{1,6}\s+|[0-9]+[\)\.\-]|[IVXLCDM]+[\)\.\-])", first_line, flags=re.IGNORECASE):
+            return False
+        if first_line and len(first_line.split()) <= 8 and first_line[:1].isupper():
+            return False
+        lowered = current.text.lower()
+        if any(kw in lowered for kw in HeadingDetector._semantic_keywords):
+            return False
+        prev_level = (prev.heading.source if prev.heading else "body")
+        curr_level = (current.heading.source if current.heading else "body")
+        return prev_level == curr_level
+
+
+class ChunkProcessor:
+    """Chunk within topic boundaries using dynamic size/overlap."""
+
+    def chunk(self, segments: List[TopicSegment], chunk_size: int, overlap: int) -> List[str]:
+        chunks: List[str] = []
+        for seg in segments:
+            density = len(seg.text) / max(1, len(seg.text.splitlines()))
+            dyn_chunk = max(600, min(1200, int(chunk_size + (density - 80) * 1.1)))
+            dyn_overlap = min(overlap, max(80, dyn_chunk // 7))
+            chunks.extend(self._chunk_chars(seg.text, dyn_chunk, dyn_overlap))
+        return [c for c in chunks if c and c.strip()]
+
+    @staticmethod
+    def _chunk_chars(seg: str, chunk_size: int, overlap: int) -> List[str]:
         seg = seg.strip()
         if not seg:
             return []
@@ -302,9 +489,7 @@ def _chunk_text(text: str, chunk_size: int = 900, overlap: int = 120) -> List[st
         start = 0
         while start < len(seg):
             end = min(len(seg), start + chunk_size)
-            # Prefer cutting on a newline near the end so we don't split headings/markers.
             if end < len(seg):
-                # search a window near the end for a safe break
                 win_start = max(start + 200, end - 220)
                 cut = seg.rfind("\n", win_start, end)
                 if cut != -1 and cut > start + 200:
@@ -315,115 +500,13 @@ def _chunk_text(text: str, chunk_size: int = 900, overlap: int = 120) -> List[st
             start = max(0, end - overlap)
         return out
 
-    text = _sanitize_text(text)
-    # Preserve newlines (important for heading detection/topic extraction).
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    # Collapse excessive spaces but keep line breaks.
-    text = re.sub(r"[\t\f\v ]+", " ", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    text = text.strip()
-    if not text:
-        return []
 
-    # 1) Strong visual separators (common in TXT exports) → hard boundaries.
-    # Example: "============================================================"
-    sep_rx = re.compile(r"\n\s*[=\-_]{8,}\s*\n")
-
-    # 2) Strong heading lines (VN/EN). Kept conservative to avoid splitting on exercises.
-    heading_rx = re.compile(
-        r"^\s*(?:[\-•\*]+\s*)?(?:(?:\d{1,2}(?:\.\d{1,3}){0,4}|[IVXLCDM]{1,8})\s*[\)\.\:\-–]\s*)?(?:"
-        r"(?:chủ\s*đề|chu\s*de|topic)\s*[:\-–]\s+\S+"
-        r"|(?:chương|chuong|chapter|unit|lesson)\s+(?:[0-9]{1,3}|[IVXLCDM]{1,6})\b"
-        r"|(?:phần|phan|mục|muc|bài|bai|section)\s+(?:[0-9]{1,3}(?:\.[0-9]{1,3}){0,4}|[IVXLCDM]{1,6})\b"
-        r"|(?:phụ\s*lục|phu\s*luc|appendix)\s*(?:[:\-–]|—)\s+\S+"
-        r"|(?:giới\s*thiệu|gioi\s*thieu|introduction)\b\s*$"
-        r"|(?:phần|phan)\s+[\"“”'`].+[\"“”'`]\s*\(.*\)\s*$"
-        r")",
-        flags=re.IGNORECASE,
-    )
-
-    # "Soft" subject headings (no numeric indices / no "Chủ đề:" label).
-    # Used to prevent chunking across subject boundaries in teacher-style TXT docs.
-    marker_rx = re.compile(r"^\s*(ít\s*dữ\s*liệu|it\s*du\s*lieu|ý\s*chính|y\s*chinh|khái\s*niệm|khai\s*niem|mục\s*tiêu|muc\s*tieu|quiz-ready)\b", re.IGNORECASE)
-    subject_hints = [
-        'toán', 'đại số', 'giải tích',
-        'vật lý', 'cơ học', 'điện học', 'nhiệt học',
-        'hóa', 'hóa học', 'phản ứng', 'dung dịch',
-        'sinh', 'sinh học', 'tế bào', 'di truyền', 'sinh thái',
-        'tin', 'tin học', 'thuật toán', 'dữ liệu', 'an toàn thông tin',
-        'xác suất', 'thống kê',
-        'kinh tế', 'cung', 'cầu', 'lạm phát', 'lãi suất',
-        'địa lý', 'khí hậu', 'dân số', 'tài nguyên',
-        'lịch sử', 'bối cảnh', 'nguyên nhân', 'hệ quả',
-        'đọc hiểu', 'viết', 'ngữ văn',
-        'kỹ năng', 'học tập', 'ghi nhớ',
-    ]
-
-    def _next_non_empty(lines_in: list[str], idx: int, max_ahead: int = 3) -> str | None:
-        for j in range(idx + 1, min(len(lines_in), idx + 1 + int(max_ahead))):
-            s = (lines_in[j] or '').strip()
-            if s:
-                return s
-        return None
-
-    def _is_soft_heading_line(ln: str, next_ln: str | None) -> bool:
-        s = (ln or '').strip()
-        if not s:
-            return False
-        # avoid splitting on sentences / definitions
-        if any(x in s for x in ['=', '→', '->', '⇒']):
-            return False
-        if ':' in s or '：' in s:
-            return False
-        if re.search(r"[\.!?;]$", s):
-            return False
-        if len(s) < 8 or len(s) > 95:
-            return False
-        sl = s.lower()
-        has_shape = (('(' in s and ')' in s) or ('–' in s) or ('—' in s) or (' - ' in s) or any(h in sl for h in subject_hints))
-        if not has_shape:
-            return False
-        if not next_ln:
-            return False
-        return bool(marker_rx.match(next_ln.strip()))
-
-    segments: List[str] = []
-
-    if sep_rx.search(text):
-        parts = [p.strip() for p in sep_rx.split(text) if p and p.strip()]
-        segments = parts
-    else:
-        # Split by heading lines (do not drop the heading line; it belongs to the next segment).
-        lines = text.split("\n")
-        buf: List[str] = []
-        for i, ln in enumerate(lines):
-            nxt = _next_non_empty(lines, i, 3)
-            if heading_rx.match((ln or "").strip()) or _is_soft_heading_line(ln, nxt):
-                if buf and "\n".join(buf).strip():
-                    segments.append("\n".join(buf).strip())
-                buf = [ln]
-            else:
-                buf.append(ln)
-        if buf and "\n".join(buf).strip():
-            segments.append("\n".join(buf).strip())
-
-        # Merge tiny segments (often OCR artefacts) into previous to avoid over-splitting.
-        merged: List[str] = []
-        for seg in segments:
-            if not merged:
-                merged.append(seg)
-                continue
-            if len(seg) < 220:
-                merged[-1] = (merged[-1] + "\n" + seg).strip()
-            else:
-                merged.append(seg)
-        segments = merged
-
-    chunks: List[str] = []
-    for seg in segments:
-        chunks.extend(_chunk_chars(seg))
-
-    return [c for c in chunks if c and c.strip()]
+def _chunk_text(text: str, chunk_size: int = 900, overlap: int = 120) -> List[str]:
+    """Chunk text with robust heading-first segmentation and optional semantic boundaries."""
+    detector = HeadingDetector()
+    builder = SegmentBuilder(detector, OptionalLLMSemanticSegmenter())
+    segments = builder.build(text)
+    return ChunkProcessor().chunk(segments, chunk_size=chunk_size, overlap=overlap)
 
 
 def _extract_text_pdf_pypdf(data: bytes) -> Tuple[str, List[Dict[str, Any]]]:
