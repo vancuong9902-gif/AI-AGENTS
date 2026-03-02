@@ -67,3 +67,5 @@ button.ghost {
 
 .muted { color: #64748b; }
 .error { color: #b91c1c; }
+
+button.full { width: 100%; }

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
@@ -43,6 +43,7 @@ def _resolve_jwt_user(db: Session, token: Optional[str]) -> Optional[User]:
 
 
 def get_current_user_optional(
+    request: Request,
     db: Session = Depends(get_db),
     token: Optional[str] = Depends(oauth2_scheme),
     x_user_id: Optional[str] = Header(default=None, alias="X-User-Id"),
@@ -50,6 +51,17 @@ def get_current_user_optional(
 ) -> Optional[User]:
     if settings.AUTH_ENABLED:
         return _resolve_jwt_user(db, token)
+
+    if not x_user_id:
+        guest_token = request.cookies.get("guest_session")
+        if guest_token:
+            payload = safe_decode_token(guest_token)
+            if payload and payload.get("typ") == "guest_session":
+                try:
+                    x_user_id = str(int(str(payload.get("sub") or "").strip()))
+                except Exception:
+                    x_user_id = None
+                x_user_role = _normalize_role(payload.get("role"))
 
     if not x_user_id:
         return None
