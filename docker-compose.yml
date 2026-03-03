@@ -54,7 +54,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
-      start_period: 45s
+      start_period: 120s
     ports:
       - "8000:8000"
     extra_hosts:

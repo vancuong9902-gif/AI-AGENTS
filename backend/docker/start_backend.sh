@@ -21,25 +21,40 @@ DB_PORT=${DB_PORT:-5432}
 MAX_WAIT_SEC=${DB_WAIT_TIMEOUT_SEC:-60}
 
 echo "[start] Waiting for DB DNS (${DB_HOST})..."
+dns_ready=0
 for ((i=1; i<=MAX_WAIT_SEC; i++)); do
   if getent hosts "${DB_HOST}" >/dev/null 2>&1; then
+    dns_ready=1
     break
   fi
   sleep 1
 done
 
+if [ "${dns_ready}" -ne 1 ]; then
+  echo "[start][error] DB DNS lookup timed out after ${MAX_WAIT_SEC}s (${DB_HOST})." >&2
+  exit 1
+fi
+
 echo "[start] Waiting for DB TCP (${DB_HOST}:${DB_PORT})..."
+tcp_ready=0
 for ((i=1; i<=MAX_WAIT_SEC; i++)); do
   if (echo >"/dev/tcp/${DB_HOST}/${DB_PORT}") >/dev/null 2>&1; then
+    tcp_ready=1
     break
   fi
   sleep 1
 done
+
+if [ "${tcp_ready}" -ne 1 ]; then
+  echo "[start][error] DB TCP connectivity timed out after ${MAX_WAIT_SEC}s (${DB_HOST}:${DB_PORT})." >&2
+  exit 1
+fi
 
 # DB migration (safe to run repeatedly)
 # Use a single canonical head to avoid revision drift from stale multi-head stamps.
 echo "[start] Running Alembic migrations..."
-if ! alembic upgrade head; then
+ALEMBIC_TIMEOUT_SEC=${ALEMBIC_TIMEOUT_SEC:-180}
+if ! timeout "${ALEMBIC_TIMEOUT_SEC}" alembic upgrade head; then
   echo "[start][error] Alembic migration failed." >&2
   exit 1
 fi
