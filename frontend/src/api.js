@@ -136,6 +136,8 @@ export const mvpApi = {
     params: { user_id: userId, document_id: documentId, window_days: 30 },
   }),
   getAnalyticsHistory: (userId) => api.get('/analytics/history', { params: { user_id: userId } }),
+  getTeacherClassroomAnalytics: (classroomId) => api.get(`/teacher/classrooms/${classroomId}/analytics`),
+  getStudentAnalytics: () => api.get('/student/analytics'),
 
   // Student – Course selection
   getAvailableCourses: () => api.get('/mvp/student/courses'),

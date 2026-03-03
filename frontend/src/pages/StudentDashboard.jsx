@@ -3,6 +3,7 @@ import Alert from '../components/Alert';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { mvpApi, getErrorMessage } from '../api';
 import { useAuth } from '../auth';
+import { ResponsiveContainer, RadialBarChart, RadialBar, PolarAngleAxis, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
 
 function formatTime(totalSeconds) {
   const m = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
@@ -734,98 +735,87 @@ function TabTutor({ course }) {
 
 
 function TabProgress({ course }) {
-  const { user } = useAuth();
   const [loading, setLoading] = React.useState(false);
-  const [data, setData] = React.useState(null);
+  const [analytics, setAnalytics] = React.useState(null);
 
   React.useEffect(() => {
     const run = async () => {
-      if (!course?.classroom?.id || !user?.id) return;
+      if (!course) return;
       setLoading(true);
       try {
-        const res = await mvpApi.getStudentProgress(user.id, course.classroom.id);
-        setData(res.data.data || null);
+        const res = await mvpApi.getStudentAnalytics();
+        setAnalytics(res.data || null);
       } catch {
-        setData(null);
+        setAnalytics(null);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     };
     run();
-  }, [course?.classroom?.id, user?.id]);
+  }, [course]);
 
   if (!course) {
     return <div className="empty-state"><div className="empty-icon">📈</div><p>Hãy chọn môn học để xem tiến độ.</p></div>;
   }
 
-  if (loading) return <LoadingSpinner label="Đang tải tiến độ..." />;
+  if (loading) return <LoadingSpinner label="Đang tải student dashboard..." />;
+  if (!analytics) return <div className="empty-state"><p>Chưa có dữ liệu analytics cá nhân.</p></div>;
 
-  const topics = data?.topics_progress || [];
-  const sessions = data?.study_sessions || [];
-  const streak = data?.streak_days || 0;
-  const totalHours = data?.total_hours || 0;
-  const cmp = data?.comparison_with_class_avg || { student_avg: 0, class_avg: 0 };
-
-  const byDay = {};
-  sessions.forEach((s) => {
-    const d = s.date;
-    if (!d) return;
-    byDay[d] = (byDay[d] || 0) + Number(s.duration_seconds || 0);
-  });
-
-  const days = Array.from({ length: 30 }, (_, i) => {
-    const dt = new Date(Date.now() - (29 - i) * 86400000);
-    const key = dt.toISOString().slice(0, 10);
-    const sec = byDay[key] || 0;
-    let cls = 'heat-0';
-    if (sec > 3600 * 2) cls = 'heat-4';
-    else if (sec > 3600) cls = 'heat-3';
-    else if (sec > 1800) cls = 'heat-2';
-    else if (sec > 0) cls = 'heat-1';
-    return { key, cls };
-  });
+  const radialData = [{ name: 'Progress', value: Number(analytics.overall_progress || 0), fill: '#4f46e5' }];
+  const topicProgress = analytics.topic_progress || [];
+  const scoreHistory = analytics.score_history || [];
 
   return (
     <div className="stack">
-      <div className="card">
-        <div className="row-between">
-          <div className="card-title">🔥 Bạn đã học {streak} ngày liên tiếp</div>
-          <span className="badge blue">Tổng giờ học: {totalHours}h</span>
+      <div className="grid-2">
+        <div className="card">
+          <div className="card-title">Tiến độ học tập tổng thể</div>
+          <div className="chart-container">
+            <ResponsiveContainer width="100%" height="100%">
+              <RadialBarChart innerRadius="60%" outerRadius="100%" data={radialData} startAngle={180} endAngle={0}>
+                <PolarAngleAxis type="number" domain={[0, 100]} angleAxisId={0} tick={false} />
+                <RadialBar dataKey="value" background cornerRadius={10} />
+                <Tooltip />
+              </RadialBarChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="row-between"><span>Overall</span><strong>{Number(analytics.overall_progress || 0).toFixed(1)}%</strong></div>
+        </div>
+
+        <div className="card">
+          <div className="card-title">Giờ học tuần này</div>
+          <div className="stat-value">{Number(analytics.study_hours_this_week || 0).toFixed(1)}h</div>
+          <div className="card-sub">Tổng số giờ bạn đã học trong 7 ngày gần nhất.</div>
         </div>
       </div>
 
       <div className="card">
-        <div className="card-title">Tiến độ theo chủ đề</div>
-        {topics.length === 0 ? <div className="empty-state"><p>Chưa có dữ liệu chủ đề.</p></div> : (
+        <div className="card-title">Lịch sử điểm kiểm tra</div>
+        <div className="chart-container">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={scoreHistory}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="date" />
+              <YAxis domain={[0, 100]} />
+              <Tooltip />
+              <Area type="monotone" dataKey="score" stroke="#10b981" fill="#bbf7d0" />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">Tiến độ theo từng topic</div>
+        {topicProgress.length === 0 ? <div className="empty-state"><p>Chưa có dữ liệu topic.</p></div> : (
           <div className="stack">
-            {topics.map((t) => (
-              <div key={t.topic_id}>
-                <div className="row-between"><span>{t.title}</span><span>{t.progress_pct}%</span></div>
-                <div className="progress-bar"><div className="progress-fill" style={{ width: `${t.progress_pct}%` }} /></div>
+            {topicProgress.map((t) => (
+              <div key={t.topic}>
+                <div className="row-between"><span>{t.topic}</span><span>{Number(t.score || 0).toFixed(1)}%</span></div>
+                <div className="progress-bar"><div className="progress-fill" style={{ width: `${Math.max(0, Math.min(100, Number(t.score || 0)))}%` }} /></div>
               </div>
             ))}
           </div>
         )}
-      </div>
-
-      <div className="card">
-        <div className="card-title">Calendar heatmap (30 ngày)</div>
-        <div className="heatmap-grid">
-          {days.map((d) => <div key={d.key} className={`heat-cell ${d.cls}`} title={d.key} />)}
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="card-title">So sánh với trung bình lớp</div>
-        <div className="stack">
-          <div>
-            <div className="row-between"><span>Điểm của bạn</span><span>{cmp.student_avg}</span></div>
-            <div className="progress-bar"><div className="progress-fill" style={{ width: `${Math.max(0, Math.min(100, cmp.student_avg))}%` }} /></div>
-          </div>
-          <div>
-            <div className="row-between"><span>Trung bình lớp</span><span>{cmp.class_avg}</span></div>
-            <div className="progress-bar"><div className="progress-fill" style={{ width: `${Math.max(0, Math.min(100, cmp.class_avg))}%` }} /></div>
-          </div>
-        </div>
       </div>
     </div>
   );

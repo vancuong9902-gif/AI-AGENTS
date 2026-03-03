@@ -5,8 +5,8 @@ import { mvpApi, downloadBlob, getErrorMessage } from '../api';
 import { useAuth } from '../auth';
 import ExamExportModal from '../components/ExamExportModal';
 import {
-  BarChart, Bar, LineChart, Line, AreaChart, Area, XAxis, YAxis,
-  CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend,
+  BarChart, Bar, LineChart, Line, XAxis, YAxis,
+  CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar,
 } from 'recharts';
 
 function levelClass(level) {
@@ -456,27 +456,30 @@ function TabResults({ setAlert }) {
 
 function TabAnalytics() {
   const [loading, setLoading] = React.useState(false);
-  const [results, setResults] = React.useState([]);
+  const [analytics, setAnalytics] = React.useState(null);
   const [classroomId, setClassroomId] = React.useState(null);
 
   React.useEffect(() => {
-    const fetchAll = async () => {
+    const fetchData = async () => {
       setLoading(true);
       try {
-        const [res, clsRes] = await Promise.all([
-          mvpApi.getResults(1, 200),
-          mvpApi.getMyClassrooms().catch(() => null),
-        ]);
-        const items = res.data.data?.items || [];
-        setResults(items);
+        const clsRes = await mvpApi.getMyClassrooms();
         const classes = clsRes?.data?.data || [];
-        if (classes.length > 0) setClassroomId(classes[0].id);
+        if (!classes.length) {
+          setAnalytics(null);
+          return;
+        }
+        const selectedId = classes[0].id;
+        setClassroomId(selectedId);
+        const res = await mvpApi.getTeacherClassroomAnalytics(selectedId);
+        setAnalytics(res.data || null);
       } catch {
-        setResults([]);
+        setAnalytics(null);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     };
-    fetchAll();
+    fetchData();
   }, []);
 
   const exportReport = async (fmt) => {
@@ -485,81 +488,71 @@ function TabAnalytics() {
     downloadBlob(res.data, `teacher_report_${classroomId}.${fmt}`);
   };
 
-  const histogram = React.useMemo(() => {
-    const bins = Array.from({ length: 10 }, (_, i) => ({ range: `${i * 10}-${i * 10 + 10}`, value: 0 }));
-    results.forEach((r) => {
-      const score100 = Math.max(0, Math.min(100, Math.round((Number(r.score) || 0) * 10)));
-      const idx = Math.min(9, Math.floor(score100 / 10));
-      bins[idx].value += 1;
-    });
-    return bins;
-  }, [results]);
-
-  const weekly = React.useMemo(() => {
-    const weekMap = {};
-    results.forEach((r, idx) => {
-      const dt = r.submitted_at ? new Date(r.submitted_at) : new Date(Date.now() - (idx % 8) * 7 * 24 * 3600 * 1000);
-      const key = `${dt.getFullYear()}-W${Math.ceil(dt.getDate() / 7)}`;
-      if (!weekMap[key]) weekMap[key] = { week: key, placement: [], final: [], completed: 0 };
-      weekMap[key].placement.push((Number(r.score) || 0) * 8.5);
-      weekMap[key].final.push((Number(r.score) || 0) * 10);
-      weekMap[key].completed += 1;
-    });
-    return Object.values(weekMap).slice(-8).map((w) => ({
-      week: w.week,
-      placement: +(w.placement.reduce((a, b) => a + b, 0) / Math.max(1, w.placement.length)).toFixed(1),
-      final: +(w.final.reduce((a, b) => a + b, 0) / Math.max(1, w.final.length)).toFixed(1),
-      completed: w.completed,
-    }));
-  }, [results]);
-
   const levelDist = React.useMemo(() => {
-    const counts = { 'Cơ bản': 0, 'Trung bình': 0, 'Nâng cao': 0 };
-    results.forEach((r) => {
-      const lv = levelVN(r.level);
-      counts[lv] = (counts[lv] || 0) + 1;
-    });
-    return Object.entries(counts).map(([name, value]) => ({ name, value }));
-  }, [results]);
+    const base = analytics?.level_distribution || { beginner: 0, intermediate: 0, advanced: 0 };
+    const total = Math.max(1, Object.values(base).reduce((a, b) => a + Number(b || 0), 0));
+    return [
+      { name: 'Beginner', value: Number(base.beginner || 0), percent: Math.round((Number(base.beginner || 0) / total) * 100) },
+      { name: 'Intermediate', value: Number(base.intermediate || 0), percent: Math.round((Number(base.intermediate || 0) / total) * 100) },
+      { name: 'Advanced', value: Number(base.advanced || 0), percent: Math.round((Number(base.advanced || 0) / total) * 100) },
+    ];
+  }, [analytics]);
 
-  const studyHours = React.useMemo(() => {
-    return Array.from({ length: 30 }, (_, i) => {
-      const day = new Date(Date.now() - (29 - i) * 86400000).toLocaleDateString('vi-VN');
-      const v = results.filter((_, idx) => idx % (i % 5 + 3) === 0).length * 0.4;
-      return { day, hours: +v.toFixed(1) };
-    });
-  }, [results]);
+  const scoreDistribution = React.useMemo(() => {
+    return (analytics?.score_distribution || []).map((item) => ({
+      ...item,
+      fill: (item.range === '0-20' || item.range === '21-40' || item.range === '41-60') ? '#ef4444' : '#10b981',
+    }));
+  }, [analytics]);
 
-  const weakTopics = React.useMemo(() => {
-    const source = ['Hàm số', 'Đạo hàm', 'Tích phân', 'Hình học không gian', 'Xác suất', 'Số phức', 'Mệnh đề'];
-    return source.map((t, i) => ({ topic: t, avg: 35 + i * 6 })).sort((a, b) => a.avg - b.avg).slice(0, 5);
-  }, []);
+  const kpis = {
+    totalStudents: Number(analytics?.total_students || 0),
+    avgScore: Number(analytics?.avg_score || 0),
+    completionRate: Number(analytics?.completion_rate || 0),
+    supportNeeded: Number(analytics?.support_needed || 0),
+  };
 
-  if (loading) return <LoadingSpinner label="Đang tải phân tích..." />;
+  if (loading) return <LoadingSpinner label="Đang tải phân tích lớp học..." />;
+
+  if (!analytics) {
+    return (
+      <div className="empty-state">
+        <div className="empty-icon">📊</div>
+        <p>Chưa có dữ liệu analytics cho lớp học.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="stack">
       <div className="row-between">
-        <h2 className="section-title">📊 Thống kê & Phân tích</h2>
+        <h2 className="section-title">📊 Teacher Dashboard</h2>
         <div className="row">
           <button className="ghost sm" onClick={() => exportReport('pdf')} disabled={!classroomId}>📄 Xuất PDF</button>
           <button className="ghost sm" onClick={() => exportReport('xlsx')} disabled={!classroomId}>📊 Xuất Excel</button>
         </div>
       </div>
 
-      <div className="grid-2">
-        <div className="card"><div className="card-title">1) Phân bố điểm (0-100)</div><div className="chart-container"><ResponsiveContainer width="100%" height="100%"><BarChart data={histogram}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="range" /><YAxis /><Tooltip /><Bar dataKey="value" fill="#4f46e5" /></BarChart></ResponsiveContainer></div></div>
-        <div className="card"><div className="card-title">2) Placement vs Final theo tuần</div><div className="chart-container"><ResponsiveContainer width="100%" height="100%"><LineChart data={weekly}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="week" /><YAxis /><Tooltip /><Legend /><Line type="monotone" dataKey="placement" stroke="#10b981" /><Line type="monotone" dataKey="final" stroke="#4f46e5" /><Line type="monotone" dataKey="completed" stroke="#f59e0b" /></LineChart></ResponsiveContainer></div></div>
+      <div className="grid-4">
+        <div className="stat-card"><div className="stat-label">Tổng số học sinh</div><div className="stat-value">{kpis.totalStudents}</div></div>
+        <div className="stat-card green"><div className="stat-label">Điểm trung bình lớp</div><div className="stat-value">{kpis.avgScore.toFixed(1)}%</div></div>
+        <div className="stat-card orange"><div className="stat-label">Tỷ lệ hoàn thành</div><div className="stat-value">{kpis.completionRate.toFixed(1)}%</div></div>
+        <div className="stat-card red"><div className="stat-label">Cần hỗ trợ (&lt;50%)</div><div className="stat-value">{kpis.supportNeeded}</div></div>
       </div>
 
       <div className="grid-2">
-        <div className="card"><div className="card-title">3) Tỉ lệ cấp độ</div><div className="chart-container"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={levelDist} dataKey="value" cx="50%" cy="50%" outerRadius={85} label>{levelDist.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}</Pie><Legend /><Tooltip /></PieChart></ResponsiveContainer></div></div>
-        <div className="card"><div className="card-title">4) Giờ học 30 ngày gần nhất</div><div className="chart-container"><ResponsiveContainer width="100%" height="100%"><AreaChart data={studyHours}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="day" hide /><YAxis /><Tooltip /><Area type="monotone" dataKey="hours" stroke="#8b5cf6" fill="#c4b5fd" /></AreaChart></ResponsiveContainer></div></div>
+        <div className="card"><div className="card-title">1) ScoreDistributionChart</div><div className="chart-container"><ResponsiveContainer width="100%" height="100%"><BarChart data={scoreDistribution}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="range" /><YAxis allowDecimals={false} /><Tooltip /><Bar dataKey="count">{scoreDistribution.map((entry) => <Cell key={entry.range} fill={entry.fill} />)}</Bar></BarChart></ResponsiveContainer></div></div>
+        <div className="card"><div className="card-title">2) LevelPieChart</div><div className="chart-container"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={levelDist} dataKey="value" nameKey="name" outerRadius={85} label={({ name, percent }) => `${name}: ${percent}%`}>{levelDist.map((entry, i) => <Cell key={entry.name} fill={["#ef4444", "#f59e0b", "#10b981"][i]} />)}</Pie><Legend formatter={(v, _e, idx) => `${v} (${levelDist[idx]?.value || 0})`} /><Tooltip /></PieChart></ResponsiveContainer></div></div>
+      </div>
+
+      <div className="grid-2">
+        <div className="card"><div className="card-title">3) StudyTimeChart - 7 ngày gần nhất</div><div className="chart-container"><ResponsiveContainer width="100%" height="100%"><LineChart data={analytics?.study_time_weekly || []}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="date" /><YAxis /><Tooltip /><Line type="monotone" dataKey="hours" stroke="#4f46e5" strokeWidth={2} /></LineChart></ResponsiveContainer></div></div>
+        <div className="card"><div className="card-title">4) TopicMasteryChart</div><div className="chart-container"><ResponsiveContainer width="100%" height="100%"><RadarChart data={analytics?.topic_mastery || []}><PolarGrid /><PolarAngleAxis dataKey="topic" /><PolarRadiusAxis domain={[0, 100]} /><Radar name="Avg Score" dataKey="avg_score" stroke="#4f46e5" fill="#4f46e5" fillOpacity={0.3} /><Tooltip /></RadarChart></ResponsiveContainer></div></div>
       </div>
 
       <div className="card">
-        <div className="card-title">5) Top 5 chủ đề yếu nhất</div>
-        <div className="chart-container"><ResponsiveContainer width="100%" height="100%"><BarChart data={weakTopics} layout="vertical"><CartesianGrid strokeDasharray="3 3" /><XAxis type="number" /><YAxis type="category" dataKey="topic" width={140} /><Tooltip /><Bar dataKey="avg" fill="#ef4444" /></BarChart></ResponsiveContainer></div>
+        <div className="card-title">5) ProgressComparisonChart (Placement vs Final)</div>
+        <div className="chart-container"><ResponsiveContainer width="100%" height="100%"><LineChart data={analytics?.progress_comparison || []}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="student_name" /><YAxis domain={[0, 100]} /><Tooltip /><Legend /><Line type="monotone" dataKey="placement" stroke="#f59e0b" /><Line type="monotone" dataKey="final" stroke="#10b981" /></LineChart></ResponsiveContainer></div>
       </div>
     </div>
   );
