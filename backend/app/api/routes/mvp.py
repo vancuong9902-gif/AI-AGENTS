@@ -23,7 +23,6 @@ def _rid(request: Request) -> str:
 
 
 
-
 def _has_student_material(db: Session, student_id: int) -> bool:
     memberships = db.query(ClassroomMember.classroom_id).filter(ClassroomMember.user_id == int(student_id)).all()
     classroom_ids = [int(row[0]) for row in memberships if row and row[0] is not None]
@@ -228,16 +227,42 @@ def upload_course(request: Request, file: UploadFile = File(...), db: Session = 
 
     file.file = io.BytesIO(content)
 
-    text = _extract_pdf_text(file)
-    if not text:
-        text = "Demo PDF content placeholder for MVP."
-    course = Course(teacher_id=int(teacher.id), title=file.filename or "Uploaded course", source_text=text)
-    db.add(course)
-    db.flush()
-    _link_teacher_classrooms_to_course(db, teacher_id=int(teacher.id), course_id=int(course.id))
-    db.commit()
-    db.refresh(course)
+    try:
+        text = _extract_pdf_text(file)
+        if not text:
+            text = "Demo PDF content placeholder for MVP."
+        course = Course(teacher_id=int(teacher.id), title=file.filename or "Uploaded course", source_text=text)
+        db.add(course)
+        db.flush()
+        _link_teacher_classrooms_to_course(db, teacher_id=int(teacher.id), course_id=int(course.id))
+        db.commit()
+        db.refresh(course)
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to persist uploaded course.") from exc
     return {"request_id": _rid(request), "data": {"course_id": course.id, "title": course.title}, "error": None}
+
+
+@router.get("/teacher/courses")
+def list_teacher_courses(
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_roles("teacher")),
+):
+    q = db.query(Course).filter(Course.teacher_id == int(teacher.id)).order_by(Course.id.desc())
+    total = q.count()
+    rows = q.offset((page - 1) * page_size).limit(page_size).all()
+    items = [{"course_id": c.id, "title": c.title, "created_at": c.created_at.isoformat() if c.created_at else None} for c in rows]
+    return {
+        "request_id": _rid(request),
+        "data": {"items": items, "pagination": {"page": page, "page_size": page_size, "total": total}},
+        "error": None,
+    }
 
 
 @router.post("/courses/{course_id}/generate-topics")

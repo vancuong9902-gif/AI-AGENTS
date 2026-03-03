@@ -50,3 +50,37 @@ def test_teacher_results_pagination():
         assert data['pagination']['page'] == 2
         assert data['pagination']['total'] >= 3
         assert len(data['items']) >= 1
+
+
+def test_teacher_courses_list_endpoint_available_and_paginated():
+    User.__table__.create(bind=engine, checkfirst=True)
+    Course.__table__.create(bind=engine, checkfirst=True)
+    Topic.__table__.create(bind=engine, checkfirst=True)
+    Exam.__table__.create(bind=engine, checkfirst=True)
+    Question.__table__.create(bind=engine, checkfirst=True)
+    Result.__table__.create(bind=engine, checkfirst=True)
+    settings.AUTH_ENABLED = True
+    app = create_app(auth_enabled=True)
+    with TestClient(app) as client:
+        teacher_token = _register_and_login(client, 'teacher.mvp.courses@test.local', 'teacher')
+
+        for idx in range(3):
+            mem = BytesIO()
+            writer = PdfWriter()
+            writer.add_blank_page(width=72, height=72)
+            writer.write(mem)
+            mem.seek(0)
+            up = client.post(
+                '/api/mvp/courses/upload',
+                headers={"Authorization": f"Bearer {teacher_token}"},
+                files={"file": (f"demo-{idx}.pdf", mem.read(), "application/pdf")},
+            )
+            assert up.status_code == 200
+
+        resp = client.get('/api/mvp/teacher/courses?page=2&page_size=2', headers={"Authorization": f"Bearer {teacher_token}"})
+        assert resp.status_code == 200
+        data = resp.json()['data']
+        assert data['pagination']['page'] == 2
+        assert data['pagination']['page_size'] == 2
+        assert data['pagination']['total'] >= 3
+        assert len(data['items']) >= 1

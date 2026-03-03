@@ -27,7 +27,8 @@ for ((i=1; i<=MAX_WAIT_SEC; i++)); do
 done
 
 # DB migration (safe to run repeatedly)
-alembic upgrade heads
+# Use a single canonical head to avoid revision drift from stale multi-head stamps.
+alembic upgrade head
 
 echo "[start] Seeding demo accounts..."
 PYTHONPATH=/app python /app/scripts/seed_demo_accounts.py

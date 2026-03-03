@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -35,17 +36,25 @@ def register(
 ):
     request_id = getattr(request.state, "request_id", "n/a")
     logger.info("auth.register.attempt email=%s role=%s request_id=%s", payload.email, payload.role, request_id)
-    existing = db.query(User).filter(User.email == str(payload.email), User.role == str(payload.role or "student").strip().lower()).first()
-    if existing:
-        raise HTTPException(status_code=400, detail={"code": "EMAIL_EXISTS", "message": "Email already exists", "field": "email"})
-
     role = str(payload.role or "student").strip().lower()
+    normalized_email = str(payload.email).strip().lower()
+    existing = (
+        db.query(User)
+        .filter(func.lower(func.trim(User.email)) == normalized_email, User.role == role)
+        .first()
+    )
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "EMAIL_EXISTS", "message": "Email already exists", "field": "email"},
+        )
+
     if role not in {"student", "teacher"}:
         raise HTTPException(status_code=400, detail={"code": "INVALID_ROLE", "message": "Invalid role", "field": "role", "allowed": ["student", "teacher"]})
 
 
     u = User(
-        email=str(payload.email),
+        email=normalized_email,
         full_name=payload.name,
         role=role,
         student_code=None,

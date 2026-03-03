@@ -30,7 +30,8 @@ done
 
 
 # DB migration (safe to run repeatedly)
-alembic upgrade heads
+# Use a single canonical head to avoid revision drift from stale multi-head stamps.
+alembic upgrade head
 
 if [ "${RELOAD:-0}" = "1" ]; then
   exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
