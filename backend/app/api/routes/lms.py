@@ -705,7 +705,11 @@ def _primary_learner_id_for_classroom(db: Session, classroom_id: int) -> int | N
     q = db.query(ClassroomMember.user_id).filter(ClassroomMember.classroom_id == int(classroom_id))
     if hasattr(q, "order_by"):
         q = q.order_by(ClassroomMember.user_id.asc())
-    row = q.first()
+    if hasattr(q, "first"):
+        row = q.first()
+    else:
+        rows = q.all() if hasattr(q, "all") else []
+        row = rows[0] if rows else None
     if not row:
         return None
     return int(row[0] if isinstance(row, tuple) else getattr(row, "user_id", 0) or 0) or None
