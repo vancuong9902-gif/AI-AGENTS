@@ -182,8 +182,11 @@ def list_my_classrooms(
     ids = db.query(ClassroomStudent.classroom_id).filter(ClassroomStudent.student_id == int(user.id)).all()
     cids = [int(x[0]) for x in ids if x and x[0] is not None]
     if not cids:
-        return {"request_id": request.state.request_id, "data": [], "error": None}
-    rows = db.query(Classroom).filter(Classroom.id.in_(cids)).order_by(Classroom.created_at.desc()).all()
+        return {"request_id": getattr(request.state, "request_id", "n/a"), "data": {"items": [], "pagination": {"page": page, "page_size": page_size, "total": 0}}, "error": None}
+
+    q = db.query(Classroom).filter(Classroom.id.in_(cids))
+    total = q.count()
+    rows = q.order_by(Classroom.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
 
     has_course_attr = hasattr(Classroom, "course_id")
     fallback_course = db.query(Course).order_by(Course.id.desc()).first()
@@ -203,12 +206,6 @@ def list_my_classrooms(
             class_has_content = fallback_has_content
         out.append(_classroom_out(db, c, has_content=class_has_content).model_dump())
 
-    return {"request_id": request.state.request_id, "data": out, "error": None}
-        return {"request_id": getattr(request.state, "request_id", "n/a"), "data": {"items": [], "pagination": {"page": page, "page_size": page_size, "total": 0}}, "error": None}
-    q = db.query(Classroom).filter(Classroom.id.in_(cids))
-    total = q.count()
-    rows = q.order_by(Classroom.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
-    out = [_classroom_out(db, c).model_dump() for c in rows]
     return {"request_id": getattr(request.state, "request_id", "n/a"), "data": {"items": out, "pagination": {"page": page, "page_size": page_size, "total": total}}, "error": None}
 
 
