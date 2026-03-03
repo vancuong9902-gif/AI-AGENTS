@@ -10,6 +10,7 @@ export default function RegisterPage({ navigate }) {
   const [loading, setLoading] = React.useState(false);
 
   const update = (key, val) => setForm((p) => ({ ...p, [key]: val }));
+  const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
   const onSubmit = async (e) => {
     e.preventDefault();
@@ -29,6 +30,10 @@ export default function RegisterPage({ navigate }) {
       setError('Mật khẩu phải có ít nhất 8 ký tự.');
       return;
     }
+    if (!emailPattern.test(payload.email)) {
+      setError('Email không hợp lệ.');
+      return;
+    }
     if (!['student', 'teacher'].includes(payload.role)) {
       setError('Vai trò không hợp lệ.');
       return;
@@ -38,9 +43,14 @@ export default function RegisterPage({ navigate }) {
     setLoading(true);
     try {
       const res = await authApi.register(payload);
-      const data = res.data.data;
-      await login(data.token?.access_token, data.user);
-      navigate(data.user.role === 'teacher' ? '/teacher' : '/student');
+      const data = res.data?.data || res.data;
+      const token = data?.token?.access_token || data?.token;
+      if (!data?.user) {
+        throw new Error('Server trả về dữ liệu không hợp lệ.');
+      }
+
+      await login(token, data.user);
+      navigate(String(data.user.role).toLowerCase() === 'teacher' ? '/teacher' : '/student');
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -87,11 +97,11 @@ export default function RegisterPage({ navigate }) {
           </div>
           <div className="form-group">
             <label>Email</label>
-            <input type="email" placeholder="email@example.com" value={form.email} onChange={(e) => update('email', e.target.value)} required />
+            <input type="email" placeholder="email@example.com" value={form.email} onChange={(e) => update('email', e.target.value)} required pattern="[^\s@]+@[^\s@]+\.[^\s@]+" />
           </div>
           <div className="form-group">
             <label>Mật khẩu</label>
-            <input type="password" placeholder="Ít nhất 6 ký tự" value={form.password} onChange={(e) => update('password', e.target.value)} required />
+            <input type="password" placeholder="Ít nhất 8 ký tự" value={form.password} onChange={(e) => update('password', e.target.value)} required minLength={8} />
           </div>
 
           <button type="submit" disabled={loading} className="auth-submit-btn">

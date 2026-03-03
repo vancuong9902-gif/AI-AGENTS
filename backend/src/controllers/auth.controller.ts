@@ -4,16 +4,15 @@ import { prisma } from '../utils/prisma.js';
 import { ApiError } from '../utils/ApiError.js';
 import { signToken } from '../utils/jwt.js';
 
+import { normalizeRegisterPayload } from './auth.validation.js';
+
 export const register = async (req: Request, res: Response) => {
-  const { name, email, password, role } = req.body;
-  if (!name || !email || !password || password.length < 8) {
-    throw new ApiError(400, 'Thông tin đăng ký không hợp lệ');
-  }
+  const { name, email, password, role } = normalizeRegisterPayload(req.body);
   const existed = await prisma.user.findUnique({ where: { email } });
   if (existed) throw new ApiError(409, 'Email đã tồn tại');
 
   const user = await prisma.user.create({
-    data: { name, email, password: await bcrypt.hash(password, 10), role }
+    data: { name, email, password: await bcrypt.hash(password, 10), role: role as never }
   });
 
   const token = signToken({ userId: user.id, role: user.role, name: user.name, email: user.email });
