@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import random
 from io import BytesIO
+import logging
 import string
 from typing import Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 
@@ -43,6 +45,7 @@ from app.services.user_service import ensure_user_exists
 
 
 router = APIRouter(tags=["classrooms"])
+logger = logging.getLogger(__name__)
 
 
 def _mk_join_code(length: int = 8) -> str:
@@ -74,21 +77,57 @@ def create_classroom(
     db: Session = Depends(get_db),
     teacher: User = Depends(require_teacher),
 ):
-    # Generate unique join code
-    for _ in range(12):
-        code = _mk_join_code(8)
-        if not db.query(Classroom).filter(Classroom.invite_code == code).first():
-            break
-    else:
-        raise HTTPException(status_code=500, detail="Failed to generate join code")
+    try:
+        raw_name = str(payload.name or "")
+        normalized_name = raw_name.strip()
+        if not normalized_name:
+            raise HTTPException(status_code=400, detail="Field 'name' is required and cannot be empty")
 
-    row = Classroom(teacher_id=int(teacher.id), name=payload.name.strip(), description=(payload.description or "").strip() or None, course_id=payload.course_id, invite_code=code)
-    db.add(row)
-    db.commit()
-    db.refresh(row)
+        # Generate unique join code
+        for _ in range(12):
+            code = _mk_join_code(8)
+            if not db.query(Classroom).filter(Classroom.invite_code == code).first():
+                break
+        else:
+            raise HTTPException(status_code=500, detail="Failed to generate join code")
 
-    out = _classroom_out(db, row).model_dump()
-    return {"request_id": getattr(request.state, "request_id", "n/a"), "data": out, "error": None}
+        row = Classroom(
+            teacher_id=int(teacher.id),
+            name=normalized_name,
+            description=(payload.description or "").strip() or None,
+            course_id=payload.course_id,
+            invite_code=code,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+
+        out = _classroom_out(db, row).model_dump()
+        return {"request_id": getattr(request.state, "request_id", "n/a"), "data": out, "error": None}
+    except HTTPException:
+        raise
+    except IntegrityError as exc:
+        db.rollback()
+        logger.exception("create_classroom integrity error: %s", exc)
+        raise HTTPException(
+            status_code=400,
+            detail="Unable to create classroom due to data constraints (missing required fields, duplicate code, or invalid foreign key).",
+        )
+    except OperationalError as exc:
+        db.rollback()
+        logger.exception("create_classroom database operational error: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail="Database operation failed. Please verify DATABASE_URL and run pending migrations.",
+        )
+    except SQLAlchemyError as exc:
+        db.rollback()
+        logger.exception("create_classroom database error: %s", exc)
+        raise HTTPException(status_code=500, detail="Database error while creating classroom")
+    except Exception as exc:
+        db.rollback()
+        logger.exception("create_classroom unexpected error: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Unexpected error while creating classroom: {exc}")
 
 
 @router.get("/teacher/classrooms")
@@ -811,7 +850,13 @@ def _ensure_teacher_classroom(db: Session, classroom_id: int, teacher_id: int) -
 
 @router.post('/classrooms')
 def create_classroom_v2(request: Request, payload: ClassroomCreateRequest, db: Session = Depends(get_db), teacher: User = Depends(require_teacher)):
-    return create_classroom(request=request, payload=payload, db=db, teacher=teacher)
+    try:
+        return create_classroom(request=request, payload=payload, db=db, teacher=teacher)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("create_classroom_v2 unexpected error: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Unexpected error while creating classroom via /classrooms: {exc}")
 
 
 @router.get('/classrooms/{classroom_id}/students')
@@ -1030,4 +1075,17 @@ def list_my_classrooms_legacy(
     db: Session = Depends(get_db),
     user: User = Depends(require_user),
 ):
-    return list_my_classrooms(request=request, page=page, page_size=page_size, db=db, user=user)
+    try:
+        return list_my_classrooms(request=request, page=page, page_size=page_size, db=db, user=user)
+    except OperationalError as exc:
+        logger.exception("list_my_classrooms_legacy database operational error: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail="Database query failed for /classrooms. Please verify DATABASE_URL and run pending migrations.",
+        )
+    except SQLAlchemyError as exc:
+        logger.exception("list_my_classrooms_legacy database error: %s", exc)
+        raise HTTPException(status_code=500, detail="Database error while listing classrooms")
+    except Exception as exc:
+        logger.exception("list_my_classrooms_legacy unexpected error: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Unexpected error while listing classrooms: {exc}")

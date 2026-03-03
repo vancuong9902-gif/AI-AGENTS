@@ -39,3 +39,26 @@ def test_teacher_and_student_classrooms_pagination():
         s_data = s.json()['data']
         assert s_data['pagination']['total'] >= 3
         assert len(s_data['items']) == 2
+
+
+def test_legacy_classrooms_create_accepts_unicode_name_and_returns_id():
+    User.__table__.create(bind=engine, checkfirst=True)
+    Classroom.__table__.create(bind=engine, checkfirst=True)
+
+    settings.AUTH_ENABLED = False
+    settings.DEMO_SEED = True
+    app = create_app(auth_enabled=False)
+
+    with TestClient(app) as client:
+        teacher_headers = {"X-User-Id": "303", "X-User-Role": "teacher"}
+
+        create_resp = client.post('/api/classrooms', headers=teacher_headers, json={"name": "chủ nghĩa"})
+        assert create_resp.status_code == 200
+        payload = create_resp.json()["data"]
+        assert payload["id"] > 0
+        assert payload["name"] == "chủ nghĩa"
+
+        list_resp = client.get('/api/teacher/classrooms', headers=teacher_headers)
+        assert list_resp.status_code == 200
+        items = list_resp.json()["data"]["items"]
+        assert any(item["id"] == payload["id"] for item in items)
