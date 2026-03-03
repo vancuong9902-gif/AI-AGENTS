@@ -18,7 +18,8 @@ def normalize_vietnamese(text: str) -> str:
 def strip_control_characters(text: str) -> str:
     """Remove BOM and control characters that break font rendering."""
     text = text.lstrip("\ufeff\ufffe")
-    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\xad]", "", text)
+    # Keep 0xAD because legacy TCVN3 data may use it as a printable Vietnamese glyph.
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
     return text
 
 
@@ -53,8 +54,19 @@ _VNI_BASE_MODIFIERS = {
     "O": {"6": "Ô", "7": "Ơ"},
     "u": {"7": "ư"},
     "U": {"7": "Ư"},
-    "d": {"9": "đ"},
-    "D": {"9": "Đ"},
+}
+
+_VNI_SINGLE_DIGIT_MAP = {
+    "a": {"1": "á", "2": "à", "3": "ả", "4": "ã", "5": "ạ", "6": "â", "7": "ấ", "8": "ầ", "9": "ẩ"},
+    "A": {"1": "Á", "2": "À", "3": "Ả", "4": "Ã", "5": "Ạ", "6": "Â", "7": "Ấ", "8": "Ầ", "9": "Ẩ"},
+    "e": {"1": "é", "2": "è", "3": "ẻ", "4": "ẽ", "5": "ẹ", "6": "ê", "7": "ế", "8": "ề", "9": "ể"},
+    "E": {"1": "É", "2": "È", "3": "Ẻ", "4": "Ẽ", "5": "Ẹ", "6": "Ê", "7": "Ế", "8": "Ề", "9": "Ể"},
+    "i": {"1": "í", "2": "ì", "3": "ỉ", "4": "ĩ", "5": "ị"},
+    "I": {"1": "Í", "2": "Ì", "3": "Ỉ", "4": "Ĩ", "5": "Ị"},
+    "o": {"1": "ó", "2": "ò", "3": "ỏ", "4": "õ", "5": "ọ", "6": "ô", "7": "ớ", "8": "ờ", "9": "ở"},
+    "O": {"1": "Ó", "2": "Ò", "3": "Ỏ", "4": "Õ", "5": "Ọ", "6": "Ô", "7": "Ớ", "8": "Ờ", "9": "Ở"},
+    "u": {"1": "ú", "2": "ù", "3": "ủ", "4": "ũ", "5": "ụ", "7": "ứ", "8": "ừ", "9": "ử"},
+    "U": {"1": "Ú", "2": "Ù", "3": "Ủ", "4": "Ũ", "5": "Ụ", "7": "Ứ", "8": "Ừ", "9": "Ử"},
 }
 
 
@@ -79,6 +91,11 @@ def detect_vni_typing(text: str, min_matches: int = 2, window_size: int = 24) ->
 
 
 def _apply_vni_digits(letter: str, digits: str) -> str:
+    if len(digits) == 1:
+        one_digit_map = _VNI_SINGLE_DIGIT_MAP.get(letter)
+        if one_digit_map and digits in one_digit_map:
+            return one_digit_map[digits]
+
     result = letter
     tone_mark = ""
 
@@ -115,7 +132,12 @@ def convert_vni_typing_to_unicode(text: str) -> str:
             while j < len(text) and text[j].isdigit():
                 j += 1
             if j > i + 1:
-                converted.append(_apply_vni_digits(char, text[i + 1:j]))
+                digits = text[i + 1:j]
+                transformed = _apply_vni_digits(char, digits)
+                if transformed == char:
+                    converted.append(char + digits)
+                else:
+                    converted.append(transformed)
                 i = j
                 continue
         converted.append(char)
@@ -132,6 +154,7 @@ def _convert_vni_token(token: str) -> str:
 
 
 _TCVN3_CHAR_MAP = {
+    "\xad": "ư",
     "¸": "á",
     "µ": "à",
     "¶": "ả",
@@ -149,6 +172,7 @@ _TCVN3_CHAR_MAP = {
     "È": "ẩ",
     "É": "ẫ",
     "Ë": "ậ",
+    "Ö": "ệ",
     "®": "đ",
     "Ð": "Đ",
     "¬": "ơ",
