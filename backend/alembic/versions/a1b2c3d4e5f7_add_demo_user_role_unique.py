@@ -35,6 +35,10 @@ def upgrade() -> None:
         """
     )
 
+    # Drop plain index on email created by index=True in the SQLAlchemy model.
+    # This is a regular INDEX, not a unique constraint, so get_unique_constraints() misses it.
+    op.execute("DROP INDEX IF EXISTS ix_users_email")
+
     bind = op.get_bind()
     insp = sa.inspect(bind)
     uniques = insp.get_unique_constraints("users")
@@ -43,7 +47,9 @@ def upgrade() -> None:
             cols = uq.get("column_names") or []
             if cols == ["email"] and uq.get("name"):
                 batch_op.drop_constraint(uq["name"], type_="unique")
-        batch_op.create_unique_constraint("uq_users_email_role", ["email", "role"])
+        existing_uq_names = [uq.get("name") for uq in insp.get_unique_constraints("users")]
+        if "uq_users_email_role" not in existing_uq_names:
+            batch_op.create_unique_constraint("uq_users_email_role", ["email", "role"])
 
 
 def downgrade() -> None:
