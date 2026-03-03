@@ -6,7 +6,7 @@ from app.models.user import User
 
 def _register_payload(email: str):
     return {
-        "name": "Nguyen Van A",
+        "full_name": "Nguyen Van A",
         "email": email,
         "password": "password123",
         "role": "student",
@@ -30,12 +30,11 @@ def test_register_success_and_duplicate_conflict(db_session):
         first = client.post('/api/auth/register', json=_register_payload('duplicate@test.local'))
         assert first.status_code == 201
         first_body = first.json()
-        assert first_body['error'] is None
-        assert first_body['data']['user']['email'] == 'duplicate@test.local'
-        assert first_body['data']['token']['access_token']
+        assert first_body['email'] == 'duplicate@test.local'
+        assert first_body['role'] == 'student'
 
         second = client.post('/api/auth/register', json=_register_payload('duplicate@test.local'))
-        assert second.status_code in {400, 409}
+        assert second.status_code == 409
         second_body = second.json()
         assert second_body['detail']['code'] == 'EMAIL_EXISTS'
 

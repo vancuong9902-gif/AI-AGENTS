@@ -9,8 +9,8 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db, require_user
 from app.core.security import create_access_token, get_password_hash
 from app.models.user import User
-from app.schemas.auth import AuthResponse, LoginRequest, RegisterRequest, TokenResponse, UserOut
-from app.services.auth_service import authenticate_user, build_auth_response
+from app.schemas.auth import LoginRequest, RegisterRequest, UserOut
+from app.services.auth_service import authenticate_user
 
 router = APIRouter(tags=["auth"])
 logger = logging.getLogger("app.auth")
@@ -35,103 +35,63 @@ def register(
 ):
     request_id = getattr(request.state, "request_id", "n/a")
     logger.info("auth.register.attempt email=%s role=%s request_id=%s", payload.email, payload.role, request_id)
-    existing = db.query(User).filter(User.email == str(payload.email), User.role == str(payload.role or "student").strip().lower()).first()
+
+    existing = db.query(User).filter(User.email == str(payload.email)).first()
     if existing:
-        raise HTTPException(status_code=400, detail={"code": "EMAIL_EXISTS", "message": "Email already exists", "field": "email"})
+        raise HTTPException(status_code=409, detail={"code": "EMAIL_EXISTS", "message": "Email already exists", "field": "email"})
 
-    role = str(payload.role or "student").strip().lower()
-    if role not in {"student", "teacher"}:
-        raise HTTPException(status_code=400, detail={"code": "INVALID_ROLE", "message": "Invalid role", "field": "role", "allowed": ["student", "teacher"]})
-
-
-    u = User(
+    user = User(
         email=str(payload.email),
         full_name=payload.name,
-        role=role,
+        role=str(payload.role),
         student_code=None,
         password_hash=get_password_hash(payload.password),
         is_active=True,
     )
-    db.add(u)
+    db.add(user)
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
-        logger.warning("auth.register.duplicate email=%s request_id=%s", payload.email, request_id)
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "EMAIL_EXISTS", "message": "Email already exists", "field": "email"},
-        )
-    db.refresh(u)
-    logger.info("auth.register.success user_id=%s role=%s request_id=%s", u.id, u.role, request_id)
+        raise HTTPException(status_code=409, detail={"code": "EMAIL_EXISTS", "message": "Email already exists", "field": "email"})
 
-    token = TokenResponse(access_token=create_access_token(subject=str(u.id)))
-    out = AuthResponse(token=token, user=_user_out(u)).model_dump()
-    return {"request_id": request_id, "data": out, "error": None}
-
-
-@router.post("/auth/login-json")
-def login_json(request: Request, payload: LoginRequest, db: Session = Depends(get_db)):
-    request_id = getattr(request.state, "request_id", "n/a")
-    user = authenticate_user(db, payload)
-    out = build_auth_response(user)
-    return {"request_id": request_id, "data": out, "error": None}
-
-
-
-@router.post("/login")
-async def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)):
-    """Simple JSON login endpoint for student/teacher/admin."""
-    request_id = getattr(request.state, "request_id", "n/a")
-    body = await request.json()
-
-    if not isinstance(body, dict):
-        user = authenticate_user(db, payload)
-        out = build_auth_response(user)
-        return {"request_id": request_id, "data": out, "error": None}
-
-    role_in_body = body.get("role")
-    candidate_roles = [str(role_in_body).strip().lower()] if role_in_body else ["student", "teacher", "admin"]
-
-    last_error: HTTPException | None = None
-    for role in candidate_roles:
-        try:
-            candidate = LoginRequest(email=str(body.get("email") or ""), password=str(body.get("password") or ""), role=role)
-            user = authenticate_user(db, candidate)
-            out = build_auth_response(user)
-            return {"request_id": request_id, "data": out, "error": None}
-        except HTTPException as exc:
-            last_error = exc
-
-    if last_error is not None:
-        raise last_error
-    raise HTTPException(status_code=400, detail="Invalid credentials")
+    db.refresh(user)
+    return {
+        "id": int(user.id),
+        "email": str(user.email),
+        "role": str(user.role),
+        "full_name": user.full_name,
+    }
 
 
 @router.post("/auth/login")
-async def login_form(request: Request, db: Session = Depends(get_db)):
-    content_type = (request.headers.get("content-type") or "").lower()
+def login(payload: LoginRequest, db: Session = Depends(get_db)):
+    candidate_roles = ["student", "teacher", "admin"]
+    user = None
+    for role in candidate_roles:
+        try:
+            user = authenticate_user(
+                db,
+                LoginRequest(email=payload.email, password=payload.password, role=role),
+            )
+            break
+        except HTTPException:
+            continue
 
-    if "application/json" in content_type:
-        raw_payload = await request.json()
-        payload = LoginRequest.model_validate(raw_payload)
-        email = str(payload.email)
-        password = payload.password
-    else:
-        form = await request.form()
-        email = str(form.get("username") or form.get("email") or "")
-        password = str(form.get("password") or "")
+    if user is None:
+        raise HTTPException(status_code=400, detail="Invalid credentials")
 
-    if not email or not password:
-        raise HTTPException(status_code=422, detail="email/username and password are required")
+    return {
+        "access_token": create_access_token(subject=str(user.id)),
+        "token_type": "bearer",
+        "user": {
+            "id": int(user.id),
+            "email": str(user.email),
+            "role": str(getattr(user, "role", "student") or "student"),
+            "full_name": user.full_name,
+        },
+    }
 
-    payload = LoginRequest(email=email, password=password)
-    user = authenticate_user(db, payload)
-
-    token = TokenResponse(access_token=create_access_token(subject=str(user.id)))
-    out = {"access_token": token.access_token, "token_type": token.token_type, "role": getattr(user, "role", "student") or "student"}
-    request_id = getattr(request.state, "request_id", "n/a")
-    return {"request_id": request_id, "data": out, "error": None}
 
 @router.get("/auth/me")
 def me(request: Request, user: User = Depends(require_user)):
