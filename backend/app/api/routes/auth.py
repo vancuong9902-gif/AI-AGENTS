@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_user
@@ -52,7 +53,15 @@ def register(
         is_active=True,
     )
     db.add(u)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        logger.warning("auth.register.duplicate email=%s request_id=%s", payload.email, request_id)
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "EMAIL_EXISTS", "message": "Email already exists", "field": "email"},
+        )
     db.refresh(u)
     logger.info("auth.register.success user_id=%s role=%s request_id=%s", u.id, u.role, request_id)
 
