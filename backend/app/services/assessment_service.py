@@ -3199,16 +3199,19 @@ def generate_final_exam(
     topic_ids: list[int],
     classroom_id: int = 0,
     title: str = "Final Exam",
+    learner_user_id: int | None = None,
 ) -> Dict[str, Any]:
-    """Generate final exam with strict deduplication against diagnostic_pre."""
+    """Generate final exam with strict deduplication against learner history."""
 
-    # NOTE: quiz_set.user_id is teacher/creator, not learner. Exclusion must be based on learner history.
+    learner_id = int(learner_user_id) if learner_user_id is not None else int(user_id)
+
+    # NOTE: quiz_set.user_id is teacher/creator, not learner. Exclusion must be based on learner attempts.
     attempted_pre_exam_ids = [
         int(r[0])
         for r in (
             db.query(Attempt.quiz_set_id)
             .join(QuizSet, QuizSet.id == Attempt.quiz_set_id)
-            .filter(Attempt.user_id == int(user_id), QuizSet.kind == "diagnostic_pre")
+            .filter(Attempt.user_id == learner_id, QuizSet.kind.in_(["diagnostic_pre", "entry_test", "diagnostic_post"]))
             .distinct()
             .all()
         )
@@ -3222,9 +3225,11 @@ def generate_final_exam(
             for r in (
                 db.query(ClassroomAssessment.assessment_id)
                 .join(QuizSet, QuizSet.id == ClassroomAssessment.assessment_id)
+                .join(ClassroomMember, ClassroomMember.classroom_id == ClassroomAssessment.classroom_id)
                 .filter(
                     ClassroomAssessment.classroom_id == int(classroom_id),
-                    QuizSet.kind == "diagnostic_pre",
+                    ClassroomMember.user_id == learner_id,
+                    QuizSet.kind.in_(["diagnostic_pre", "entry_test", "diagnostic_post", "final_exam"]),
                 )
                 .distinct()
                 .all()
@@ -3239,7 +3244,7 @@ def generate_final_exam(
         for r in (
             db.query(Attempt.quiz_set_id)
             .join(QuizSet, QuizSet.id == Attempt.quiz_set_id)
-            .filter(Attempt.user_id == int(user_id), QuizSet.kind == "entry_test")
+            .filter(Attempt.user_id == learner_id, QuizSet.kind == "entry_test")
             .distinct()
             .all()
         )
@@ -3275,8 +3280,8 @@ def generate_final_exam(
         topics=topics,
         kind="final_exam",
         exclude_quiz_ids=exclude_quiz_ids,
-        dedup_user_id=int(user_id),
-        attempt_user_id=int(user_id),
+        dedup_user_id=learner_id,
+        attempt_user_id=learner_id,
         time_limit_minutes=90,
     )
 

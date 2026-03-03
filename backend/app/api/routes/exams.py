@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 import random
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -21,6 +22,7 @@ from app.services.exam_analyzer import analyze_assessment
 from app.services.exam_exporters import export_assessment_to_docx, export_assessment_to_pdf, export_batch_to_zip, export_multi_variant_docx
 from app.services.exam_template_service import get_template, list_templates, template_to_assessment_counts
 from app.services.exam_variant_service import export_variants_zip, generate_variants_batch
+from app.services.exam_docx_service import generate_exam_docx_zip
 
 
 def _allocate_counts(total: int, distribution: Dict[str, float], keys: List[str]) -> Dict[str, int]:
@@ -107,6 +109,20 @@ def _stable_seed(*parts: Any) -> int:
 router = APIRouter(prefix="/exams", tags=["exams"])
 
 _VARIANT_BATCHES: Dict[str, Dict[str, Any]] = {}
+
+
+class GenerateWordExamIn(BaseModel):
+    classroom_id: int
+    topic_ids: list[int] = Field(default_factory=list)
+    num_variants: int = 3
+    questions_per_exam: int = 30
+    exam_type: str = "multiple_choice"
+    difficulty_distribution: dict[str, int] = Field(default_factory=lambda: {"easy": 30, "medium": 50, "hard": 20})
+    include_answer_key: bool = True
+    exam_title: str = "Kiểm tra Chương 1"
+    school_name: str = "Trường THPT ABC"
+    subject: str = "Môn học"
+
 
 
 @router.get("/templates")
@@ -367,4 +383,34 @@ def generate_multi_variant(payload: MultiVariantGenerateRequest, db: Session = D
         path=str(docx_path),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         filename=f"multi_variant_{payload.classroom_id}.docx",
+    )
+
+
+@router.post("/generate-word")
+def generate_word_exam(payload: GenerateWordExamIn, db: Session = Depends(get_db)):
+    try:
+        zip_bytes = generate_exam_docx_zip(
+            db,
+            classroom_id=int(payload.classroom_id),
+            topic_ids=[int(x) for x in (payload.topic_ids or [])],
+            num_variants=int(payload.num_variants),
+            questions_per_exam=int(payload.questions_per_exam),
+            exam_type=str(payload.exam_type),
+            difficulty_distribution=dict(payload.difficulty_distribution or {}),
+            include_answer_key=bool(payload.include_answer_key),
+            exam_title=str(payload.exam_title),
+            school_name=str(payload.school_name),
+            subject=str(payload.subject),
+            min_unique_ratio=0.6,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    from io import BytesIO
+    from fastapi.responses import StreamingResponse
+
+    return StreamingResponse(
+        BytesIO(zip_bytes),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="de_thi_docx.zip"'},
     )

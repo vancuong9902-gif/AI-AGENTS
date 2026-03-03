@@ -83,6 +83,15 @@ export const mvpApi = {
 
   // Teacher – Classrooms
   createClassroom: (name, description) => api.post('/teacher/classrooms', { name, description }),
+
+  createClassroomV2: (name) => api.post('/classrooms', { name }),
+  getClassroomStudents: (classroomId) => api.get(`/classrooms/${classroomId}/students`),
+  addClassroomStudent: (classroomId, email, role = 'student') => api.post(`/classrooms/${classroomId}/students`, { email, role }),
+  removeClassroomStudent: (classroomId, studentId) => api.delete(`/classrooms/${classroomId}/students/${studentId}`),
+  assignClassroomTopics: (classroomId, topicIds) => api.post(`/classrooms/${classroomId}/assign-topics`, { topic_ids: topicIds }),
+  assignPlacement: (classroomId, payload) => api.post(`/classrooms/${classroomId}/assign-placement`, payload),
+  assignFinal: (classroomId, payload) => api.post(`/classrooms/${classroomId}/assign-final`, payload),
+  getClassroomLeaderboard: (classroomId) => api.get(`/classrooms/${classroomId}/leaderboard`),
   getMyClassrooms: () => api.get('/teacher/classrooms'),
   getClassroomDashboard: (classroomId) => api.get(`/teacher/classrooms/${classroomId}/dashboard`),
   getStudentReports: (classroomId) => api.get(`/teacher/classroom/${classroomId}/student-reports`),
@@ -92,6 +101,11 @@ export const mvpApi = {
     responseType: 'blob',
   }),
   exportClassReportExcel: (classroomId, reportId) => api.get(`/classrooms/${classroomId}/reports/${reportId}/export/excel`, {
+    responseType: 'blob',
+  }),
+
+  exportTeacherReport: (classroomId, format = 'pdf') => api.get('/teacher/reports/export', {
+    params: { classroom_id: classroomId, format },
     responseType: 'blob',
   }),
 
@@ -130,6 +144,9 @@ export const mvpApi = {
     task_id: taskId,
     topic_id: topicId,
   }),
+
+  // Student – Progress
+  getStudentProgress: (studentId, classroomId) => api.get(`/students/${studentId}/progress`, { params: { classroom_id: classroomId } }),
 
   // Student – Homework
   getHomework: (topicId, userId) => api.get('/v1/homework', { params: { topicId, userId } }),

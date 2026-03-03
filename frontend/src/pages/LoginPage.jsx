@@ -6,15 +6,15 @@ import { useAuth } from '../auth';
 export default function LoginPage({ navigate }) {
   const { login } = useAuth();
   const [form, setForm] = React.useState({ email: '', password: '' });
+  const [selectedRole, setSelectedRole] = React.useState('student');
   const [error, setError] = React.useState('');
   const [loading, setLoading] = React.useState(false);
 
-  const onSubmit = async (e) => {
-    e.preventDefault();
+  const handleSubmit = async (payload) => {
     setError('');
     setLoading(true);
     try {
-      const res = await authApi.login(form);
+      const res = await authApi.login(payload || { ...form, role: selectedRole });
       const data = res.data.data || res.data;
       const token = data.token?.access_token || data.access_token;
       const user = data.user || data;
@@ -25,6 +25,18 @@ export default function LoginPage({ navigate }) {
     } finally {
       setLoading(false);
     }
+  };
+
+  const onSubmit = async (e) => {
+    e.preventDefault();
+    await handleSubmit({ ...form, role: selectedRole });
+  };
+
+  const quickLogin = async (role) => {
+    const demo = { email: 'cuong0505@gmail.com', password: 'cuong0505', role };
+    setForm({ email: demo.email, password: demo.password });
+    setSelectedRole(role);
+    await handleSubmit(demo);
   };
 
   return (
@@ -39,7 +51,7 @@ export default function LoginPage({ navigate }) {
 
         <Alert type="error" message={error} />
 
-        <form onSubmit={onSubmit} className="stack" style={{ gap: 14 }}>
+        <form onSubmit={onSubmit} className="stack auth-form">
           <div className="form-group">
             <label>Email</label>
             <input type="email" placeholder="email@example.com" value={form.email}
@@ -50,10 +62,40 @@ export default function LoginPage({ navigate }) {
             <input type="password" placeholder="••••••••" value={form.password}
               onChange={(e) => setForm((p) => ({ ...p, password: e.target.value }))} required />
           </div>
+          <div className="form-group">
+            <label>Bạn đăng nhập với tư cách?</label>
+            <select value={selectedRole} onChange={(e) => setSelectedRole(e.target.value)}>
+              <option value="teacher">Giáo viên</option>
+              <option value="student">Học viên</option>
+            </select>
+          </div>
           <button type="submit" disabled={loading}>
             {loading ? '⏳ Đang đăng nhập...' : '🔑 Đăng nhập'}
           </button>
         </form>
+
+        <div className="demo-section">
+          <p className="demo-label">🎯 Dùng thử ngay (không cần đăng ký)</p>
+          <div className="demo-buttons">
+            <button
+              className="btn-demo btn-teacher"
+              onClick={() => quickLogin('teacher')}
+              disabled={loading}
+              type="button"
+            >
+              👩‍🏫 Đăng nhập Demo Giáo viên
+            </button>
+            <button
+              className="btn-demo btn-student"
+              onClick={() => quickLogin('student')}
+              disabled={loading}
+              type="button"
+            >
+              👨‍🎓 Đăng nhập Demo Học viên
+            </button>
+          </div>
+          <p className="demo-hint">Email: cuong0505@gmail.com | Mật khẩu: cuong0505</p>
+        </div>
 
         <div className="auth-footer">
           Chưa có tài khoản?{' '}

@@ -20,6 +20,8 @@ from app.models.class_report import ClassReport
 from app.models.agent_log import AgentLog
 from app.models.notification import Notification, NotificationType
 from app.models.topic_material_cache import TopicMaterialCache
+from app.models.student_evaluation import StudentEvaluation
+from app.models.study_session import StudySession
 
 __all__ = [
     "User",
@@ -48,5 +50,7 @@ __all__ = [
     "Notification",
     "NotificationType",
     "TopicMaterialCache",
+    "StudentEvaluation",
+    "StudySession",
 
 ]

@@ -4,15 +4,23 @@ import { mvpApi } from '../api';
 
 export default function Navbar({ path, navigate }) {
   const { user, isLoggedIn, logout } = useAuth();
-  const [notifCount, setNotifCount] = React.useState(0);
+  const [notifications, setNotifications] = React.useState([]);
+  const [open, setOpen] = React.useState(false);
+
+  const loadNotifications = React.useCallback(async () => {
+    if (!isLoggedIn) return;
+    try {
+      const r = await mvpApi.getNotifications();
+      const items = r.data.data?.items || r.data.notifications || r.data || [];
+      setNotifications(items);
+    } catch {
+      setNotifications([]);
+    }
+  }, [isLoggedIn]);
 
   React.useEffect(() => {
-    if (!isLoggedIn) return;
-    mvpApi.getNotifications().then((r) => {
-      const unread = (r.data.notifications || r.data || []).filter((n) => !n.is_read).length;
-      setNotifCount(unread);
-    }).catch(() => {});
-  }, [isLoggedIn]);
+    loadNotifications();
+  }, [loadNotifications]);
 
   if (path === '/login' || path === '/register') return null;
 
@@ -21,6 +29,16 @@ export default function Navbar({ path, navigate }) {
     navigate('/login');
   };
 
+  const markRead = async (id) => {
+    try {
+      await mvpApi.markNotificationRead(id);
+      await loadNotifications();
+    } catch {
+      // ignore
+    }
+  };
+
+  const unreadCount = notifications.filter((n) => !n.is_read).length;
   const dashboardPath = user?.role === 'teacher' ? '/teacher' : '/student';
 
   return (
@@ -30,7 +48,7 @@ export default function Navbar({ path, navigate }) {
           🎓 AI<span>LMS</span>
         </button>
         {isLoggedIn && (
-          <span className={`badge role ${user?.role || 'student'}`} style={{ marginLeft: 4 }}>
+          <span className={`badge role ${user?.role || 'student'} nav-role-badge`}>
             {user?.role === 'teacher' ? '👩‍🏫 Giáo viên' : '👨‍🎓 Học sinh'}
           </span>
         )}
@@ -38,14 +56,27 @@ export default function Navbar({ path, navigate }) {
 
       {isLoggedIn ? (
         <div className="nav-right">
-          {notifCount > 0 && (
-            <div className="nav-notifications">
-              <button className="ghost sm" title="Thông báo">
-                🔔
-                <span className="notif-dot" />
-              </button>
-            </div>
-          )}
+          <div className="nav-notifications">
+            <button className="ghost sm" title="Thông báo" onClick={() => setOpen((v) => !v)}>
+              🔔
+              {unreadCount > 0 && <span className="notif-dot" />}
+            </button>
+            {open && (
+              <div className="notif-dropdown">
+                <div className="notif-title">Thông báo</div>
+                {notifications.length === 0 ? (
+                  <div className="notif-empty">Chưa có thông báo</div>
+                ) : (
+                  notifications.slice(0, 8).map((n) => (
+                    <button key={n.id} className={`notif-item ${n.is_read ? 'read' : 'unread'}`} onClick={() => markRead(n.id)}>
+                      <div className="notif-item-title">{n.title || 'Thông báo'}</div>
+                      <div className="notif-item-message">{n.message || ''}</div>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
           <span className="nav-user">
             👤 {user?.full_name || user?.email || 'Người dùng'}
           </span>

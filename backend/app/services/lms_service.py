@@ -2165,3 +2165,77 @@ def push_student_report_to_teacher(
         analytics=analytics or {"overall": {"percent": float(score_percent or 0.0)}},
         breakdown=[],
     )
+
+
+def generate_final_exam(
+    db: Session,
+    *,
+    teacher_user_id: int,
+    learner_user_id: int,
+    classroom_id: int,
+    document_ids: list[int],
+    topics: list[str],
+    title: str = "Final Test",
+    easy_count: int = 4,
+    medium_count: int = 4,
+    hard_count: int = 2,
+) -> dict[str, Any]:
+    """Generate final exam deduped against learner attempt history (not teacher quiz ownership)."""
+
+    from app.services.assessment_service import generate_assessment
+
+    learner_id = int(learner_user_id)
+
+    attempt_ids = [
+        int(r[0])
+        for r in (
+            db.query(Attempt.quiz_set_id)
+            .join(QuizSet, QuizSet.id == Attempt.quiz_set_id)
+            .filter(
+                Attempt.user_id == learner_id,
+                QuizSet.kind.in_(["diagnostic_pre", "entry_test", "diagnostic_post"]),
+            )
+            .distinct()
+            .all()
+        )
+        if r and r[0] is not None
+    ]
+
+    assigned_ids = [
+        int(r[0])
+        for r in (
+            db.query(ClassroomAssessment.assessment_id)
+            .join(ClassroomMember, ClassroomMember.classroom_id == ClassroomAssessment.classroom_id)
+            .join(QuizSet, QuizSet.id == ClassroomAssessment.assessment_id)
+            .filter(
+                ClassroomAssessment.classroom_id == int(classroom_id),
+                ClassroomMember.user_id == learner_id,
+                QuizSet.kind.in_(["diagnostic_pre", "entry_test", "diagnostic_post", "final_exam"]),
+            )
+            .distinct()
+            .all()
+        )
+        if r and r[0] is not None
+    ]
+
+    exclude_quiz_ids = sorted(set(attempt_ids) | set(assigned_ids))
+
+    result = generate_assessment(
+        db,
+        teacher_id=int(teacher_user_id),
+        classroom_id=int(classroom_id),
+        title=str(title or "Final Test"),
+        level="intermediate",
+        kind="diagnostic_post",
+        easy_count=int(easy_count),
+        medium_count=int(medium_count),
+        hard_count=int(hard_count),
+        document_ids=[int(x) for x in (document_ids or [])],
+        topics=[str(t).strip() for t in (topics or []) if str(t).strip()],
+        exclude_quiz_ids=exclude_quiz_ids,
+        similarity_threshold=0.75,
+        dedup_user_id=learner_id,
+        attempt_user_id=learner_id,
+    )
+    result["excluded_from_count"] = len(exclude_quiz_ids)
+    return result

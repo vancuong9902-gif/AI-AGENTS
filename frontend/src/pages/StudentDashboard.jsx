@@ -726,11 +726,112 @@ function TabTutor({ course }) {
   );
 }
 
+
+
+function TabProgress({ course }) {
+  const { user } = useAuth();
+  const [loading, setLoading] = React.useState(false);
+  const [data, setData] = React.useState(null);
+
+  React.useEffect(() => {
+    const run = async () => {
+      if (!course?.classroom?.id || !user?.id) return;
+      setLoading(true);
+      try {
+        const res = await mvpApi.getStudentProgress(user.id, course.classroom.id);
+        setData(res.data.data || null);
+      } catch {
+        setData(null);
+      }
+      setLoading(false);
+    };
+    run();
+  }, [course?.classroom?.id, user?.id]);
+
+  if (!course) {
+    return <div className="empty-state"><div className="empty-icon">📈</div><p>Hãy chọn môn học để xem tiến độ.</p></div>;
+  }
+
+  if (loading) return <LoadingSpinner label="Đang tải tiến độ..." />;
+
+  const topics = data?.topics_progress || [];
+  const sessions = data?.study_sessions || [];
+  const streak = data?.streak_days || 0;
+  const totalHours = data?.total_hours || 0;
+  const cmp = data?.comparison_with_class_avg || { student_avg: 0, class_avg: 0 };
+
+  const byDay = {};
+  sessions.forEach((s) => {
+    const d = s.date;
+    if (!d) return;
+    byDay[d] = (byDay[d] || 0) + Number(s.duration_seconds || 0);
+  });
+
+  const days = Array.from({ length: 30 }, (_, i) => {
+    const dt = new Date(Date.now() - (29 - i) * 86400000);
+    const key = dt.toISOString().slice(0, 10);
+    const sec = byDay[key] || 0;
+    let cls = 'heat-0';
+    if (sec > 3600 * 2) cls = 'heat-4';
+    else if (sec > 3600) cls = 'heat-3';
+    else if (sec > 1800) cls = 'heat-2';
+    else if (sec > 0) cls = 'heat-1';
+    return { key, cls };
+  });
+
+  return (
+    <div className="stack">
+      <div className="card">
+        <div className="row-between">
+          <div className="card-title">🔥 Bạn đã học {streak} ngày liên tiếp</div>
+          <span className="badge blue">Tổng giờ học: {totalHours}h</span>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">Tiến độ theo chủ đề</div>
+        {topics.length === 0 ? <div className="empty-state"><p>Chưa có dữ liệu chủ đề.</p></div> : (
+          <div className="stack">
+            {topics.map((t) => (
+              <div key={t.topic_id}>
+                <div className="row-between"><span>{t.title}</span><span>{t.progress_pct}%</span></div>
+                <div className="progress-bar"><div className="progress-fill" style={{ width: `${t.progress_pct}%` }} /></div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="card-title">Calendar heatmap (30 ngày)</div>
+        <div className="heatmap-grid">
+          {days.map((d) => <div key={d.key} className={`heat-cell ${d.cls}`} title={d.key} />)}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">So sánh với trung bình lớp</div>
+        <div className="stack">
+          <div>
+            <div className="row-between"><span>Điểm của bạn</span><span>{cmp.student_avg}</span></div>
+            <div className="progress-bar"><div className="progress-fill" style={{ width: `${Math.max(0, Math.min(100, cmp.student_avg))}%` }} /></div>
+          </div>
+          <div>
+            <div className="row-between"><span>Trung bình lớp</span><span>{cmp.class_avg}</span></div>
+            <div className="progress-bar"><div className="progress-fill" style={{ width: `${Math.max(0, Math.min(100, cmp.class_avg))}%` }} /></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const TABS = [
   { key: 'courses', label: '📚 Môn học' },
   { key: 'content', label: '📖 Bài học' },
   { key: 'exams', label: '📝 Kiểm tra' },
   { key: 'homework', label: '✏️ Bài tập' },
+  { key: 'progress', label: '📈 Tiến độ học tập' },
   { key: 'tutor', label: '🤖 AI Tutor' },
 ];
 
@@ -739,6 +840,8 @@ export default function StudentDashboard() {
   const [tab, setTab] = React.useState('courses');
   const [alert, setAlert] = React.useState({ type: 'info', message: '' });
   const [course, setCourse] = React.useState(null);
+  const [guardLoading, setGuardLoading] = React.useState(true);
+  const [blockedByNoMaterial, setBlockedByNoMaterial] = React.useState(false);
 
   const onCourseSelect = (selectedCourse) => {
     setCourse(selectedCourse);
@@ -746,6 +849,24 @@ export default function StudentDashboard() {
   };
 
   const clearAlert = () => setAlert({ type: 'info', message: '' });
+
+
+  React.useEffect(() => {
+    const loadStatus = async () => {
+      setGuardLoading(true);
+      try {
+        const res = await mvpApi.getStudentStatus();
+        const d = res.data.data || {};
+        const hasMaterial = Boolean(d.has_course && d.has_topics);
+        setBlockedByNoMaterial(!hasMaterial);
+      } catch {
+        setBlockedByNoMaterial(true);
+      } finally {
+        setGuardLoading(false);
+      }
+    };
+    loadStatus();
+  }, []);
 
   return (
     <div className="shell">
@@ -769,14 +890,25 @@ export default function StudentDashboard() {
             key={item.key}
             className={`tab ${tab === item.key ? 'active' : ''}`}
             onClick={() => {
+              if (blockedByNoMaterial && item.key !== 'courses') return;
               setTab(item.key);
               clearAlert();
             }}
+            disabled={blockedByNoMaterial && item.key !== 'courses'}
           >
             {item.label}
           </button>
         ))}
       </div>
+
+
+      {guardLoading ? (
+        <LoadingSpinner label="Đang kiểm tra dữ liệu khóa học..." />
+      ) : blockedByNoMaterial ? (
+        <div className="alert warning">
+          📚 Giáo viên chưa tải tài liệu. Vui lòng chờ giáo viên chuẩn bị khóa học.
+        </div>
+      ) : null}
 
       {tab === 'courses' && (
         <TabCourses
@@ -785,27 +917,33 @@ export default function StudentDashboard() {
         />
       )}
 
-      {tab === 'content' && (
+      {!blockedByNoMaterial && tab === 'content' && (
         <TabContent
           course={course}
         />
       )}
 
-      {tab === 'exams' && (
+      {!blockedByNoMaterial && tab === 'exams' && (
         <TabExams
           course={course}
           setAlert={setAlert}
         />
       )}
 
-      {tab === 'homework' && (
+      {!blockedByNoMaterial && tab === 'homework' && (
         <TabHomework
           course={course}
           setAlert={setAlert}
         />
       )}
 
-      {tab === 'tutor' && (
+      {!blockedByNoMaterial && tab === 'progress' && (
+        <TabProgress
+          course={course}
+        />
+      )}
+
+      {!blockedByNoMaterial && tab === 'tutor' && (
         <TabTutor
           course={course}
         />
