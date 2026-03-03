@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, synonym
 
 from app.db.base_class import Base
 
@@ -30,12 +30,12 @@ class Classroom(Base):
         self.invite_code = value
 
 
-class ClassroomStudent(Base):
+class ClassroomMember(Base):
     __tablename__ = "classroom_students"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     classroom_id: Mapped[int] = mapped_column(Integer, ForeignKey("classrooms.id"), index=True)
-    student_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True)
+    user_id: Mapped[int] = mapped_column("student_id", Integer, ForeignKey("users.id"), index=True)
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     placement_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     final_score: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -43,13 +43,8 @@ class ClassroomStudent(Base):
 
     __table_args__ = (UniqueConstraint("classroom_id", "student_id", name="uq_classroom_student"),)
 
-    @property
-    def user_id(self) -> int:
-        return self.student_id
-
-    @user_id.setter
-    def user_id(self, value: int) -> None:
-        self.student_id = value
+    student_id = synonym("user_id")
 
 
-ClassroomMember = ClassroomStudent
+
+ClassroomStudent = ClassroomMember

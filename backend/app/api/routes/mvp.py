@@ -28,7 +28,12 @@ def _has_student_material(db: Session, student_id: int) -> bool:
     memberships = db.query(ClassroomMember.classroom_id).filter(ClassroomMember.user_id == int(student_id)).all()
     classroom_ids = [int(row[0]) for row in memberships if row and row[0] is not None]
     if not classroom_ids:
-        return False
+        course = db.query(Course).order_by(Course.id.desc()).first()
+        if not course:
+            return False
+        has_topics = db.query(Topic).filter(Topic.course_id == int(course.id)).count() > 0
+        has_exam = db.query(Exam).filter(Exam.course_id == int(course.id)).count() > 0
+        return has_topics or has_exam
 
     # New flow: classroom must be linked to a course and that course must have topics (published).
     if hasattr(Classroom, "course_id"):
@@ -56,6 +61,15 @@ def require_student_material(
     if not _has_student_material(db, int(student.id)):
         raise HTTPException(status_code=404, detail="Lớp học chưa có tài liệu")
     return student
+
+
+def _link_teacher_classrooms_to_course(db: Session, *, teacher_id: int, course_id: int) -> None:
+    if not hasattr(Classroom, "course_id"):
+        return
+    classrooms = db.query(Classroom).filter(Classroom.teacher_id == int(teacher_id)).all()
+    for classroom in classrooms:
+        if getattr(classroom, "course_id", None) is None:
+            classroom.course_id = int(course_id)
 
 
 def _extract_pdf_text(upload: UploadFile) -> str:
@@ -219,6 +233,8 @@ def upload_course(request: Request, file: UploadFile = File(...), db: Session = 
         text = "Demo PDF content placeholder for MVP."
     course = Course(teacher_id=int(teacher.id), title=file.filename or "Uploaded course", source_text=text)
     db.add(course)
+    db.flush()
+    _link_teacher_classrooms_to_course(db, teacher_id=int(teacher.id), course_id=int(course.id))
     db.commit()
     db.refresh(course)
     return {"request_id": _rid(request), "data": {"course_id": course.id, "title": course.title}, "error": None}
@@ -233,6 +249,7 @@ def generate_topics(course_id: int, request: Request, db: Session = Depends(get_
     topics = _generate_topics(course.source_text)
     for t in topics:
         db.add(Topic(course_id=course_id, title=t["title"], summary=t["summary"], exercises_json=json.dumps(t["exercises"], ensure_ascii=False)))
+    _link_teacher_classrooms_to_course(db, teacher_id=int(teacher.id), course_id=int(course_id))
     db.commit()
     return {"request_id": _rid(request), "data": {"topics": topics}, "error": None}
 

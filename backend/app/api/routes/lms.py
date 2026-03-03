@@ -1524,7 +1524,10 @@ def submit_attempt_by_id(request: Request, attempt_id: int, payload: SubmitAttem
             ca = db.query(ClassroomAssessment).filter(ClassroomAssessment.assessment_id == int(quiz_id)).first()
             if ca:
                 classroom_id = int(ca.classroom_id)
-                student_rows = db.query(ClassroomMember.user_id).filter(ClassroomMember.classroom_id == classroom_id).all()
+                _member_user_col = getattr(ClassroomMember, "user_id", None)
+                if not hasattr(_member_user_col, "in_"):
+                    _member_user_col = ClassroomMember.student_id
+                student_rows = db.query(_member_user_col).filter(ClassroomMember.classroom_id == classroom_id).all()
                 student_ids = {int(uid) for uid, in student_rows}
                 q_submitted = (
                     db.query(Attempt.user_id)

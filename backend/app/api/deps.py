@@ -36,11 +36,18 @@ def _resolve_jwt_user(db: Session, token: Optional[str]) -> Optional[User]:
     sub = payload.get("sub")
     if sub is None:
         return None
+    token_role = _normalize_role(payload.get("role"))
     try:
         uid = int(str(sub))
     except Exception:
         return None
-    return db.query(User).filter(User.id == uid).first()
+    user = db.query(User).filter(User.id == uid).first()
+    if user is None:
+        return None
+
+    if token_role and _normalize_role(getattr(user, "role", None)) is None:
+        setattr(user, "role", token_role)
+    return user
 
 
 def get_current_user_optional(
