@@ -691,6 +691,7 @@ const initialWorkflow = {
   uploadReady: false,
   topicsDraft: [],
   selectedTopicIds: [],
+  uploadedDocuments: [],
   topicsPublished: false,
   classroomId: null,
   inviteCode: '',
