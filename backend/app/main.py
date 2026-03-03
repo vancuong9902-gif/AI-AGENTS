@@ -416,6 +416,9 @@ async def request_id_middleware(request: Request, call_next):
         )
     latency_ms = round((time.perf_counter() - start) * 1000, 2)
     response.headers["X-Request-ID"] = req_id
+    content_type = (response.headers.get("content-type") or "").lower()
+    if content_type.startswith("application/json") and "charset=" not in content_type:
+        response.headers["Content-Type"] = "application/json; charset=utf-8"
     if request.method == "GET" and response.status_code == 200:
         response.headers.setdefault("Cache-Control", "public, max-age=30")
     logger.info(
