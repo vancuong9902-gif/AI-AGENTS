@@ -856,6 +856,30 @@ def tutor_chat(
     if not q:
         raise HTTPException(status_code=422, detail="Missing question")
 
+    if allowed_topics:
+        allowed = [str(t).strip() for t in allowed_topics if str(t).strip()]
+        ql = q.lower()
+        lexical_hit = any(t.lower() in ql for t in allowed)
+        if not lexical_hit and len(allowed) > 0 and not llm_available():
+            scope = ", ".join(allowed[:4])
+            refusal = (
+                "Câu hỏi này có vẻ không liên quan đến chủ đề khóa học hiện tại. "
+                f"Mình chỉ có thể hỗ trợ các nội dung về: {scope}. "
+                "Bạn thử hỏi lại theo các chủ đề này nhé 😊"
+            )
+            return TutorChatData(
+                answer_md=refusal,
+                was_answered=False,
+                is_off_topic=True,
+                refusal_message=refusal,
+                off_topic_reason="lexical_off_topic",
+                suggested_topics=allowed[:5],
+                follow_up_questions=_suggest_on_topic_questions(allowed[0] if allowed else topic, q),
+                quick_check_mcq=[],
+                sources=[],
+                retrieval={"guardrail": "lexical_only"},
+            ).model_dump()
+
     active_exam = bool(exam_mode)
     if attempt_id is not None:
         attempt_row = db.query(UserSession).filter(UserSession.id == int(attempt_id), UserSession.user_id == int(user_id)).first()

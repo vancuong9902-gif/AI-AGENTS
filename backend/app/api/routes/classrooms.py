@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+from pydantic import BaseModel, Field
 
 from app.api.deps import get_db, require_teacher, require_user
 from app.models.attempt import Attempt
@@ -142,7 +143,12 @@ def list_my_classrooms(
     db: Session = Depends(get_db),
     user: User = Depends(require_user),
 ):
-    # All classrooms where user is a member
+    role = str(getattr(user, "role", "") or "").lower()
+    if role == "teacher":
+        rows = db.query(Classroom).filter(Classroom.teacher_id == int(user.id)).order_by(Classroom.created_at.desc()).all()
+        out = [_classroom_out(db, c).model_dump() for c in rows]
+        return {"request_id": request.state.request_id, "data": out, "error": None}
+
     ids = db.query(ClassroomMember.classroom_id).filter(ClassroomMember.user_id == int(user.id)).all()
     cids = [int(x[0]) for x in ids if x and x[0] is not None]
     if not cids:
@@ -655,3 +661,160 @@ def export_class_report_excel(
         },
         "error": None,
     }
+
+class AddStudentIn(BaseModel):
+    email: str
+    role: str = "student"
+
+
+class AssignTopicsIn(BaseModel):
+    topic_ids: list[int] = Field(default_factory=list)
+
+
+class AssignExamIn(BaseModel):
+    topic_ids: list[int] = Field(default_factory=list)
+    document_ids: list[int] = Field(default_factory=list)
+    title: str = "Assessment"
+    duration_minutes: int = 45
+
+
+def _ensure_teacher_classroom(db: Session, classroom_id: int, teacher_id: int) -> Classroom:
+    c = db.query(Classroom).filter(Classroom.id == int(classroom_id)).first()
+    if not c or int(c.teacher_id) != int(teacher_id):
+        raise HTTPException(status_code=404, detail="Classroom not found")
+    return c
+
+
+@router.post('/classrooms')
+def create_classroom_v2(request: Request, payload: ClassroomCreateRequest, db: Session = Depends(get_db), teacher: User = Depends(require_teacher)):
+    return create_classroom(request=request, payload=payload, db=db, teacher=teacher)
+
+
+@router.get('/classrooms/{classroom_id}/students')
+def list_classroom_students(request: Request, classroom_id: int, db: Session = Depends(get_db), teacher: User = Depends(require_teacher)):
+    _ensure_teacher_classroom(db, int(classroom_id), int(teacher.id))
+    rows = (
+        db.query(User.id, User.email, User.full_name, User.role)
+        .join(ClassroomMember, ClassroomMember.user_id == User.id)
+        .filter(ClassroomMember.classroom_id == int(classroom_id))
+        .order_by(User.full_name.asc(), User.id.asc())
+        .all()
+    )
+    data = [
+        {"id": int(r[0]), "email": str(r[1] or ''), "full_name": str(r[2] or ''), "role": str(r[3] or '')}
+        for r in rows
+    ]
+    return {"request_id": request.state.request_id, "data": data, "error": None}
+
+
+@router.post('/classrooms/{classroom_id}/students')
+def add_classroom_student(request: Request, classroom_id: int, payload: AddStudentIn, db: Session = Depends(get_db), teacher: User = Depends(require_teacher)):
+    _ensure_teacher_classroom(db, int(classroom_id), int(teacher.id))
+    role = str(payload.role or 'student').strip().lower()
+    user = db.query(User).filter(User.email == str(payload.email).strip().lower(), User.role == role).first()
+    if not user:
+        raise HTTPException(status_code=404, detail='Student not found by email + role')
+    existing = db.query(ClassroomMember).filter(ClassroomMember.classroom_id == int(classroom_id), ClassroomMember.user_id == int(user.id)).first()
+    if not existing:
+        db.add(ClassroomMember(classroom_id=int(classroom_id), user_id=int(user.id)))
+        db.commit()
+    return {"request_id": request.state.request_id, "data": {"classroom_id": int(classroom_id), "student_id": int(user.id)}, "error": None}
+
+
+@router.delete('/classrooms/{classroom_id}/students/{student_id}')
+def remove_classroom_student(request: Request, classroom_id: int, student_id: int, db: Session = Depends(get_db), teacher: User = Depends(require_teacher)):
+    _ensure_teacher_classroom(db, int(classroom_id), int(teacher.id))
+    row = db.query(ClassroomMember).filter(ClassroomMember.classroom_id == int(classroom_id), ClassroomMember.user_id == int(student_id)).first()
+    if not row:
+        raise HTTPException(status_code=404, detail='Student not in classroom')
+    db.delete(row)
+    db.commit()
+    return {"request_id": request.state.request_id, "data": {"removed": True}, "error": None}
+
+
+@router.post('/classrooms/{classroom_id}/assign-topics')
+def assign_topics_to_classroom(request: Request, classroom_id: int, payload: AssignTopicsIn, db: Session = Depends(get_db), teacher: User = Depends(require_teacher)):
+    _ensure_teacher_classroom(db, int(classroom_id), int(teacher.id))
+    topic_ids = [int(x) for x in (payload.topic_ids or []) if int(x) > 0]
+    if not topic_ids:
+        raise HTTPException(status_code=400, detail='topic_ids is required')
+
+    topic_rows = db.query(DocumentTopic.id, DocumentTopic.document_id, DocumentTopic.title).filter(DocumentTopic.id.in_(topic_ids)).all()
+    member_rows = db.query(ClassroomMember.user_id).filter(ClassroomMember.classroom_id == int(classroom_id)).all()
+    student_ids = [int(r[0]) for r in member_rows]
+
+    created = 0
+    for sid in student_ids:
+        for tid, doc_id, title in topic_rows:
+            db.add(StudentAssignment(
+                student_id=int(sid),
+                classroom_id=int(classroom_id),
+                topic_id=int(tid),
+                document_id=int(doc_id),
+                assignment_type='reading',
+                student_level='trung_binh',
+                status='pending',
+                content_json={'topic_title': str(title or ''), 'source': 'classroom_assign_topics'},
+            ))
+            created += 1
+    db.commit()
+    return {"request_id": request.state.request_id, "data": {"assigned_count": created}, "error": None}
+
+
+def _assign_exam_for_classroom(*, request: Request, db: Session, classroom_id: int, teacher: User, payload: AssignExamIn, kind: str):
+    _ensure_teacher_classroom(db, int(classroom_id), int(teacher.id))
+    topics = [
+        str(r[0]) for r in db.query(DocumentTopic.title).filter(DocumentTopic.id.in_([int(x) for x in (payload.topic_ids or [])])).all() if r and r[0]
+    ]
+    if not topics:
+        raise HTTPException(status_code=400, detail='No valid topics found')
+    data = generate_assessment(
+        db,
+        teacher_id=int(teacher.id),
+        classroom_id=int(classroom_id),
+        title=str(payload.title or ('Placement Test' if kind == 'diagnostic_pre' else 'Final Test')),
+        level='intermediate',
+        kind=kind,
+        easy_count=4,
+        medium_count=4,
+        hard_count=2,
+        document_ids=[int(x) for x in (payload.document_ids or [])],
+        topics=topics,
+        time_limit_minutes=int(payload.duration_minutes or 45),
+    )
+    aid = int(data.get('assessment_id') or data.get('quiz_id') or 0)
+    if aid > 0:
+        ex = db.query(ClassroomAssessment).filter(ClassroomAssessment.classroom_id == int(classroom_id), ClassroomAssessment.assessment_id == aid).first()
+        if not ex:
+            db.add(ClassroomAssessment(classroom_id=int(classroom_id), assessment_id=aid, kind=kind, visible_to_students=True))
+            db.commit()
+    return {"request_id": request.state.request_id, "data": {"assessment_id": aid, "kind": kind}, "error": None}
+
+
+@router.post('/classrooms/{classroom_id}/assign-placement')
+def assign_placement(request: Request, classroom_id: int, payload: AssignExamIn, db: Session = Depends(get_db), teacher: User = Depends(require_teacher)):
+    return _assign_exam_for_classroom(request=request, db=db, classroom_id=int(classroom_id), teacher=teacher, payload=payload, kind='diagnostic_pre')
+
+
+@router.post('/classrooms/{classroom_id}/assign-final')
+def assign_final(request: Request, classroom_id: int, payload: AssignExamIn, db: Session = Depends(get_db), teacher: User = Depends(require_teacher)):
+    return _assign_exam_for_classroom(request=request, db=db, classroom_id=int(classroom_id), teacher=teacher, payload=payload, kind='diagnostic_post')
+
+
+@router.get('/classrooms/{classroom_id}/leaderboard')
+def classroom_leaderboard(request: Request, classroom_id: int, db: Session = Depends(get_db), teacher: User = Depends(require_teacher)):
+    _ensure_teacher_classroom(db, int(classroom_id), int(teacher.id))
+    student_rows = db.query(ClassroomMember.user_id).filter(ClassroomMember.classroom_id == int(classroom_id)).all()
+    student_ids = [int(r[0]) for r in student_rows]
+    data = []
+    for sid in student_ids:
+        user = db.query(User).filter(User.id == sid).first()
+        attempts = db.query(Attempt).join(QuizSet, QuizSet.id == Attempt.quiz_set_id).filter(Attempt.user_id == sid).order_by(Attempt.created_at.desc()).all()
+        final = next((a for a in attempts if str(getattr(db.query(QuizSet).filter(QuizSet.id == int(a.quiz_set_id)).first(), 'kind', '')).lower() in {'diagnostic_post','final_exam','final'}), None)
+        score = float(getattr(final, 'score_percent', 0) or 0)
+        level = classify_student_level(int(round(score)))
+        data.append({'student_id': sid, 'student_name': str(getattr(user,'full_name','') or f'User #{sid}'), 'score': round(score,1), 'level': str(level.get('label_en') or 'Beginner')})
+    data.sort(key=lambda x: x['score'], reverse=True)
+    for i, row in enumerate(data, start=1):
+        row['rank'] = i
+    return {"request_id": request.state.request_id, "data": data, "error": None}

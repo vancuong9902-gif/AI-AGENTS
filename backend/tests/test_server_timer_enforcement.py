@@ -160,3 +160,62 @@ def test_submit_uses_snapshot_when_late_and_locked(monkeypatch):
     assert resp["data"]["used_snapshot"] is True
     assert db.attempt_row.is_late is True
     assert db.attempt_row.deadline_seconds == 60
+
+
+def test_lms_submit_attempt_ignores_client_duration(monkeypatch):
+    started_at = _FixedDateTime.fixed_now - timedelta(seconds=120)
+
+    class _FakeQuerySubmit(_FakeQuery):
+        def __init__(self, db, entity):
+            super().__init__(db, entity)
+
+        def limit(self, *args, **kwargs):
+            return self
+
+    class _FakeDBSubmit(_FakeDB):
+        def query(self, entity):
+            return _FakeQuerySubmit(self, entity)
+
+    session_row = SimpleNamespace(
+        id=33,
+        user_id=9,
+        type="quiz_attempt:5",
+        started_at=started_at,
+        ended_at=None,
+        locked_at=None,
+        last_heartbeat_at=None,
+        answers_snapshot_json=[{"question_id": 101, "answer_index": 2}],
+        linked_attempt_record_id=None,
+    )
+    quiz_row = SimpleNamespace(id=5, duration_seconds=60, level="intermediate", kind="midterm", topic="A")
+    db = _FakeDBSubmit(session_row=session_row, quiz_row=quiz_row, questions=[])
+
+    captured = {}
+
+    def _fake_submit_assessment(_db, *, assessment_id, user_id, duration_sec, answers):
+        captured["duration_sec"] = duration_sec
+        captured["answers"] = answers
+        return {"attempt_id": 1, "breakdown": [], "assessment_kind": "midterm", "score_percent": 70}
+
+    monkeypatch.setattr(lms, "datetime", _FixedDateTime)
+    monkeypatch.setattr(lms, "submit_assessment", _fake_submit_assessment)
+    monkeypatch.setattr(lms, "score_breakdown", lambda *_a, **_k: {"overall": {"percent": 70}, "weak_topics": []})
+    monkeypatch.setattr(lms, "classify_student_level", lambda *_a, **_k: {"level_key": "kha"})
+    monkeypatch.setattr(lms, "classify_student_multidim", lambda **_k: {})
+    monkeypatch.setattr(lms, "build_recommendations", lambda **_k: [])
+    monkeypatch.setattr(lms, "persist_multidim_profile", lambda *_a, **_k: {"profile": {}, "key": "k"})
+    monkeypatch.setattr(lms, "assign_topic_materials", lambda *_a, **_k: [])
+    monkeypatch.setattr(lms, "_normalize_submit_synced_diagnostic", lambda base, **_: base)
+    monkeypatch.setattr(lms, "_normalize_synced_diagnostic", lambda base: base)
+
+    resp = lms.lms_submit_attempt(
+        request=_req(),
+        assessment_id=5,
+        payload=lms.SubmitAttemptIn(user_id=9, duration_sec=5, answers=[{"question_id": 101, "answer_index": 1}]),
+        db=db,
+    )
+
+    assert captured["duration_sec"] == 60
+    assert resp["data"]["time_spent_seconds"] == 120
+    assert resp["data"]["timed_out"] is True
+    assert resp["data"]["late_submission"] is True

@@ -28,11 +28,12 @@ const register = async (req, res) => {
 
 const login = async (req, res) => {
   const { email, password } = req.body;
+  const role = String(req.body?.role || "student").toLowerCase();
 
   try {
     const [rows] = await pool.execute(
-      'SELECT id, email, password, role, is_active FROM users WHERE email = ? LIMIT 1',
-      [email]
+      'SELECT id, email, password, role, is_active FROM users WHERE email = ? AND role = ? LIMIT 1',
+      [email, role]
     );
 
     if (rows.length === 0) {

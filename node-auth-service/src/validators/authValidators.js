@@ -31,10 +31,13 @@ const registerValidator = [
   passwordRule,
   handleValidation
 ];
+const roleRule = body('role').optional().isIn(['admin', 'teacher', 'student']).withMessage('Invalid role');
+
 const loginValidator = [
-  disallowExtraFields(['email', 'password']),
+  disallowExtraFields(['email', 'password', 'role']),
   emailRule,
   passwordRule,
+  roleRule,
   handleValidation
 ];
 const createTeacherValidator = [

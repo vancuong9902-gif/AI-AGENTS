@@ -50,6 +50,7 @@ class LoginRequest(BaseModel):
 
     email: str
     password: str
+    role: Literal["student", "teacher", "admin"] = "student"
 
     @field_validator("email")
     @classmethod
@@ -69,6 +70,13 @@ class LoginRequest(BaseModel):
         if not v.strip():
             raise ValueError("Password is required")
         return v
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def normalize_login_role(cls, value: str | None) -> str:
+        if value is None:
+            return "student"
+        return str(value).strip().lower()
 
 
 class TokenResponse(BaseModel):

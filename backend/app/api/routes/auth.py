@@ -35,7 +35,7 @@ def register(
 ):
     request_id = getattr(request.state, "request_id", "n/a")
     logger.info("auth.register.attempt email=%s role=%s request_id=%s", payload.email, payload.role, request_id)
-    existing = db.query(User).filter(User.email == str(payload.email)).first()
+    existing = db.query(User).filter(User.email == str(payload.email), User.role == str(payload.role or "student").strip().lower()).first()
     if existing:
         raise HTTPException(status_code=400, detail={"code": "EMAIL_EXISTS", "message": "Email already exists", "field": "email"})
 

@@ -27,6 +27,15 @@ done
 # DB migration (safe to run repeatedly)
 alembic upgrade heads
 
+echo "[start] Seeding demo accounts..."
+python scripts/seed_demo_accounts.py
+
+mkdir -p static/fonts
+if [ ! -f static/fonts/NotoSans-Regular.ttf ]; then
+  echo "[start] Downloading NotoSans-Regular.ttf..."
+  wget -q -O static/fonts/NotoSans-Regular.ttf https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf || true
+fi
+
 if [ "${RELOAD:-0}" = "1" ]; then
   exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 else

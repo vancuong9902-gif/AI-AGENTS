@@ -25,6 +25,7 @@ def _notification_out(row: Notification) -> dict:
     }
 
 
+@router.get("/notifications")
 @router.get("/notifications/my")
 def get_my_notifications(
     request: Request,
@@ -52,6 +53,7 @@ class MarkReadPayload(BaseModel):
 
 
 @router.post("/notifications/{notification_id}/mark-read")
+@router.post("/notifications/mark-read/{notification_id}")
 def mark_notification_read_v2(
     request: Request,
     notification_id: int,

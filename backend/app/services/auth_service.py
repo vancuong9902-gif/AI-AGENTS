@@ -18,7 +18,9 @@ def authenticate_user(db: Session, payload: LoginRequest) -> User:
     email = str(payload.email).strip().lower()
     password = str(payload.password)
 
-    user = db.query(User).filter(User.email == email).first()
+    role = str(payload.role or "student").strip().lower()
+
+    user = db.query(User).filter(User.email == email, User.role == role).first()
     if not user or not getattr(user, "password_hash", None):
         raise HTTPException(status_code=400, detail="Invalid credentials")
     if not verify_password(password, str(user.password_hash)):
