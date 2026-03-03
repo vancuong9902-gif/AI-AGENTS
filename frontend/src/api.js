@@ -41,6 +41,12 @@ export function getErrorMessage(error) {
   }
   const detail = error.response.data?.error || error.response.data?.detail;
   if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail) && detail.length > 0) {
+    const first = detail[0];
+    const field = Array.isArray(first?.loc) ? first.loc[first.loc.length - 1] : null;
+    if (field && first?.msg) return `${field}: ${first.msg}`;
+    if (first?.msg) return first.msg;
+  }
   return detail?.message || error.message || 'Request failed.';
 }
 
@@ -49,7 +55,11 @@ export const healthApi = {
 };
 
 export const authApi = {
-  register: (data) => api.post('/auth/register', data),
+  register: (data) => api.post('/auth/register', data, {
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  }),
   login: (data) => api.post('/auth/login-json', data),
   me: () => api.get('/auth/me'),
 };
