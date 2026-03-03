@@ -6,7 +6,7 @@ const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token');
+  const token = localStorage.getItem('access_token');
   const userId = localStorage.getItem('userId');
   const userRole = localStorage.getItem('userRole');
 
@@ -60,7 +60,7 @@ export const authApi = {
       'Content-Type': 'application/json',
     },
   }),
-  login: (data) => api.post('/auth/login-json', data),
+  login: (data) => api.post('/auth/login', data, { headers: { 'Content-Type': 'application/json' } }),
   me: () => api.get('/auth/me'),
 };
 

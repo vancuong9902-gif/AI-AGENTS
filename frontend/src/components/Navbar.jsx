@@ -39,7 +39,7 @@ export default function Navbar({ path, navigate }) {
   };
 
   const unreadCount = notifications.filter((n) => !n.is_read).length;
-  const dashboardPath = user?.role === 'teacher' ? '/teacher' : '/student';
+  const dashboardPath = user?.role === 'teacher' ? '/teacher/dashboard' : '/student/dashboard';
 
   return (
     <nav className="navbar">

@@ -1,24 +1,23 @@
 import React from 'react';
-import { useAuth } from '../auth';
-import LoadingSpinner from './LoadingSpinner';
+import { useAuth } from '../context/AuthContext';
 
 export default function ProtectedRoute({ role, navigate, children }) {
-  const { user, isLoading, isLoggedIn } = useAuth();
+  const { isAuthenticated, user, authEnabled } = useAuth();
 
   React.useEffect(() => {
-    if (isLoading) return;
-    if (!isLoggedIn) {
-      navigate('/login');
+    if (!isAuthenticated && authEnabled) {
+      navigate('/login', true);
       return;
     }
-    if (role && user?.role !== role) {
-      navigate(user?.role === 'teacher' ? '/teacher' : '/student');
-    }
-  }, [isLoading, isLoggedIn, navigate, role, user]);
 
-  if (isLoading) return <LoadingSpinner />;
-  if (!isLoggedIn) return null;
-  if (role && user?.role !== role) return null;
+    const currentRole = user?.role || 'student';
+    if (role && currentRole !== role) {
+      navigate(currentRole === 'teacher' ? '/teacher/dashboard' : '/student/dashboard', true);
+    }
+  }, [authEnabled, isAuthenticated, navigate, role, user?.role]);
+
+  if (!isAuthenticated && authEnabled) return null;
+  if (role && user?.role && user.role !== role) return null;
 
   return children;
 }
