@@ -10,7 +10,11 @@ ALLOWED_SELF_REGISTER_ROLES = {"student", "teacher"}
 class RegisterRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, str_strip_whitespace=True)
 
-    name: str = Field(min_length=1, max_length=255, validation_alias=AliasChoices("name", "full_name"))
+    name: str = Field(
+        min_length=1,
+        max_length=255,
+        validation_alias=AliasChoices("name", "full_name", "fullName"),
+    )
     email: str
     password: str = Field(min_length=8, max_length=200)
     role: Literal["student", "teacher"] = "student"
