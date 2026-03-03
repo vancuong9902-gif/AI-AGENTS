@@ -1,6 +1,7 @@
 import React from 'react';
 import Alert from '../components/Alert';
 import LoadingSpinner from '../components/LoadingSpinner';
+import EmptyState from '../components/EmptyState';
 import { mvpApi, getErrorMessage } from '../api';
 import { useAuth } from '../auth';
 
@@ -22,6 +23,22 @@ function levelVN(level) {
   if (normalized.includes('advanced')) return '⭐ Nâng cao';
   if (normalized.includes('intermediate')) return '📘 Trung bình';
   return '📗 Cơ bản';
+}
+
+
+
+const EMPTY_CLASSROOM_TITLE = 'Lớp học chưa có tài liệu';
+const EMPTY_CLASSROOM_DESCRIPTION = 'Giáo viên chưa tải lên tài liệu học. Vui lòng đợi thông báo từ giáo viên.';
+
+function StudentFlowEmptyState({ onRefresh }) {
+  return (
+    <EmptyState
+      icon="📚"
+      title={EMPTY_CLASSROOM_TITLE}
+      description={EMPTY_CLASSROOM_DESCRIPTION}
+      action={<button className="sm" onClick={onRefresh}>Kiểm tra lại</button>}
+    />
+  );
 }
 
 function normalizeExamPayload(raw) {
@@ -208,6 +225,11 @@ function TabCourses({ setAlert, onCourseSelect }) {
   };
 
   const handleEnterClass = async (classroom) => {
+    if (classroom?.has_content === false) {
+      onCourseSelect({ classroom, topics: [] });
+      return;
+    }
+
     setLoading(true);
     try {
       const res = await mvpApi.getCourse();
@@ -845,28 +867,48 @@ export default function StudentDashboard() {
 
   const onCourseSelect = (selectedCourse) => {
     setCourse(selectedCourse);
+    if (selectedCourse?.classroom?.has_content === false) {
+      setView('empty');
+      return;
+    }
+    setView('dashboard');
     setTab('content');
   };
 
   const clearAlert = () => setAlert({ type: 'info', message: '' });
 
+  const isCurrentClassEmpty = course?.classroom?.has_content === false;
+  const [view, setView] = React.useState('dashboard');
+
+  const refresh = React.useCallback(async () => {
+    setGuardLoading(true);
+    try {
+      const res = await mvpApi.getStudentStatus();
+      const d = res.data.data || {};
+      const hasContent = Boolean(d.has_content ?? (d.has_course && d.has_topics));
+      setBlockedByNoMaterial(!hasContent);
+      setView(hasContent ? 'dashboard' : 'empty');
+    } catch {
+      setBlockedByNoMaterial(true);
+      setView('empty');
+    } finally {
+      setGuardLoading(false);
+    }
+  }, []);
 
   React.useEffect(() => {
-    const loadStatus = async () => {
-      setGuardLoading(true);
-      try {
-        const res = await mvpApi.getStudentStatus();
-        const d = res.data.data || {};
-        const hasMaterial = Boolean(d.has_course && d.has_topics);
-        setBlockedByNoMaterial(!hasMaterial);
-      } catch {
-        setBlockedByNoMaterial(true);
-      } finally {
-        setGuardLoading(false);
-      }
-    };
-    loadStatus();
-  }, []);
+    refresh();
+  }, [refresh]);
+
+  React.useEffect(() => {
+    if (isCurrentClassEmpty) {
+      setView('empty');
+      return;
+    }
+    if (!blockedByNoMaterial) {
+      setView('dashboard');
+    }
+  }, [blockedByNoMaterial, isCurrentClassEmpty]);
 
   return (
     <div className="shell">
@@ -890,11 +932,11 @@ export default function StudentDashboard() {
             key={item.key}
             className={`tab ${tab === item.key ? 'active' : ''}`}
             onClick={() => {
-              if (blockedByNoMaterial && item.key !== 'courses') return;
+              if ((blockedByNoMaterial || view === 'empty' || isCurrentClassEmpty) && item.key !== 'courses') return;
               setTab(item.key);
               clearAlert();
             }}
-            disabled={blockedByNoMaterial && item.key !== 'courses'}
+            disabled={(blockedByNoMaterial || view === 'empty' || isCurrentClassEmpty) && item.key !== 'courses'}
           >
             {item.label}
           </button>
@@ -904,10 +946,8 @@ export default function StudentDashboard() {
 
       {guardLoading ? (
         <LoadingSpinner label="Đang kiểm tra dữ liệu khóa học..." />
-      ) : blockedByNoMaterial ? (
-        <div className="alert warning">
-          📚 Giáo viên chưa tải tài liệu. Vui lòng chờ giáo viên chuẩn bị khóa học.
-        </div>
+      ) : (view === 'empty' || blockedByNoMaterial || isCurrentClassEmpty) ? (
+        <StudentFlowEmptyState onRefresh={refresh} />
       ) : null}
 
       {tab === 'courses' && (
@@ -917,33 +957,33 @@ export default function StudentDashboard() {
         />
       )}
 
-      {!blockedByNoMaterial && tab === 'content' && (
+      {view !== 'empty' && !blockedByNoMaterial && tab === 'content' && (
         <TabContent
           course={course}
         />
       )}
 
-      {!blockedByNoMaterial && tab === 'exams' && (
+      {view !== 'empty' && !blockedByNoMaterial && tab === 'exams' && (
         <TabExams
           course={course}
           setAlert={setAlert}
         />
       )}
 
-      {!blockedByNoMaterial && tab === 'homework' && (
+      {view !== 'empty' && !blockedByNoMaterial && tab === 'homework' && (
         <TabHomework
           course={course}
           setAlert={setAlert}
         />
       )}
 
-      {!blockedByNoMaterial && tab === 'progress' && (
+      {view !== 'empty' && !blockedByNoMaterial && tab === 'progress' && (
         <TabProgress
           course={course}
         />
       )}
 
-      {!blockedByNoMaterial && tab === 'tutor' && (
+      {view !== 'empty' && !blockedByNoMaterial && tab === 'tutor' && (
         <TabTutor
           course={course}
         />

@@ -15,6 +15,7 @@ class ClassroomOut(BaseModel):
     join_code: str
     teacher_id: int
     student_count: int = 0
+    has_content: bool = False
 
 
 class ClassroomJoinRequest(BaseModel):
