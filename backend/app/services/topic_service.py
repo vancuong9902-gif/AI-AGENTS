@@ -3687,6 +3687,7 @@ def extract_topics(
             level_hint = "Chia theo CHƯƠNG/CHAPTER (các dòng bắt đầu bằng 'Chương'/'Chapter')" if level == 'chapter' else "Chia theo các TOPIC học tập hợp lý"
             system = (
                 "Bạn là Content Agent (giáo viên). Nhiệm vụ: chia tài liệu thành các TOPIC học tập rõ ràng. "
+                "Phản hồi bằng tiếng Việt có dấu đầy đủ, chuẩn Unicode NFC. "
                 f"YÊU CẦU CHÍNH: {level_hint}. "
                 "KHÔNG dùng số thứ tự trong title (ví dụ: 'Topic 1', 'Chương 2', '1.2.3'). "
                 "KHÔNG tạo TOPIC riêng cho các mục phụ trợ như: 'Bài tập', 'Luyện tập', 'Câu hỏi', 'Quiz/Mini-quiz', 'Đáp án', 'Lời giải'. "
@@ -3711,6 +3712,14 @@ def extract_topics(
                 )
                 llm_topics = obj.get("topics") if isinstance(obj, dict) else None
                 if isinstance(llm_topics, list):
+                    llm_topics = [
+                        {
+                            k: (unicodedata.normalize("NFC", v) if isinstance(v, str) else v)
+                            for k, v in item.items()
+                        }
+                        for item in llm_topics
+                        if isinstance(item, dict)
+                    ]
                     topics_raw = post_process_generated_topics(
                         llm_topics[: max(3, int(max_topics))],
                         chunks_texts or [full_text],

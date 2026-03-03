@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_roles
 from app.core.config import settings
+from app.models.classroom import Classroom, ClassroomMember
 from app.models.mvp import Course, Exam, Question, Result, Topic
 from app.models.user import User
 from app.services.llm_service import chat_json, llm_available
@@ -19,6 +20,42 @@ router = APIRouter(prefix="/mvp", tags=["mvp"])
 
 def _rid(request: Request) -> str:
     return getattr(request.state, "request_id", "n/a")
+
+
+
+
+def _has_student_material(db: Session, student_id: int) -> bool:
+    memberships = db.query(ClassroomMember.classroom_id).filter(ClassroomMember.user_id == int(student_id)).all()
+    classroom_ids = [int(row[0]) for row in memberships if row and row[0] is not None]
+    if not classroom_ids:
+        return False
+
+    # New flow: classroom must be linked to a course and that course must have topics (published).
+    if hasattr(Classroom, "course_id"):
+        classrooms = db.query(Classroom).filter(Classroom.id.in_(classroom_ids)).all()
+        for classroom in classrooms:
+            class_course_id = getattr(classroom, "course_id", None)
+            if class_course_id is None:
+                continue
+            topic_count = db.query(Topic).filter(Topic.course_id == int(class_course_id)).count()
+            if topic_count > 0:
+                return True
+        return False
+
+    # Legacy fallback for schema without classrooms.course_id.
+    course = db.query(Course).order_by(Course.id.desc()).first()
+    if not course:
+        return False
+    return db.query(Topic).filter(Topic.course_id == int(course.id)).count() > 0
+
+
+def require_student_material(
+    db: Session = Depends(get_db),
+    student: User = Depends(require_roles("student")),
+) -> User:
+    if not _has_student_material(db, int(student.id)):
+        raise HTTPException(status_code=404, detail="Lớp học chưa có tài liệu")
+    return student
 
 
 def _extract_pdf_text(upload: UploadFile) -> str:
@@ -216,7 +253,7 @@ def generate_entry_test(course_id: int, request: Request, db: Session = Depends(
 
 
 @router.get("/student/course")
-def student_course(request: Request, db: Session = Depends(get_db), student: User = Depends(require_roles("student"))):
+def student_course(request: Request, db: Session = Depends(get_db), student: User = Depends(require_student_material)):
     _ = student
     course = db.query(Course).order_by(Course.id.desc()).first()
     if not course:
@@ -227,7 +264,7 @@ def student_course(request: Request, db: Session = Depends(get_db), student: Use
 
 
 @router.get("/student/exams/latest")
-def latest_exam(request: Request, db: Session = Depends(get_db), student: User = Depends(require_roles("student"))):
+def latest_exam(request: Request, db: Session = Depends(get_db), student: User = Depends(require_student_material)):
     _ = student
     exam = db.query(Exam).order_by(Exam.id.desc()).first()
     if not exam:
@@ -237,7 +274,7 @@ def latest_exam(request: Request, db: Session = Depends(get_db), student: User =
 
 
 @router.post("/student/exams/{exam_id}/submit")
-def submit_exam(exam_id: int, payload: dict[str, Any], request: Request, db: Session = Depends(get_db), student: User = Depends(require_roles("student"))):
+def submit_exam(exam_id: int, payload: dict[str, Any], request: Request, db: Session = Depends(get_db), student: User = Depends(require_student_material)):
     questions = db.query(Question).filter(Question.exam_id == exam_id).all()
     if not questions:
         raise HTTPException(status_code=404, detail="Exam not found")
@@ -260,7 +297,7 @@ def list_results(request: Request, page: int = Query(1, ge=1), page_size: int = 
 
 
 @router.post("/student/tutor")
-def tutor(payload: dict[str, Any], request: Request, db: Session = Depends(get_db), student: User = Depends(require_roles("student"))):
+def tutor(payload: dict[str, Any], request: Request, db: Session = Depends(get_db), student: User = Depends(require_student_material)):
     _ = student
     question = (payload.get("question") or "").strip()
     if not question:
@@ -328,6 +365,7 @@ def student_status(
             "has_course": has_course,
             "has_topics": has_topics,
             "has_exam": has_exam,
+            "has_content": _has_student_material(db, int(student.id)),
         },
         "error": None,
     }

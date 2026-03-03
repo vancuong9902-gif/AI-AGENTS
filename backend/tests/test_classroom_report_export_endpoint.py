@@ -82,3 +82,65 @@ def test_export_latest_report_docx(monkeypatch):
     assert "application/vnd.openxmlformats-officedocument.wordprocessingml.document" in res.headers.get("content-type", "")
 
     app.dependency_overrides.clear()
+
+
+def test_export_teacher_classroom_pdf(monkeypatch):
+    app.dependency_overrides[get_db] = lambda: _FakeDB()
+    app.dependency_overrides[require_teacher] = lambda: SimpleNamespace(id=7, full_name="GV A")
+
+    monkeypatch.setattr(
+        "app.api.routes.classrooms._build_export_students",
+        lambda db, classroom_id: [
+            {
+                "name": "Nguyễn Văn A",
+                "email": "a@example.com",
+                "placement_score": 60,
+                "final_score": 85,
+                "level": "kha",
+                "study_hours": 12,
+                "ai_comment": "Tiến bộ tốt",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "app.api.routes.classrooms.generate_class_report_pdf",
+        lambda classroom_data, students_data: b"%PDF-1.4\n",
+    )
+
+    client = TestClient(app)
+    res = client.get("/api/teacher/classrooms/1/report/pdf")
+    assert res.status_code == 200
+    assert "application/pdf" in res.headers.get("content-type", "")
+
+    app.dependency_overrides.clear()
+
+
+def test_export_teacher_classroom_excel(monkeypatch):
+    app.dependency_overrides[get_db] = lambda: _FakeDB()
+    app.dependency_overrides[require_teacher] = lambda: SimpleNamespace(id=7, full_name="GV A")
+
+    monkeypatch.setattr(
+        "app.api.routes.classrooms._build_export_students",
+        lambda db, classroom_id: [
+            {
+                "name": "Nguyễn Văn A",
+                "email": "a@example.com",
+                "placement_score": 60,
+                "final_score": 85,
+                "level": "kha",
+                "study_hours": 12,
+                "ai_comment": "Tiến bộ tốt",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "app.api.routes.classrooms.generate_class_report_excel",
+        lambda classroom_data, students_data: b"PK\x03\x04",
+    )
+
+    client = TestClient(app)
+    res = client.get("/api/teacher/classrooms/1/report/excel")
+    assert res.status_code == 200
+    assert "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in res.headers.get("content-type", "")
+
+    app.dependency_overrides.clear()
