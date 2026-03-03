@@ -1,4 +1,6 @@
 from logging.config import fileConfig
+import logging
+import traceback
 
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
@@ -6,6 +8,9 @@ from sqlalchemy import pool
 from alembic import context
 from app.core.config import settings
 from app.db.base import Base
+
+
+logger = logging.getLogger("alembic.env")
 
 
 # this is the Alembic Config object, which provides
@@ -63,22 +68,27 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
-    connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
-
-    with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            compare_type=True,
-            compare_server_default=True,
+    try:
+        connectable = engine_from_config(
+            config.get_section(config.config_ini_section, {}),
+            prefix="sqlalchemy.",
+            poolclass=pool.NullPool,
         )
 
-        with context.begin_transaction():
-            context.run_migrations()
+        with connectable.connect() as connection:
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+                compare_type=True,
+                compare_server_default=True,
+            )
+
+            with context.begin_transaction():
+                context.run_migrations()
+    except Exception as exc:
+        logger.exception("Alembic online migration failed: %s", exc)
+        print(traceback.format_exc(), flush=True)
+        raise
 
 
 if context.is_offline_mode():

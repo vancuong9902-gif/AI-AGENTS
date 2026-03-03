@@ -1,6 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
+log_error() {
+  local exit_code=$?
+  local line_no=${BASH_LINENO[0]:-unknown}
+  local cmd=${BASH_COMMAND:-unknown}
+  echo "[start][error] Command failed at line ${line_no}: ${cmd}" >&2
+  echo "[start][error] Exit code: ${exit_code}" >&2
+}
+
+trap log_error ERR
+
 cd /app
 
 # -----------------------------
@@ -28,10 +38,18 @@ done
 
 # DB migration (safe to run repeatedly)
 # Use a single canonical head to avoid revision drift from stale multi-head stamps.
-alembic upgrade head
+echo "[start] Running Alembic migrations..."
+if ! alembic upgrade head; then
+  echo "[start][error] Alembic migration failed." >&2
+  exit 1
+fi
+echo "[start] Alembic migrations completed."
 
 echo "[start] Seeding demo accounts..."
-PYTHONPATH=/app python /app/scripts/seed_demo_accounts.py
+if ! PYTHONPATH=/app python /app/scripts/seed_demo_accounts.py; then
+  echo "[start][error] Seed demo accounts failed." >&2
+  exit 1
+fi
 
 mkdir -p static/fonts
 if [ ! -f static/fonts/NotoSans-Regular.ttf ]; then
