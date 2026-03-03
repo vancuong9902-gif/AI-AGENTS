@@ -13,18 +13,31 @@ export default function RegisterPage({ navigate }) {
 
   const onSubmit = async (e) => {
     e.preventDefault();
-    if (!form.name.trim() || !form.email.trim() || !form.password.trim()) {
+
+    const payload = {
+      name: form.name.trim(),
+      email: form.email.trim().toLowerCase(),
+      password: form.password,
+      role: String(form.role || 'student').toLowerCase(),
+    };
+
+    if (!payload.name || !payload.email || !payload.password.trim()) {
       setError('Vui lòng điền đầy đủ thông tin.');
       return;
     }
-    if (form.password.length < 6) {
-      setError('Mật khẩu phải có ít nhất 6 ký tự.');
+    if (payload.password.length < 8) {
+      setError('Mật khẩu phải có ít nhất 8 ký tự.');
       return;
     }
+    if (!['student', 'teacher'].includes(payload.role)) {
+      setError('Vai trò không hợp lệ.');
+      return;
+    }
+
     setError('');
     setLoading(true);
     try {
-      const res = await authApi.register(form);
+      const res = await authApi.register(payload);
       const data = res.data.data;
       await login(data.token?.access_token, data.user);
       navigate(data.user.role === 'teacher' ? '/teacher' : '/student');
@@ -47,7 +60,7 @@ export default function RegisterPage({ navigate }) {
 
         <Alert type="error" message={error} />
 
-        <form onSubmit={onSubmit} className="stack" style={{ gap: 14 }}>
+        <form onSubmit={onSubmit} className="stack auth-form">
           <div className="form-group">
             <label>Bạn là:</label>
             <div className="role-selector">
@@ -81,7 +94,7 @@ export default function RegisterPage({ navigate }) {
             <input type="password" placeholder="Ít nhất 6 ký tự" value={form.password} onChange={(e) => update('password', e.target.value)} required />
           </div>
 
-          <button type="submit" disabled={loading} style={{ marginTop: 4 }}>
+          <button type="submit" disabled={loading} className="auth-submit-btn">
             {loading ? '⏳ Đang tạo...' : '✅ Tạo tài khoản'}
           </button>
         </form>
