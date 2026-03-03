@@ -7,9 +7,12 @@ export default function TeacherUpload({ setAlert, workflow, setWorkflow, onConti
   const [loading, setLoading] = React.useState(false);
   const [progress, setProgress] = React.useState(0);
   const [fileName, setFileName] = React.useState('');
-  const [newTopicTitle, setNewTopicTitle] = React.useState('');
+  const [expandedTopicIds, setExpandedTopicIds] = React.useState([]);
+  const [replaceFileId, setReplaceFileId] = React.useState(null);
   const fileRef = React.useRef();
   const pollingRef = React.useRef(null);
+
+  const uploadedDocuments = workflow.uploadedDocuments || [];
 
   const stopPolling = React.useCallback(() => {
     if (pollingRef.current) {
@@ -33,12 +36,31 @@ export default function TeacherUpload({ setAlert, workflow, setWorkflow, onConti
     }, 700);
   }, [stopPolling]);
 
-  const onUpload = async (file) => {
+  const onUpload = async (file, mode = 'append', targetDocId = null) => {
     if (!file) return;
     if (file.type !== 'application/pdf') {
       setAlert({ type: 'error', message: '⚠️ Chỉ chấp nhận file PDF.' });
       return;
     }
+
+    const documentId = Date.now();
+    const nextDoc = {
+      id: documentId,
+      filename: file.name,
+      size: file.size,
+      uploadedAt: new Date().toISOString(),
+      status: 'processing',
+    };
+
+    setWorkflow((prev) => {
+      const prevDocs = prev.uploadedDocuments || [];
+      const withoutTarget = targetDocId ? prevDocs.filter((doc) => doc.id !== targetDocId) : prevDocs;
+      const mergedDocs = mode === 'replace' ? [...withoutTarget, nextDoc] : [...withoutTarget, nextDoc];
+      return {
+        ...prev,
+        uploadedDocuments: mergedDocs,
+      };
+    });
 
     setFileName(file.name);
     setLoading(true);
@@ -60,6 +82,7 @@ export default function TeacherUpload({ setAlert, workflow, setWorkflow, onConti
         topicsPublished: false,
         topicsDraft: [],
         selectedTopicIds: [],
+        uploadedDocuments: (prev.uploadedDocuments || []).map((doc) => (doc.id === documentId ? { ...doc, status: 'done' } : doc)),
       }));
       setAlert({ type: 'success', message: `✅ Đã tải lên "${file.name}" thành công. Bắt đầu phân tích chủ đề.` });
 
@@ -71,19 +94,28 @@ export default function TeacherUpload({ setAlert, workflow, setWorkflow, onConti
           title: topic.title,
           summary: topic.summary,
           exercises: topic.exercises || [],
+          subtopics: topic.subtopics || topic.key_points || [],
+          questions: topic.questions || [],
+          learningObjectives: topic.learning_objectives || topic.learningObjectives || [],
         }));
         setWorkflow((prev) => ({
           ...prev,
           topicsDraft: normalizedTopics,
           selectedTopicIds: normalizedTopics.map((topic) => topic.id),
+          uploadedDocuments: (prev.uploadedDocuments || []).map((doc) => (doc.id === documentId ? { ...doc, status: 'done' } : doc)),
         }));
       }
     } catch (err) {
       stopPolling();
       setProgress(0);
+      setWorkflow((prev) => ({
+        ...prev,
+        uploadedDocuments: (prev.uploadedDocuments || []).map((doc) => (doc.id === documentId ? { ...doc, status: 'pending' } : doc)),
+      }));
       setAlert({ type: 'error', message: getErrorMessage(err) });
     } finally {
       setLoading(false);
+      setReplaceFileId(null);
     }
   };
 
@@ -94,26 +126,47 @@ export default function TeacherUpload({ setAlert, workflow, setWorkflow, onConti
     }));
   };
 
+  const updateTopicSummary = (id, summary) => {
+    setWorkflow((prev) => ({
+      ...prev,
+      topicsDraft: prev.topicsDraft.map((topic) => (topic.id === id ? { ...topic, summary } : topic)),
+    }));
+  };
+
+  const toggleTopicExpand = (id) => {
+    setExpandedTopicIds((prev) => (prev.includes(id) ? prev.filter((topicId) => topicId !== id) : [...prev, id]));
+  };
+
+  const removeDocument = (id) => {
+    setWorkflow((prev) => ({
+      ...prev,
+      uploadedDocuments: (prev.uploadedDocuments || []).filter((doc) => doc.id !== id),
+    }));
+  };
+
+  const formatFileSize = (size = 0) => {
+    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+    return `${(size / (1024 * 1024)).toFixed(2)} MB`;
+  };
+
+  const formatUploadedDate = (value) => {
+    if (!value) return '--';
+    const date = new Date(value);
+    return date.toLocaleString('vi-VN');
+  };
+
+  const statusMap = {
+    pending: 'Chờ xử lý',
+    processing: 'Đang xử lý',
+    done: 'Hoàn tất',
+  };
+
   const removeTopic = (id) => {
     setWorkflow((prev) => ({
       ...prev,
       topicsDraft: prev.topicsDraft.filter((topic) => topic.id !== id),
       selectedTopicIds: prev.selectedTopicIds.filter((topicId) => topicId !== id),
     }));
-  };
-
-  const addManualTopic = () => {
-    const title = newTopicTitle.trim();
-    if (!title) return;
-    setWorkflow((prev) => {
-      const nextId = prev.topicsDraft.length ? Math.max(...prev.topicsDraft.map((topic) => topic.id)) + 1 : 1;
-      return {
-        ...prev,
-        topicsDraft: [...prev.topicsDraft, { id: nextId, title, summary: 'Topic thêm thủ công bởi giáo viên', exercises: [] }],
-        selectedTopicIds: [...prev.selectedTopicIds, nextId],
-      };
-    });
-    setNewTopicTitle('');
   };
 
   const publishTopics = () => {
@@ -153,7 +206,15 @@ export default function TeacherUpload({ setAlert, workflow, setWorkflow, onConti
             type="file"
             accept="application/pdf"
             className="hidden-input"
-            onChange={(e) => onUpload(e.target.files?.[0])}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (replaceFileId) {
+                onUpload(file, 'replace', replaceFileId);
+              } else {
+                onUpload(file, 'append');
+              }
+              e.target.value = '';
+            }}
           />
         </div>
 
@@ -183,21 +244,84 @@ export default function TeacherUpload({ setAlert, workflow, setWorkflow, onConti
         ) : (
           <div className="stack gap-sm">
             {workflow.topicsDraft.map((topic) => (
-              <div key={topic.id} className="topic-editor-row">
-                <input value={topic.title} onChange={(e) => updateTopicTitle(topic.id, e.target.value)} />
+              <div key={topic.id} className={`topic-accordion ${expandedTopicIds.includes(topic.id) ? 'expanded' : ''}`}>
+                <button className="topic-accordion-trigger" onClick={() => toggleTopicExpand(topic.id)}>
+                  <span className={`topic-chevron ${expandedTopicIds.includes(topic.id) ? 'expanded' : ''}`}>▸</span>
+                  <span className="topic-accordion-title">{topic.title || `Topic ${topic.id}`}</span>
+                </button>
                 <button className="ghost sm" onClick={() => removeTopic(topic.id)}>Xóa</button>
+
+                <div className="topic-accordion-panel">
+                  <div className="topic-details stack gap-sm">
+                    <label>
+                      Tiêu đề topic
+                      <input value={topic.title || ''} onChange={(e) => updateTopicTitle(topic.id, e.target.value)} />
+                    </label>
+                    <label>
+                      Mô tả / tóm tắt
+                      <textarea rows={3} value={topic.summary || ''} onChange={(e) => updateTopicSummary(topic.id, e.target.value)} />
+                    </label>
+                    <div>
+                      <strong>Subtopics / Key points</strong>
+                      {topic.subtopics?.length ? (
+                        <ul>
+                          {topic.subtopics.map((subtopic, index) => <li key={`${topic.id}-sub-${index}`}>{subtopic}</li>)}
+                        </ul>
+                      ) : (
+                        <p className="card-sub">Chưa có subtopics từ API.</p>
+                      )}
+                    </div>
+                    <div>
+                      <strong>Câu hỏi / Mục tiêu học tập</strong>
+                      {(topic.questions?.length || topic.learningObjectives?.length) ? (
+                        <ul>
+                          {(topic.questions || []).map((question, index) => <li key={`${topic.id}-q-${index}`}>{question}</li>)}
+                          {(topic.learningObjectives || []).map((objective, index) => <li key={`${topic.id}-o-${index}`}>{objective}</li>)}
+                        </ul>
+                      ) : (
+                        <p className="card-sub">Chưa có dữ liệu câu hỏi hoặc mục tiêu học tập.</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
               </div>
             ))}
           </div>
         )}
 
-        <div className="row">
-          <input
-            value={newTopicTitle}
-            onChange={(e) => setNewTopicTitle(e.target.value)}
-            placeholder="Thêm topic thủ công"
-          />
-          <button className="ghost" onClick={addManualTopic}>+ Thêm topic</button>
+        <div className="stack gap-sm document-manager">
+          <div className="row-between">
+            <h4 className="card-title">Quản lý tài liệu tải lên</h4>
+            <button className="ghost sm" onClick={() => { setReplaceFileId(null); fileRef.current?.click(); }}>+ Tải thêm tài liệu</button>
+          </div>
+
+          {uploadedDocuments.length === 0 ? (
+            <p className="card-sub">Chưa có tài liệu nào được tải lên.</p>
+          ) : (
+            <div className="stack gap-sm">
+              {uploadedDocuments.map((doc) => (
+                <div key={doc.id} className="document-row">
+                  <div>
+                    <div className="document-name">{doc.filename}</div>
+                    <div className="card-sub">{formatFileSize(doc.size)} · {formatUploadedDate(doc.uploadedAt)}</div>
+                  </div>
+                  <span className={`badge ${doc.status === 'done' ? 'green' : 'gray'}`}>{statusMap[doc.status] || statusMap.pending}</span>
+                  <div className="row gap-sm">
+                    <button
+                      className="ghost sm"
+                      onClick={() => {
+                        setReplaceFileId(doc.id);
+                        fileRef.current?.click();
+                      }}
+                    >
+                      Thay file
+                    </button>
+                    <button className="ghost sm" onClick={() => removeDocument(doc.id)}>Gỡ</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="row">
