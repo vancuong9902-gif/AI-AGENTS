@@ -80,9 +80,32 @@ def login_json(request: Request, payload: LoginRequest, db: Session = Depends(ge
 
 
 @router.post("/login")
-def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)):
+async def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)):
     """Simple JSON login endpoint for student/teacher/admin."""
-    return login_json(request=request, payload=payload, db=db)
+    request_id = getattr(request.state, "request_id", "n/a")
+    body = await request.json()
+
+    if not isinstance(body, dict):
+        user = authenticate_user(db, payload)
+        out = build_auth_response(user)
+        return {"request_id": request_id, "data": out, "error": None}
+
+    role_in_body = body.get("role")
+    candidate_roles = [str(role_in_body).strip().lower()] if role_in_body else ["student", "teacher", "admin"]
+
+    last_error: HTTPException | None = None
+    for role in candidate_roles:
+        try:
+            candidate = LoginRequest(email=str(body.get("email") or ""), password=str(body.get("password") or ""), role=role)
+            user = authenticate_user(db, candidate)
+            out = build_auth_response(user)
+            return {"request_id": request_id, "data": out, "error": None}
+        except HTTPException as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+    raise HTTPException(status_code=400, detail="Invalid credentials")
 
 
 @router.post("/auth/login")
