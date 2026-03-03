@@ -178,7 +178,7 @@ function TabCourses({ setAlert, onCourseSelect }) {
     setLoading(true);
     try {
       const res = await mvpApi.getMyClasses();
-      setMyClasses(res.data.classrooms || res.data || []);
+      setMyClasses(res.data?.data?.items || res.data?.classrooms || res.data || []);
     } catch {
       setMyClasses([]);
     } finally {
@@ -261,7 +261,7 @@ function TabCourses({ setAlert, onCourseSelect }) {
               <div className="card-header">
                 <div>
                   <div className="card-title">🏫 {cls.name}</div>
-                  {cls.join_code && <span className="badge blue">Mã: {cls.join_code}</span>}
+                  {cls.invite_code && <span className="badge blue">Mã: {cls.invite_code}</span>}
                 </div>
               </div>
 
@@ -269,6 +269,11 @@ function TabCourses({ setAlert, onCourseSelect }) {
                 {cls.description || 'Lớp học chưa có mô tả.'}
               </p>
 
+              <div className="row student-class-meta">
+                <span className="badge gray">Môn học: {cls.course_id || 'N/A'}</span>
+                <span className="badge green">Tiến độ: {Math.round(cls.progress_percent || 0)}%</span>
+                <span className="badge blue">Điểm: {cls.score ?? '-'}</span>
+              </div>
               <button className="sm" onClick={() => handleEnterClass(cls)}>
                 📖 Vào học
               </button>
