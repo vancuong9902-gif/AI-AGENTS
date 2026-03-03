@@ -139,9 +139,18 @@ export const mvpApi = {
 
   // Student – Course selection
   getAvailableCourses: () => api.get('/mvp/student/courses'),
-  getMyClasses: () => api.get('/classrooms'),
-  joinClassroom: (code) => api.post('/classrooms/join', { code }),
+  getMyClasses: (page = 1, pageSize = 20) => api.get('/student/classrooms', { params: { page, page_size: pageSize } }),
+  joinClassroom: (inviteCode) => api.post('/student/classrooms/join', { invite_code: inviteCode }),
 
+
+  // Classroom full flow
+  listTeacherClassrooms: (page = 1, pageSize = 20) => api.get('/teacher/classrooms', { params: { page, page_size: pageSize } }),
+  getTeacherClassroomDetail: (id) => api.get(`/teacher/classrooms/${id}`),
+  deleteTeacherClassroom: (id) => api.delete(`/teacher/classrooms/${id}`),
+  getTeacherClassroomStudents: (id, page = 1, pageSize = 20) => api.get(`/teacher/classrooms/${id}/students`, { params: { page, page_size: pageSize } }),
+  removeTeacherClassroomStudent: (id, studentId) => api.delete(`/teacher/classrooms/${id}/students/${studentId}`),
+  createTeacherClassroom: (payload) => api.post('/teacher/classrooms', payload),
+  getStudentClassroomSubjects: (id) => api.get(`/student/classrooms/${id}/subjects`),
   // Student – Learning plan
   getLearningPlan: (userId, classroomId) => api.get(`/learning-plans/${userId}/current`, {
     params: classroomId ? { classroom_id: classroomId } : {},

@@ -174,7 +174,7 @@ function TabClassrooms({ setAlert }) {
     setLoading(true);
     try {
       const res = await mvpApi.getMyClassrooms();
-      setClassrooms(res.data.data || res.data.classrooms || []);
+      setClassrooms(res.data.data?.items || res.data.data || res.data.classrooms || []);
     } catch (err) {
       setAlert({ type: 'error', message: getErrorMessage(err) });
     } finally {

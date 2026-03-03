@@ -1,24 +1,48 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
 
 class ClassroomCreateRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
+    name: str = Field(min_length=1, max_length=200)
+    description: Optional[str] = None
+    course_id: Optional[int] = None
 
 
 class ClassroomOut(BaseModel):
     id: int
     name: str
-    join_code: str
+    description: Optional[str] = None
+    invite_code: str
+    join_code: Optional[str] = None
     teacher_id: int
+    course_id: Optional[int] = None
+    is_active: bool = True
     student_count: int = 0
+    created_at: Optional[datetime] = None
 
 
 class ClassroomJoinRequest(BaseModel):
-    join_code: str = Field(min_length=3, max_length=32)
+    invite_code: str = Field(min_length=8, max_length=8)
+
+
+class ClassroomStudentOut(BaseModel):
+    id: int
+    full_name: Optional[str] = None
+    email: str
+    joined_at: Optional[datetime] = None
+    placement_score: Optional[float] = None
+    final_score: Optional[float] = None
+    level: Optional[str] = None
+
+
+class ClassroomSubjectOut(BaseModel):
+    id: int
+    title: str
+    summary: Optional[str] = None
 
 
 class AssignLearningPlanRequest(BaseModel):
