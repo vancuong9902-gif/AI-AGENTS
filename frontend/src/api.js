@@ -104,6 +104,12 @@ export const mvpApi = {
     responseType: 'blob',
   }),
 
+
+  getExamTopics: (classroomId) => api.get(`/teacher/classrooms/${classroomId}/exam-topics`),
+  exportExamWord: (classroomId, payload) => api.post(`/teacher/classrooms/${classroomId}/export-exam`, payload, {
+    responseType: 'blob',
+  }),
+
   exportTeacherReport: (classroomId, format = 'pdf') => api.get('/teacher/reports/export', {
     params: { classroom_id: classroomId, format },
     responseType: 'blob',

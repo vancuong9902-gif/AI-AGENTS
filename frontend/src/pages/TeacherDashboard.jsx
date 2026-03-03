@@ -3,6 +3,7 @@ import Alert from '../components/Alert';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { mvpApi, downloadBlob, getErrorMessage } from '../api';
 import { useAuth } from '../auth';
+import ExamExportModal from '../components/ExamExportModal';
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area, XAxis, YAxis,
   CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend,
@@ -153,8 +154,7 @@ function TabUpload({ setAlert }) {
             ))}
           </div>
         </div>
-      )}
-    </div>
+      )}    </div>
   );
 }
 
@@ -168,6 +168,7 @@ function TabClassrooms({ setAlert }) {
   const [studentEmail, setStudentEmail] = React.useState('');
   const [studentRole, setStudentRole] = React.useState('student');
   const [topicIds, setTopicIds] = React.useState('');
+  const [showExportModal, setShowExportModal] = React.useState(false);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -313,11 +314,22 @@ function TabClassrooms({ setAlert }) {
         )
       )}
 
+
+      <ExamExportModal
+        open={showExportModal}
+        classroomId={selected?.id}
+        onClose={() => setShowExportModal(false)}
+        onAlert={setAlert}
+      />
+
       {selected && (
         <div className="card stack">
           <div className="row-between">
             <div className="card-title">Lớp: {selected.name}</div>
-            <button className="ghost sm" onClick={() => setSelected(null)}>Đóng</button>
+            <div className="row">
+              <button className="ghost sm" onClick={() => setShowExportModal(true)}>Xuất đề thi Word</button>
+              <button className="ghost sm" onClick={() => setSelected(null)}>Đóng</button>
+            </div>
           </div>
 
           <div className="form-group">
@@ -554,6 +566,8 @@ function TabAnalytics() {
 }
 
 function TabExamGen({ setAlert }) {
+  const [classroomId, setClassroomId] = React.useState('');
+  const [showExportModal, setShowExportModal] = React.useState(false);
   const [loading, setLoading] = React.useState(false);
   const [form, setForm] = React.useState({ courseId: '', numVariants: 2, numQuestions: 10, examType: 'multiple_choice' });
   const [batchId, setBatchId] = React.useState(null);
@@ -606,6 +620,15 @@ function TabExamGen({ setAlert }) {
     <div className="stack">
       <h2 style={{ fontSize: 18 }}>📝 Sinh đề thi tự động</h2>
       <div className="card">
+        <div className="form-group">
+          <label>Classroom ID để xuất đề</label>
+          <div className="row">
+            <input value={classroomId} onChange={(e) => setClassroomId(e.target.value)} placeholder="Nhập classroom id" />
+            <button className="ghost" disabled={!classroomId} onClick={() => setShowExportModal(true)}>Xuất đề thi Word</button>
+          </div>
+        </div>
+      </div>
+      <div className="card">
         <div className="card-title" style={{ marginBottom: 16 }}>⚙️ Cấu hình đề thi</div>
         <div className="grid-2" style={{ gap: 14 }}>
           <div className="form-group">
@@ -649,6 +672,12 @@ function TabExamGen({ setAlert }) {
           )}
         </div>
       </div>
+      <ExamExportModal
+        open={showExportModal}
+        classroomId={classroomId ? Number(classroomId) : null}
+        onClose={() => setShowExportModal(false)}
+        onAlert={setAlert}
+      />
     </div>
   );
 }
