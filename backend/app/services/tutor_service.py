@@ -41,6 +41,37 @@ TUTOR_REFUSAL_TEMPLATE = (
     "Câu hỏi này nằm ngoài phạm vi tôi có thể giải đáp. Bạn có muốn hỏi về [{scope}] không?"
 )
 
+SYSTEM_PROMPT = """
+Bạn là gia sư AI thông minh, nhiệt tình và chuyên nghiệp.
+
+NHIỆM VỤ: Chỉ trả lời câu hỏi liên quan đến các chủ đề sau:
+{allowed_topics_list}
+
+QUY TẮC:
+1. Nếu câu hỏi KHÔNG liên quan đến các chủ đề trên → từ chối lịch sự bằng cách:
+   - Thông báo bạn chỉ có thể hỗ trợ về các chủ đề trong khóa học
+   - Gợi ý 2-3 câu hỏi liên quan đến bài học hiện tại
+   KHÔNG trả lời câu hỏi đó dù bất kỳ lý do gì.
+
+2. Nếu câu hỏi hợp lệ:
+   - Giải thích rõ ràng, có ví dụ minh họa
+   - Dùng tiếng Việt, có dấu đầy đủ
+   - Nếu là bài tập: KHÔNG cho đáp án thẳng, gợi ý hướng giải quyết
+   - Độ dài tối đa: 300 từ
+
+3. Xưng hô: "thầy/cô" với học sinh.
+
+CONTEXT: Học sinh đang học chủ đề: {current_topic}
+
+BỔ SUNG BẮT BUỘC:
+- Chỉ dùng thông tin dựa trên tài liệu học đã được truy xuất bên dưới.
+- Không nhắc các thuật ngữ nội bộ hệ thống.
+- Nếu thiếu dữ liệu để trả lời chắc chắn: yêu cầu học sinh nêu rõ bài/chương hoặc dán đoạn trích liên quan.
+
+CONTEXT (Tài liệu học):
+{rag_context}
+"""
+
 TUTOR_SYSTEM_PROMPT = """Bạn là “AI Tutor” cho học sinh. Bạn CHỈ được trả lời dựa trên tài liệu giáo viên đã upload.
 
 INPUT bạn nhận có thể gồm:
@@ -158,6 +189,59 @@ _LOCAL_SESSION_STORE: Dict[str, Dict[str, Any]] = {}
 _TOPIC_GATE_CACHE: Dict[str, Dict[str, Any]] = {}
 _OFFTOPIC_GATE_CACHE: Dict[str, Dict[str, Any]] = {}
 _OFFTOPIC_GATE_CACHE_TTL_SEC = 30 * 60
+
+
+def _topic_references_for_guardrail(
+    db: Session,
+    *,
+    topic: Optional[str],
+    allowed_topics: Optional[List[str]],
+    document_ids: Optional[List[int]],
+    max_items: int = 12,
+) -> List[str]:
+    refs: List[str] = [str(x).strip() for x in (allowed_topics or []) if str(x).strip()]
+    if topic and topic.strip():
+        refs.insert(0, topic.strip())
+    ids = [int(x) for x in (document_ids or []) if x is not None]
+    if ids:
+        try:
+            rows = (
+                db.query(DocumentTopic.display_title, DocumentTopic.title)
+                .filter(DocumentTopic.document_id.in_(ids))
+                .order_by(DocumentTopic.extraction_confidence.desc(), DocumentTopic.id.asc())
+                .limit(30)
+                .all()
+            )
+        except Exception:
+            rows = []
+        for display_title, raw_title in rows:
+            val = str(display_title or raw_title or "").strip()
+            if val:
+                refs.append(val)
+    out: List[str] = []
+    for item in refs:
+        if item not in out:
+            out.append(item)
+    return out[: max(1, int(max_items))]
+
+
+def _keyword_set_from_topics(topics: List[str]) -> set[str]:
+    words: set[str] = set()
+    for tp in topics or []:
+        words |= _tokenize_vi(tp)
+    return words
+
+
+def _llm_yes_no_topic_gate(*, question: str, topics: List[str]) -> bool:
+    if not llm_available():
+        return True
+    topic_text = ", ".join([str(x).strip() for x in topics if str(x).strip()][:12]) or "chủ đề hiện tại"
+    prompt = f"Is this question related to: {topic_text}? Answer YES/NO only.\nQuestion: {question}"
+    try:
+        ans = (chat_text(messages=[{"role": "user", "content": prompt}], max_tokens=8, temperature=0) or "").strip().lower()
+        return ans.startswith("yes")
+    except Exception:
+        return True
 
 
 def _offtopic_gate_cache_key(question: str, topic: Optional[str], document_ids: Optional[List[int]]) -> str:
@@ -856,29 +940,65 @@ def tutor_chat(
     if not q:
         raise HTTPException(status_code=422, detail="Missing question")
 
-    if allowed_topics:
-        allowed = [str(t).strip() for t in allowed_topics if str(t).strip()]
-        ql = q.lower()
-        lexical_hit = any(t.lower() in ql for t in allowed)
-        if not lexical_hit and len(allowed) > 0 and not llm_available():
-            scope = ", ".join(allowed[:4])
-            refusal = (
-                "Câu hỏi này có vẻ không liên quan đến chủ đề khóa học hiện tại. "
-                f"Mình chỉ có thể hỗ trợ các nội dung về: {scope}. "
-                "Bạn thử hỏi lại theo các chủ đề này nhé 😊"
-            )
-            return TutorChatData(
-                answer_md=refusal,
-                was_answered=False,
-                is_off_topic=True,
-                refusal_message=refusal,
-                off_topic_reason="lexical_off_topic",
-                suggested_topics=allowed[:5],
-                follow_up_questions=_suggest_on_topic_questions(allowed[0] if allowed else topic, q),
-                quick_check_mcq=[],
-                sources=[],
-                retrieval={"guardrail": "lexical_only"},
-            ).model_dump()
+    doc_ids = list(document_ids or [])
+    if not doc_ids:
+        auto = auto_document_ids_for_query(db, topic or q, preferred_user_id=settings.DEFAULT_TEACHER_ID, max_docs=3)
+        if auto:
+            doc_ids = auto
+
+    allowed_refs = _topic_references_for_guardrail(
+        db,
+        topic=topic,
+        allowed_topics=allowed_topics,
+        document_ids=doc_ids,
+        max_items=12,
+    )
+    keyword_set = _keyword_set_from_topics(allowed_refs)
+    layer1_hit = bool(_tokenize_vi(q) & keyword_set) if keyword_set else True
+    if not layer1_hit:
+        suggestions = _suggest_on_topic_questions((topic or (allowed_refs[0] if allowed_refs else None)), q)[:3]
+        scope = ", ".join(allowed_refs[:4]) if allowed_refs else _topic_scope(topic)
+        refusal = (
+            "Xin lỗi, thầy/cô chỉ có thể hỗ trợ các chủ đề trong khóa học hiện tại. "
+            f"Bạn vui lòng hỏi trong phạm vi: {scope}."
+        )
+        return TutorChatData(
+            answer_md=refusal,
+            was_answered=False,
+            is_off_topic=True,
+            refusal_message=refusal,
+            off_topic_reason="layer1_keyword_reject",
+            suggested_topics=allowed_refs[:5],
+            follow_up_questions=suggestions,
+            suggested_questions=suggestions,
+            quick_check_mcq=[],
+            sources=[],
+            sources_used=[],
+            retrieval={"offtopic_layer": 1, "guardrail": "keyword_set"},
+        ).model_dump()
+
+    layer2_relevant = _llm_yes_no_topic_gate(question=q, topics=allowed_refs)
+    if not layer2_relevant:
+        suggestions = _suggest_on_topic_questions((topic or (allowed_refs[0] if allowed_refs else None)), q)[:3]
+        scope = ", ".join(allowed_refs[:4]) if allowed_refs else _topic_scope(topic)
+        refusal = (
+            "Xin lỗi, thầy/cô chỉ có thể hỗ trợ các chủ đề trong khóa học hiện tại. "
+            f"Bạn thử hỏi lại về: {scope}."
+        )
+        return TutorChatData(
+            answer_md=refusal,
+            was_answered=False,
+            is_off_topic=True,
+            refusal_message=refusal,
+            off_topic_reason="layer2_llm_reject",
+            suggested_topics=allowed_refs[:5],
+            follow_up_questions=suggestions,
+            suggested_questions=suggestions,
+            quick_check_mcq=[],
+            sources=[],
+            sources_used=[],
+            retrieval={"offtopic_layer": 2, "guardrail": "llm_yes_no"},
+        ).model_dump()
 
     active_exam = bool(exam_mode)
     if attempt_id is not None:
@@ -913,52 +1033,9 @@ def tutor_chat(
     db.add(UserSession(user_id=int(user_id), type="tutor_chat"))
     db.commit()
 
-    if allowed_topics and llm_available():
-        topic_list = [str(t).strip() for t in allowed_topics if str(t).strip()][:10]
-        if topic_list:
-            topic_list_str = "\n".join(f"- {t}" for t in topic_list)
-            classification_prompt = (
-                f"Danh sách chủ đề học tập được phép:\n{topic_list_str}\n\n"
-                f"Câu hỏi của học sinh: \"{q}\"\n\n"
-                "Hãy trả lời CHỈ bằng JSON: {\"relevant\": true/false, \"matched_topic\": \"tên topic nếu có hoặc null\", \"reason\": \"lý do ngắn\"}\n"
-                "Câu hỏi được coi là relevant nếu nó liên quan đến BẤT KỲ topic nào trong danh sách trên, "
-                "hoặc là câu hỏi chung về cách học, phương pháp, hoặc xin giải thích khái niệm trong sách."
-            )
-            try:
-                check_result = chat_json(
-                    messages=[{"role": "user", "content": classification_prompt}],
-                    temperature=0.0,
-                    max_tokens=150,
-                )
-                is_relevant = bool((check_result or {}).get("relevant", True))
-                if not is_relevant:
-                    top = [str(t) for t in topic_list]
-                    return {
-                        "answer": (
-                            "Xin lỗi bạn! Câu hỏi này có vẻ nằm ngoài phạm vi các chủ đề đang học. "
-                            f"Hiện tại chúng ta đang tập trung vào: {', '.join(top[:3])}{'...' if len(top) > 3 else ''}. "
-                            "Bạn có muốn hỏi điều gì về các chủ đề đó không? 😊"
-                        ),
-                        "off_topic": True,
-                        "allowed_topics": top,
-                        "sources": [],
-                        "follow_up_questions": [
-                            f"Bạn có thể giải thích về {top[0]}?",
-                            f"Cho tôi ví dụ về {top[0]}?",
-                        ] if top else [],
-                    }
-            except Exception:
-                pass
-
     session = _load_tutor_session(int(user_id))
     recent_questions = [str(x).strip() for x in (session.get("recent_questions") or []) if str(x).strip()]
     explained_topics = [str(x).strip() for x in (session.get("explained_topics") or []) if str(x).strip()]
-
-    doc_ids = list(document_ids or [])
-    if not doc_ids:
-        auto = auto_document_ids_for_query(db, topic or q, preferred_user_id=settings.DEFAULT_TEACHER_ID, max_docs=3)
-        if auto:
-            doc_ids = auto
 
     suggested_topics = _suggest_topics(db, document_ids=doc_ids, top_k=6)
     intent_suggestions = _intent_aware_topic_suggestions(db, question=q, topic=topic, document_ids=doc_ids, top_k=3)
@@ -1185,7 +1262,7 @@ def tutor_chat(
     if llm_available():
         packed = pack_chunks(chunks, max_chunks=min(4, len(chunks)), max_chars_per_chunk=750, max_total_chars=2800)
         rag_context = "\n\n".join([f"[chunk_id:{c.get('chunk_id')}] {str(c.get('text') or '')}" for c in packed])
-        sys = TUTOR_SYSTEM_PROMPT.format(topic_scope=scope, rag_context=rag_context, user_question_summary=(q[:90] + "…") if len(q) > 90 else q)
+        sys = SYSTEM_PROMPT.format(allowed_topics_list="\n".join([f"- {x}" for x in (allowed_refs or [scope])]), current_topic=topic or scope, rag_context=rag_context)
         user = {
             "question": q,
             "topic": (topic or "").strip() or None,
