@@ -182,14 +182,12 @@ def _ocr_pdf(file_bytes: bytes, *, language: str = "vie+eng") -> str:
         return ""
 
     pages_text: List[str] = []
+    config = "--oem 3 --psm 6 -l vie+eng"
     for i, img in enumerate(images):
         gray = img.convert("L")
         bw = gray.point(lambda px: 255 if px > 180 else 0)
-        text = pytesseract.image_to_string(
-            bw,
-            lang=language,
-            config="--oem 3 --psm 6",
-        )
+        text = pytesseract.image_to_string(bw, config=config, lang="vie+eng")
+        text = unicodedata.normalize("NFC", str(text or ""))
         if text.strip():
             pages_text.append(f"--- Trang {i + 1} ---\n{text}")
 
@@ -542,7 +540,10 @@ def _extract_text_pdf_pymupdf(data: bytes) -> Tuple[str, List[Dict[str, Any]]]:
 
     for idx in range(len(doc)):
         page = doc.load_page(idx)
-        raw_text = page.get_text("text") or ""
+        raw_text = page.get_text("text", flags=fitz.TEXT_PRESERVE_LIGATURES) or ""
+        raw_text = raw_text.encode("utf-8", errors="replace").decode("utf-8")
+        raw_text = raw_text.lstrip("\ufeff")
+        raw_text = unicodedata.normalize("NFC", raw_text)
         page_text = _clean_pdf_page_text(raw_text)
         if not page_text:
             continue
