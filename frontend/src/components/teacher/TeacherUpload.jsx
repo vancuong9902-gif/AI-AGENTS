@@ -243,49 +243,68 @@ export default function TeacherUpload({ setAlert, workflow, setWorkflow, onConti
           </div>
         ) : (
           <div className="stack gap-sm">
-            {workflow.topicsDraft.map((topic) => (
-              <div key={topic.id} className={`topic-accordion ${expandedTopicIds.includes(topic.id) ? 'expanded' : ''}`}>
-                <button className="topic-accordion-trigger" onClick={() => toggleTopicExpand(topic.id)}>
-                  <span className={`topic-chevron ${expandedTopicIds.includes(topic.id) ? 'expanded' : ''}`}>▸</span>
-                  <span className="topic-accordion-title">{topic.title || `Topic ${topic.id}`}</span>
-                </button>
-                <button className="ghost sm" onClick={() => removeTopic(topic.id)}>Xóa</button>
+            {workflow.topicsDraft.map((topic) => {
+              const isExpanded = expandedTopicIds.includes(topic.id);
+              return (
+                <div key={topic.id} className={`topic-accordion ${isExpanded ? 'expanded' : ''}`}>
+                  <button
+                    type="button"
+                    className="topic-accordion-trigger"
+                    onClick={() => toggleTopicExpand(topic.id)}
+                    aria-expanded={isExpanded}
+                    aria-controls={`topic-panel-${topic.id}`}
+                  >
+                    <span className={`topic-chevron ${isExpanded ? 'expanded' : ''}`}>▸</span>
+                    <span className="topic-accordion-title">{topic.title || `Topic ${topic.id}`}</span>
+                  </button>
+                  <button type="button" className="ghost sm" onClick={() => removeTopic(topic.id)}>Xóa</button>
 
-                <div className="topic-accordion-panel">
-                  <div className="topic-details stack gap-sm">
-                    <label>
-                      Tiêu đề topic
-                      <input value={topic.title || ''} onChange={(e) => updateTopicTitle(topic.id, e.target.value)} />
-                    </label>
-                    <label>
-                      Mô tả / tóm tắt
-                      <textarea rows={3} value={topic.summary || ''} onChange={(e) => updateTopicSummary(topic.id, e.target.value)} />
-                    </label>
-                    <div>
-                      <strong>Subtopics / Key points</strong>
-                      {topic.subtopics?.length ? (
-                        <ul>
-                          {topic.subtopics.map((subtopic, index) => <li key={`${topic.id}-sub-${index}`}>{subtopic}</li>)}
-                        </ul>
-                      ) : (
-                        <p className="card-sub">Chưa có subtopics từ API.</p>
-                      )}
-                    </div>
-                    <div>
-                      <strong>Câu hỏi / Mục tiêu học tập</strong>
-                      {(topic.questions?.length || topic.learningObjectives?.length) ? (
-                        <ul>
-                          {(topic.questions || []).map((question, index) => <li key={`${topic.id}-q-${index}`}>{question}</li>)}
-                          {(topic.learningObjectives || []).map((objective, index) => <li key={`${topic.id}-o-${index}`}>{objective}</li>)}
-                        </ul>
-                      ) : (
-                        <p className="card-sub">Chưa có dữ liệu câu hỏi hoặc mục tiêu học tập.</p>
-                      )}
+                  <div id={`topic-panel-${topic.id}`} className="topic-accordion-panel">
+                    <div className="topic-details stack gap-sm">
+                      <label>
+                        Tiêu đề topic
+                        <input value={topic.title || ''} onChange={(e) => updateTopicTitle(topic.id, e.target.value)} />
+                      </label>
+                      <label>
+                        Mô tả / tóm tắt
+                        <textarea rows={3} value={topic.summary || ''} onChange={(e) => updateTopicSummary(topic.id, e.target.value)} />
+                      </label>
+                      <div>
+                        <strong>Subtopics / Key points</strong>
+                        {topic.subtopics?.length ? (
+                          <ul>
+                            {topic.subtopics.map((subtopic, index) => <li key={`${topic.id}-sub-${index}`}>{subtopic}</li>)}
+                          </ul>
+                        ) : (
+                          <p className="card-sub">Chưa có subtopics từ API.</p>
+                        )}
+                      </div>
+                      <div>
+                        <strong>Bài tập gợi ý</strong>
+                        {topic.exercises?.length ? (
+                          <ul>
+                            {topic.exercises.map((exercise, index) => <li key={`${topic.id}-exercise-${index}`}>{exercise}</li>)}
+                          </ul>
+                        ) : (
+                          <p className="card-sub">Chưa có bài tập gợi ý.</p>
+                        )}
+                      </div>
+                      <div>
+                        <strong>Câu hỏi / Mục tiêu học tập</strong>
+                        {(topic.questions?.length || topic.learningObjectives?.length) ? (
+                          <ul>
+                            {(topic.questions || []).map((question, index) => <li key={`${topic.id}-q-${index}`}>{question}</li>)}
+                            {(topic.learningObjectives || []).map((objective, index) => <li key={`${topic.id}-o-${index}`}>{objective}</li>)}
+                          </ul>
+                        ) : (
+                          <p className="card-sub">Chưa có dữ liệu câu hỏi hoặc mục tiêu học tập.</p>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 

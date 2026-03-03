@@ -709,11 +709,11 @@ ul.task-list li.done { opacity: 0.6; text-decoration: line-through; }
   max-height: 0;
   overflow: hidden;
   opacity: 0;
-  transition: max-height 0.3s ease, opacity 0.2s ease;
+  transition: max-height 0.35s ease, opacity 0.25s ease;
 }
 
 .topic-accordion.expanded .topic-accordion-panel {
-  max-height: 520px;
+  max-height: 920px;
   opacity: 1;
 }
 
@@ -733,6 +733,11 @@ ul.task-list li.done { opacity: 0.6; text-decoration: line-through; }
 .topic-details ul {
   margin: 6px 0 0;
   padding-left: 18px;
+}
+
+.topic-details li {
+  color: var(--gray-700);
+  margin-top: 4px;
 }
 
 .document-manager {
