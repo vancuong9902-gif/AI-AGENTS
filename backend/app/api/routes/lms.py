@@ -14,9 +14,13 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
-from importlib.util import find_spec
+try:
+    import jinja2 as _jinja2_check
+    _jinja2_available = True
+except ImportError:
+    _jinja2_available = False
 
-if find_spec("jinja2") is not None:
+if _jinja2_available:
     from jinja2 import Environment, FileSystemLoader, select_autoescape
 else:
     Environment = lambda *args, **kwargs: None
