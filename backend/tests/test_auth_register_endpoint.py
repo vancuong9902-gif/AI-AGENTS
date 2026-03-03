@@ -35,9 +35,34 @@ def test_register_success_and_duplicate_conflict(db_session):
         assert first_body['data']['token']['access_token']
 
         second = client.post('/api/auth/register', json=_register_payload('duplicate@test.local'))
-        assert second.status_code in {400, 409}
+        assert second.status_code == 409
         second_body = second.json()
         assert second_body['detail']['code'] == 'EMAIL_EXISTS'
+
+    app.dependency_overrides.clear()
+
+
+def test_register_duplicate_is_case_insensitive(db_session):
+    app = create_app(auth_enabled=True)
+
+    def _override_get_db():
+        try:
+            yield db_session
+        finally:
+            pass
+
+    from app.api.deps import get_db
+
+    app.dependency_overrides[get_db] = _override_get_db
+
+    with TestClient(app) as client:
+        first = client.post('/api/auth/register', json=_register_payload('Case@Test.Local'))
+        assert first.status_code == 201
+
+        second = client.post('/api/auth/register', json=_register_payload('case@test.local'))
+        assert second.status_code == 409
+        body = second.json()
+        assert body['detail']['code'] == 'EMAIL_EXISTS'
 
     app.dependency_overrides.clear()
 

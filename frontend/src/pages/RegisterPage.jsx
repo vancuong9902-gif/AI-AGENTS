@@ -14,6 +14,7 @@ export default function RegisterPage({ navigate }) {
 
   const onSubmit = async (e) => {
     e.preventDefault();
+    if (loading) return;
 
     const payload = {
       name: form.name.trim(),
@@ -100,7 +101,7 @@ export default function RegisterPage({ navigate }) {
                 <div
                   key={r.value}
                   className={`role-option ${form.role === r.value ? 'selected' : ''}`}
-                  onClick={() => update('role', r.value)}
+                  onClick={() => { if (!loading) update('role', r.value); }}
                 >
                   <div className="role-icon">{r.icon}</div>
                   <div className="role-label">{r.label}</div>
