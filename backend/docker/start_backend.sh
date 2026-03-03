@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
+export PYTHONPATH=${PYTHONPATH:-/app}
+
 # -----------------------------
 # Wait for Postgres (DNS + TCP)
 # -----------------------------
