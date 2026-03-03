@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
+cd /app
+
 # -----------------------------
 # Wait for Postgres (DNS + TCP)
 # -----------------------------
@@ -28,7 +30,7 @@ done
 alembic upgrade heads
 
 echo "[start] Seeding demo accounts..."
-python scripts/seed_demo_accounts.py
+PYTHONPATH=/app python /app/scripts/seed_demo_accounts.py
 
 mkdir -p static/fonts
 if [ ! -f static/fonts/NotoSans-Regular.ttf ]; then

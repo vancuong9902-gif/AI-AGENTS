@@ -104,6 +104,12 @@ export const mvpApi = {
     responseType: 'blob',
   }),
 
+
+  getExamTopics: (classroomId) => api.get(`/teacher/classrooms/${classroomId}/exam-topics`),
+  exportExamWord: (classroomId, payload) => api.post(`/teacher/classrooms/${classroomId}/export-exam`, payload, {
+    responseType: 'blob',
+  }),
+
   exportTeacherReport: (classroomId, format = 'pdf') => api.get('/teacher/reports/export', {
     params: { classroom_id: classroomId, format },
     responseType: 'blob',
@@ -130,12 +136,23 @@ export const mvpApi = {
     params: { user_id: userId, document_id: documentId, window_days: 30 },
   }),
   getAnalyticsHistory: (userId) => api.get('/analytics/history', { params: { user_id: userId } }),
+  getTeacherClassroomAnalytics: (classroomId) => api.get(`/teacher/classrooms/${classroomId}/analytics`),
+  getStudentAnalytics: () => api.get('/student/analytics'),
 
   // Student – Course selection
   getAvailableCourses: () => api.get('/mvp/student/courses'),
-  getMyClasses: () => api.get('/classrooms'),
-  joinClassroom: (code) => api.post('/classrooms/join', { code }),
+  getMyClasses: (page = 1, pageSize = 20) => api.get('/student/classrooms', { params: { page, page_size: pageSize } }),
+  joinClassroom: (inviteCode) => api.post('/student/classrooms/join', { invite_code: inviteCode }),
 
+
+  // Classroom full flow
+  listTeacherClassrooms: (page = 1, pageSize = 20) => api.get('/teacher/classrooms', { params: { page, page_size: pageSize } }),
+  getTeacherClassroomDetail: (id) => api.get(`/teacher/classrooms/${id}`),
+  deleteTeacherClassroom: (id) => api.delete(`/teacher/classrooms/${id}`),
+  getTeacherClassroomStudents: (id, page = 1, pageSize = 20) => api.get(`/teacher/classrooms/${id}/students`, { params: { page, page_size: pageSize } }),
+  removeTeacherClassroomStudent: (id, studentId) => api.delete(`/teacher/classrooms/${id}/students/${studentId}`),
+  createTeacherClassroom: (payload) => api.post('/teacher/classrooms', payload),
+  getStudentClassroomSubjects: (id) => api.get(`/student/classrooms/${id}/subjects`),
   // Student – Learning plan
   getLearningPlan: (userId, classroomId) => api.get(`/learning-plans/${userId}/current`, {
     params: classroomId ? { classroom_id: classroomId } : {},

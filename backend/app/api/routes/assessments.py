@@ -315,7 +315,18 @@ def _notify_teacher_when_all_final_submitted(db: Session, *, assessment_id: int)
     if str(getattr(quiz_set, "kind", "") or "") not in {"diagnostic_post", "final_exam"}:
         return
 
-    members = [int(uid) for uid, in db.query(ClassroomMember.user_id).filter(ClassroomMember.classroom_id == int(classroom_assessment.classroom_id), ClassroomMember.user_id != int(classroom.teacher_id)).all()]
+    _member_user_col = getattr(ClassroomMember, "user_id", None)
+    if not hasattr(_member_user_col, "in_"):
+        _member_user_col = ClassroomMember.student_id
+    members = [
+        int(uid)
+        for uid, in db.query(_member_user_col)
+        .filter(
+            ClassroomMember.classroom_id == int(classroom_assessment.classroom_id),
+            _member_user_col != int(classroom.teacher_id),
+        )
+        .all()
+    ]
     if not members:
         return
     submitted = {int(uid) for uid, in db.query(Attempt.user_id).filter(Attempt.quiz_set_id == int(assessment_id), Attempt.user_id.in_(members)).distinct().all()}

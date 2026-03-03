@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from io import BytesIO
 import string
 from typing import Dict, List, Optional, Tuple
 
@@ -13,6 +14,8 @@ from pydantic import BaseModel, Field
 from app.api.deps import get_db, require_teacher, require_user
 from app.models.attempt import Attempt
 from app.models.classroom import Classroom, ClassroomMember
+from app.models.mvp import Course, Topic
+from app.models.classroom import Classroom, ClassroomStudent
 from app.models.class_report import ClassReport
 from app.models.classroom_assessment import ClassroomAssessment
 from app.models.document_topic import DocumentTopic
@@ -30,9 +33,11 @@ from app.schemas.classrooms import (
     StudentProgressRow,
 )
 from app.services.assessment_service import generate_assessment
+from app.services.excel_report_service import generate_class_report_excel
 from app.services.learning_plan_service import build_teacher_learning_plan
 from app.services.learning_plan_storage_service import save_teacher_plan
 from app.services.lms_service import analyze_topic_weak_points, classify_student_level, generate_class_narrative, resolve_student_name, score_breakdown
+from app.services.pdf_report_service import generate_class_report_pdf
 from app.services.report_exporter import export_class_report_docx, export_class_report_pdf, make_export_path
 from app.services.user_service import ensure_user_exists
 
@@ -40,23 +45,25 @@ from app.services.user_service import ensure_user_exists
 router = APIRouter(tags=["classrooms"])
 
 
-def _mk_join_code(length: int = 6) -> str:
+def _mk_join_code(length: int = 8) -> str:
     alphabet = string.ascii_uppercase + string.digits
     return "".join(random.choice(alphabet) for _ in range(int(length)))
 
 
-def _classroom_out(db: Session, c: Classroom) -> ClassroomOut:
+def _classroom_out(db: Session, c: Classroom, has_content: bool = False) -> ClassroomOut:
     cnt = (
-        db.query(func.count(ClassroomMember.id))
-        .filter(ClassroomMember.classroom_id == int(c.id))
+        db.query(func.count(ClassroomStudent.id))
+        .filter(ClassroomStudent.classroom_id == int(c.id))
         .scalar()
     )
     return ClassroomOut(
         id=int(c.id),
         name=str(c.name),
-        join_code=str(c.join_code),
+        invite_code=str(c.invite_code),
+        join_code=str(c.invite_code),
         teacher_id=int(c.teacher_id),
         student_count=int(cnt or 0),
+        has_content=bool(has_content),
     )
 
 
@@ -69,30 +76,34 @@ def create_classroom(
 ):
     # Generate unique join code
     for _ in range(12):
-        code = _mk_join_code(6)
-        if not db.query(Classroom).filter(Classroom.join_code == code).first():
+        code = _mk_join_code(8)
+        if not db.query(Classroom).filter(Classroom.invite_code == code).first():
             break
     else:
         raise HTTPException(status_code=500, detail="Failed to generate join code")
 
-    row = Classroom(teacher_id=int(teacher.id), name=payload.name.strip(), join_code=code)
+    row = Classroom(teacher_id=int(teacher.id), name=payload.name.strip(), description=(payload.description or "").strip() or None, course_id=payload.course_id, invite_code=code)
     db.add(row)
     db.commit()
     db.refresh(row)
 
     out = _classroom_out(db, row).model_dump()
-    return {"request_id": request.state.request_id, "data": out, "error": None}
+    return {"request_id": getattr(request.state, "request_id", "n/a"), "data": out, "error": None}
 
 
 @router.get("/teacher/classrooms")
 def list_teacher_classrooms(
     request: Request,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
     teacher: User = Depends(require_teacher),
 ):
-    rows = db.query(Classroom).filter(Classroom.teacher_id == int(teacher.id)).order_by(Classroom.created_at.desc()).all()
+    q = db.query(Classroom).filter(Classroom.teacher_id == int(teacher.id))
+    total = q.count()
+    rows = q.order_by(Classroom.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
     out = [_classroom_out(db, c).model_dump() for c in rows]
-    return {"request_id": request.state.request_id, "data": out, "error": None}
+    return {"request_id": getattr(request.state, "request_id", "n/a"), "data": {"items": out, "pagination": {"page": page, "page_size": page_size, "total": total}}, "error": None}
 
 
 @router.get("/teacher/classrooms/{classroom_id}")
@@ -106,18 +117,33 @@ def get_teacher_classroom(
     if not c or int(c.teacher_id) != int(teacher.id):
         raise HTTPException(status_code=404, detail="Classroom not found")
     out = _classroom_out(db, c).model_dump()
-    return {"request_id": request.state.request_id, "data": out, "error": None}
+    student_rows = (
+        db.query(ClassroomStudent, User)
+        .join(User, User.id == ClassroomStudent.student_id)
+        .filter(ClassroomStudent.classroom_id == int(c.id))
+        .order_by(User.full_name.asc(), User.id.asc())
+        .all()
+    )
+    students = [{
+        "id": int(u.id),
+        "full_name": str(u.full_name or ''),
+        "email": str(u.email or ''),
+        "placement_score": cs.placement_score,
+        "final_score": cs.final_score,
+        "level": cs.level,
+    } for cs, u in student_rows]
+    return {"request_id": getattr(request.state, "request_id", "n/a"), "data": {**out, "students": students}, "error": None}
 
 
-@router.post("/classrooms/join")
+@router.post("/student/classrooms/join")
 def join_classroom(
     request: Request,
     payload: ClassroomJoinRequest,
     db: Session = Depends(get_db),
     user: User = Depends(require_user),
 ):
-    code = payload.join_code.strip().upper()
-    c = db.query(Classroom).filter(Classroom.join_code == code).first()
+    code = payload.invite_code.strip().upper()
+    c = db.query(Classroom).filter(Classroom.invite_code == code).first()
     if not c:
         raise HTTPException(status_code=404, detail="Invalid join code")
 
@@ -125,37 +151,62 @@ def join_classroom(
     ensure_user_exists(db, int(user.id), role=getattr(user, "role", "student") or "student")
 
     existing = (
-        db.query(ClassroomMember)
-        .filter(ClassroomMember.classroom_id == int(c.id), ClassroomMember.user_id == int(user.id))
+        db.query(ClassroomStudent)
+        .filter(ClassroomStudent.classroom_id == int(c.id), ClassroomStudent.student_id == int(user.id))
         .first()
     )
     if not existing:
-        db.add(ClassroomMember(classroom_id=int(c.id), user_id=int(user.id)))
+        db.add(ClassroomStudent(classroom_id=int(c.id), user_id=int(user.id)))
         db.commit()
 
     out = _classroom_out(db, c).model_dump()
-    return {"request_id": request.state.request_id, "data": out, "error": None}
+    return {"request_id": getattr(request.state, "request_id", "n/a"), "data": out, "error": None}
 
 
-@router.get("/classrooms")
+@router.get("/student/classrooms")
 def list_my_classrooms(
     request: Request,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
     user: User = Depends(require_user),
 ):
     role = str(getattr(user, "role", "") or "").lower()
     if role == "teacher":
-        rows = db.query(Classroom).filter(Classroom.teacher_id == int(user.id)).order_by(Classroom.created_at.desc()).all()
+        q = db.query(Classroom).filter(Classroom.teacher_id == int(user.id))
+        total = q.count()
+        rows = q.order_by(Classroom.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
         out = [_classroom_out(db, c).model_dump() for c in rows]
-        return {"request_id": request.state.request_id, "data": out, "error": None}
+        return {"request_id": getattr(request.state, "request_id", "n/a"), "data": {"items": out, "pagination": {"page": page, "page_size": page_size, "total": total}}, "error": None}
 
-    ids = db.query(ClassroomMember.classroom_id).filter(ClassroomMember.user_id == int(user.id)).all()
+    ids = db.query(ClassroomStudent.classroom_id).filter(ClassroomStudent.student_id == int(user.id)).all()
     cids = [int(x[0]) for x in ids if x and x[0] is not None]
     if not cids:
-        return {"request_id": request.state.request_id, "data": [], "error": None}
-    rows = db.query(Classroom).filter(Classroom.id.in_(cids)).order_by(Classroom.created_at.desc()).all()
-    out = [_classroom_out(db, c).model_dump() for c in rows]
-    return {"request_id": request.state.request_id, "data": out, "error": None}
+        return {"request_id": getattr(request.state, "request_id", "n/a"), "data": {"items": [], "pagination": {"page": page, "page_size": page_size, "total": 0}}, "error": None}
+
+    q = db.query(Classroom).filter(Classroom.id.in_(cids))
+    total = q.count()
+    rows = q.order_by(Classroom.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+
+    has_course_attr = hasattr(Classroom, "course_id")
+    fallback_course = db.query(Course).order_by(Course.id.desc()).first()
+    fallback_has_content = bool(
+        fallback_course
+        and db.query(Topic).filter(Topic.course_id == int(fallback_course.id)).count() > 0
+    )
+
+    out = []
+    for c in rows:
+        class_has_content = False
+        if has_course_attr:
+            class_course_id = getattr(c, "course_id", None)
+            if class_course_id is not None:
+                class_has_content = db.query(Topic).filter(Topic.course_id == int(class_course_id)).count() > 0
+        else:
+            class_has_content = fallback_has_content
+        out.append(_classroom_out(db, c, has_content=class_has_content).model_dump())
+
+    return {"request_id": getattr(request.state, "request_id", "n/a"), "data": {"items": out, "pagination": {"page": page, "page_size": page_size, "total": total}}, "error": None}
 
 
 def _compute_tasks_total(plan_json: Dict) -> int:
@@ -214,7 +265,7 @@ def _build_latest_report_data(db: Session, classroom_id: int) -> dict:
         for qid, kind in db.query(QuizSet.id, QuizSet.kind).filter(QuizSet.id.in_(assessment_ids)).all()
     } if assessment_ids else {}
 
-    members = db.query(ClassroomMember).filter(ClassroomMember.classroom_id == int(classroom_id)).all()
+    members = db.query(ClassroomStudent).filter(ClassroomStudent.classroom_id == int(classroom_id)).all()
     student_ids = sorted({int(m.user_id) for m in members})
     pre_scores: dict[int, float] = {}
     post_scores: dict[int, float] = {}
@@ -248,6 +299,7 @@ def _build_latest_report_data(db: Session, classroom_id: int) -> dict:
             improved_count += 1
         students.append(
             {
+                "student_id": int(uid),
                 "name": resolve_student_name(uid, db),
                 "entry_score": entry,
                 "final_score": final,
@@ -283,6 +335,78 @@ def _build_latest_report_data(db: Session, classroom_id: int) -> dict:
     }
 
 
+def _build_export_students(db: Session, classroom_id: int) -> list[dict]:
+    report_data = _build_latest_report_data(db=db, classroom_id=int(classroom_id))
+    member_ids = [
+        int(row[0])
+        for row in db.query(ClassroomMember.user_id)
+        .filter(ClassroomMember.classroom_id == int(classroom_id))
+        .all()
+    ]
+    users = db.query(User).filter(User.id.in_(member_ids)).all() if member_ids else []
+    email_by_id = {int(u.id): str(u.email or "") for u in users}
+
+    students: list[dict] = []
+    for item in report_data.get("students") or []:
+        student_id = int(item.get("student_id") or 0)
+        students.append(
+            {
+                "name": str(item.get("name") or ""),
+                "email": email_by_id.get(student_id, ""),
+                "placement_score": float(item.get("entry_score") or 0.0),
+                "final_score": float(item.get("final_score") or 0.0),
+                "level": str(item.get("level") or "N/A"),
+                "study_hours": 0.0,
+                "ai_comment": "",
+            }
+        )
+    return students
+
+
+@router.get("/teacher/classrooms/{classroom_id}/report/pdf")
+def export_teacher_classroom_pdf(
+    classroom_id: int,
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    classroom = db.query(Classroom).filter(Classroom.id == int(classroom_id)).first()
+    if not classroom or int(classroom.teacher_id) != int(teacher.id):
+        raise HTTPException(status_code=404, detail="Classroom not found")
+
+    students_data = _build_export_students(db=db, classroom_id=int(classroom_id))
+    content = generate_class_report_pdf(
+        classroom_data={"id": int(classroom.id), "name": str(classroom.name or f"#{classroom_id}")},
+        students_data=students_data,
+    )
+    headers = {"Content-Disposition": f'attachment; filename="classroom_{classroom_id}_report.pdf"'}
+    return StreamingResponse(BytesIO(content), media_type="application/pdf", headers=headers)
+
+
+@router.get("/teacher/classrooms/{classroom_id}/report/excel")
+def export_teacher_classroom_excel(
+    classroom_id: int,
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    classroom = db.query(Classroom).filter(Classroom.id == int(classroom_id)).first()
+    if not classroom or int(classroom.teacher_id) != int(teacher.id):
+        raise HTTPException(status_code=404, detail="Classroom not found")
+
+    students_data = _build_export_students(db=db, classroom_id=int(classroom_id))
+    content = generate_class_report_excel(
+        classroom_data={"id": int(classroom.id), "name": str(classroom.name or f"#{classroom_id}")},
+        students_data=students_data,
+    )
+    headers = {
+        "Content-Disposition": f'attachment; filename="classroom_{classroom_id}_report.xlsx"',
+    }
+    return StreamingResponse(
+        BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
+
+
 
 
 @router.get("/teacher/classroom/{classroom_id}/student-reports")
@@ -298,12 +422,12 @@ def teacher_classroom_student_reports(
 
     member_ids = [
         int(row[0])
-        for row in db.query(ClassroomMember.user_id)
-        .filter(ClassroomMember.classroom_id == int(classroom_id))
+        for row in db.query(ClassroomStudent.student_id)
+        .filter(ClassroomStudent.classroom_id == int(classroom_id))
         .all()
     ]
     if not member_ids:
-        return {"request_id": request.state.request_id, "data": {"classroom_id": int(classroom_id), "reports": []}, "error": None}
+        return {"request_id": getattr(request.state, "request_id", "n/a"), "data": {"classroom_id": int(classroom_id), "reports": []}, "error": None}
 
     rows = (
         db.query(Notification)
@@ -331,7 +455,7 @@ def teacher_classroom_student_reports(
         )
 
     return {
-        "request_id": request.state.request_id,
+        "request_id": getattr(request.state, "request_id", "n/a"),
         "data": {"classroom_id": int(classroom_id), "reports": reports},
         "error": None,
     }
@@ -347,7 +471,7 @@ def classroom_dashboard(
     if not c or int(c.teacher_id) != int(teacher.id):
         raise HTTPException(status_code=404, detail="Classroom not found")
 
-    members = db.query(ClassroomMember).filter(ClassroomMember.classroom_id == int(c.id)).all()
+    members = db.query(ClassroomStudent).filter(ClassroomStudent.classroom_id == int(c.id)).all()
     student_ids = [int(m.user_id) for m in members]
 
     students: List[StudentProgressRow] = []
@@ -401,7 +525,7 @@ def classroom_dashboard(
             )
 
     payload = ClassroomDashboardOut(classroom=_classroom_out(db, c), students=students).model_dump()
-    return {"request_id": request.state.request_id, "data": payload, "error": None}
+    return {"request_id": getattr(request.state, "request_id", "n/a"), "data": payload, "error": None}
 
 
 @router.post("/teacher/classrooms/{classroom_id}/assign-learning-plan")
@@ -416,7 +540,7 @@ def assign_learning_plan_to_classroom(
     if not c or int(c.teacher_id) != int(teacher.id):
         raise HTTPException(status_code=404, detail="Classroom not found")
 
-    members = db.query(ClassroomMember).filter(ClassroomMember.classroom_id == int(c.id)).all()
+    members = db.query(ClassroomStudent).filter(ClassroomStudent.classroom_id == int(c.id)).all()
     student_ids = [int(m.user_id) for m in members]
     if not student_ids:
         raise HTTPException(status_code=400, detail="Classroom has no students")
@@ -450,7 +574,7 @@ def assign_learning_plan_to_classroom(
         )
         created.append({"user_id": int(uid), "plan_id": int(row.id)})
 
-    return {"request_id": request.state.request_id, "data": {"created": created}, "error": None}
+    return {"request_id": getattr(request.state, "request_id", "n/a"), "data": {"created": created}, "error": None}
 
 
 @router.get("/classrooms/{classroom_id}/reports/latest")
@@ -471,7 +595,7 @@ def get_latest_class_report(
         .first()
     )
     if not row:
-        return {"request_id": request.state.request_id, "data": None, "error": None}
+        return {"request_id": getattr(request.state, "request_id", "n/a"), "data": None, "error": None}
 
     payload = {
         "id": int(row.id),
@@ -482,7 +606,7 @@ def get_latest_class_report(
         "improvement": row.improvement_json or {},
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
-    return {"request_id": request.state.request_id, "data": payload, "error": None}
+    return {"request_id": getattr(request.state, "request_id", "n/a"), "data": payload, "error": None}
 
 
 @router.get("/classrooms/{classroom_id}/reports/{report_id}")
@@ -514,7 +638,7 @@ def get_class_report_detail(
         "improvement": row.improvement_json or {},
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
-    return {"request_id": request.state.request_id, "data": payload, "error": None}
+    return {"request_id": getattr(request.state, "request_id", "n/a"), "data": payload, "error": None}
 
 
 @router.get("/classrooms/{classroom_id}/reports/latest/export")
@@ -577,7 +701,7 @@ def create_classroom_entry_test(
         "improvement": row.improvement_json or {},
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
-    return {"request_id": request.state.request_id, "data": payload, "error": None}
+    return {"request_id": getattr(request.state, "request_id", "n/a"), "data": payload, "error": None}
 
 
 @router.get("/classrooms/{classroom_id}/reports/{report_id}/export/excel")
@@ -654,7 +778,7 @@ def export_class_report_excel(
 
     assessment_id = int(data.get("assessment_id") or 0)
     return {
-        "request_id": request.state.request_id,
+        "request_id": getattr(request.state, "request_id", "n/a"),
         "data": {
             "assessment_id": assessment_id,
             "preview_url": f"/assessments/{assessment_id}",
@@ -695,8 +819,8 @@ def list_classroom_students(request: Request, classroom_id: int, db: Session = D
     _ensure_teacher_classroom(db, int(classroom_id), int(teacher.id))
     rows = (
         db.query(User.id, User.email, User.full_name, User.role)
-        .join(ClassroomMember, ClassroomMember.user_id == User.id)
-        .filter(ClassroomMember.classroom_id == int(classroom_id))
+        .join(ClassroomStudent, ClassroomStudent.student_id == User.id)
+        .filter(ClassroomStudent.classroom_id == int(classroom_id))
         .order_by(User.full_name.asc(), User.id.asc())
         .all()
     )
@@ -704,7 +828,7 @@ def list_classroom_students(request: Request, classroom_id: int, db: Session = D
         {"id": int(r[0]), "email": str(r[1] or ''), "full_name": str(r[2] or ''), "role": str(r[3] or '')}
         for r in rows
     ]
-    return {"request_id": request.state.request_id, "data": data, "error": None}
+    return {"request_id": getattr(request.state, "request_id", "n/a"), "data": data, "error": None}
 
 
 @router.post('/classrooms/{classroom_id}/students')
@@ -714,22 +838,22 @@ def add_classroom_student(request: Request, classroom_id: int, payload: AddStude
     user = db.query(User).filter(User.email == str(payload.email).strip().lower(), User.role == role).first()
     if not user:
         raise HTTPException(status_code=404, detail='Student not found by email + role')
-    existing = db.query(ClassroomMember).filter(ClassroomMember.classroom_id == int(classroom_id), ClassroomMember.user_id == int(user.id)).first()
+    existing = db.query(ClassroomStudent).filter(ClassroomStudent.classroom_id == int(classroom_id), ClassroomStudent.student_id == int(user.id)).first()
     if not existing:
-        db.add(ClassroomMember(classroom_id=int(classroom_id), user_id=int(user.id)))
+        db.add(ClassroomStudent(classroom_id=int(classroom_id), user_id=int(user.id)))
         db.commit()
-    return {"request_id": request.state.request_id, "data": {"classroom_id": int(classroom_id), "student_id": int(user.id)}, "error": None}
+    return {"request_id": getattr(request.state, "request_id", "n/a"), "data": {"classroom_id": int(classroom_id), "student_id": int(user.id)}, "error": None}
 
 
 @router.delete('/classrooms/{classroom_id}/students/{student_id}')
 def remove_classroom_student(request: Request, classroom_id: int, student_id: int, db: Session = Depends(get_db), teacher: User = Depends(require_teacher)):
     _ensure_teacher_classroom(db, int(classroom_id), int(teacher.id))
-    row = db.query(ClassroomMember).filter(ClassroomMember.classroom_id == int(classroom_id), ClassroomMember.user_id == int(student_id)).first()
+    row = db.query(ClassroomStudent).filter(ClassroomStudent.classroom_id == int(classroom_id), ClassroomStudent.student_id == int(student_id)).first()
     if not row:
         raise HTTPException(status_code=404, detail='Student not in classroom')
     db.delete(row)
     db.commit()
-    return {"request_id": request.state.request_id, "data": {"removed": True}, "error": None}
+    return {"request_id": getattr(request.state, "request_id", "n/a"), "data": {"removed": True}, "error": None}
 
 
 @router.post('/classrooms/{classroom_id}/assign-topics')
@@ -740,7 +864,7 @@ def assign_topics_to_classroom(request: Request, classroom_id: int, payload: Ass
         raise HTTPException(status_code=400, detail='topic_ids is required')
 
     topic_rows = db.query(DocumentTopic.id, DocumentTopic.document_id, DocumentTopic.title).filter(DocumentTopic.id.in_(topic_ids)).all()
-    member_rows = db.query(ClassroomMember.user_id).filter(ClassroomMember.classroom_id == int(classroom_id)).all()
+    member_rows = db.query(ClassroomStudent.student_id).filter(ClassroomStudent.classroom_id == int(classroom_id)).all()
     student_ids = [int(r[0]) for r in member_rows]
 
     created = 0
@@ -758,7 +882,7 @@ def assign_topics_to_classroom(request: Request, classroom_id: int, payload: Ass
             ))
             created += 1
     db.commit()
-    return {"request_id": request.state.request_id, "data": {"assigned_count": created}, "error": None}
+    return {"request_id": getattr(request.state, "request_id", "n/a"), "data": {"assigned_count": created}, "error": None}
 
 
 def _assign_exam_for_classroom(*, request: Request, db: Session, classroom_id: int, teacher: User, payload: AssignExamIn, kind: str):
@@ -788,7 +912,7 @@ def _assign_exam_for_classroom(*, request: Request, db: Session, classroom_id: i
         if not ex:
             db.add(ClassroomAssessment(classroom_id=int(classroom_id), assessment_id=aid, kind=kind, visible_to_students=True))
             db.commit()
-    return {"request_id": request.state.request_id, "data": {"assessment_id": aid, "kind": kind}, "error": None}
+    return {"request_id": getattr(request.state, "request_id", "n/a"), "data": {"assessment_id": aid, "kind": kind}, "error": None}
 
 
 @router.post('/classrooms/{classroom_id}/assign-placement')
@@ -804,7 +928,7 @@ def assign_final(request: Request, classroom_id: int, payload: AssignExamIn, db:
 @router.get('/classrooms/{classroom_id}/leaderboard')
 def classroom_leaderboard(request: Request, classroom_id: int, db: Session = Depends(get_db), teacher: User = Depends(require_teacher)):
     _ensure_teacher_classroom(db, int(classroom_id), int(teacher.id))
-    student_rows = db.query(ClassroomMember.user_id).filter(ClassroomMember.classroom_id == int(classroom_id)).all()
+    student_rows = db.query(ClassroomStudent.student_id).filter(ClassroomStudent.classroom_id == int(classroom_id)).all()
     student_ids = [int(r[0]) for r in student_rows]
     data = []
     for sid in student_ids:
@@ -817,4 +941,93 @@ def classroom_leaderboard(request: Request, classroom_id: int, db: Session = Dep
     data.sort(key=lambda x: x['score'], reverse=True)
     for i, row in enumerate(data, start=1):
         row['rank'] = i
-    return {"request_id": request.state.request_id, "data": data, "error": None}
+    return {"request_id": getattr(request.state, "request_id", "n/a"), "data": data, "error": None}
+
+
+@router.delete('/teacher/classrooms/{classroom_id}')
+def delete_teacher_classroom(request: Request, classroom_id: int, db: Session = Depends(get_db), teacher: User = Depends(require_teacher)):
+    c = _ensure_teacher_classroom(db, int(classroom_id), int(teacher.id))
+    db.query(ClassroomStudent).filter(ClassroomStudent.classroom_id == int(c.id)).delete(synchronize_session=False)
+    db.delete(c)
+    db.commit()
+    return {"request_id": getattr(request.state, "request_id", "n/a"), "data": {"deleted": True}, "error": None}
+
+
+@router.get('/teacher/classrooms/{classroom_id}/students')
+def list_teacher_classroom_students(
+    request: Request,
+    classroom_id: int,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    _ensure_teacher_classroom(db, int(classroom_id), int(teacher.id))
+    q = (
+        db.query(ClassroomStudent, User)
+        .join(User, User.id == ClassroomStudent.student_id)
+        .filter(ClassroomStudent.classroom_id == int(classroom_id))
+    )
+    total = q.count()
+    rows = q.order_by(User.full_name.asc(), User.id.asc()).offset((page - 1) * page_size).limit(page_size).all()
+    items = []
+    for cs, u in rows:
+        items.append({
+            "id": int(u.id),
+            "full_name": str(u.full_name or ''),
+            "email": str(u.email or ''),
+            "joined_at": cs.joined_at,
+            "placement_score": cs.placement_score,
+            "final_score": cs.final_score,
+            "level": cs.level,
+        })
+    return {"request_id": getattr(request.state, "request_id", "n/a"), "data": {"items": items, "pagination": {"page": page, "page_size": page_size, "total": total}}, "error": None}
+
+
+@router.get('/student/classrooms/{classroom_id}/subjects')
+def student_classroom_subjects(request: Request, classroom_id: int, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    c = db.query(Classroom).filter(Classroom.id == int(classroom_id), Classroom.is_active.is_(True)).first()
+    if not c:
+        raise HTTPException(status_code=404, detail='Classroom not found')
+    member = db.query(ClassroomStudent).filter(ClassroomStudent.classroom_id == int(classroom_id), ClassroomStudent.student_id == int(user.id)).first()
+    if not member and str(getattr(user, 'role', '')).lower() != 'teacher':
+        raise HTTPException(status_code=403, detail='Not a classroom member')
+    if not c.course_id:
+        return {"request_id": getattr(request.state, "request_id", "n/a"), "data": [], "error": None}
+    from app.models.mvp import Topic
+
+    topics = db.query(Topic).filter(Topic.course_id == int(c.course_id)).order_by(Topic.id.asc()).all()
+    data = [{"id": int(t.id), "title": str(t.title), "summary": str(t.summary or '')} for t in topics]
+    return {"request_id": getattr(request.state, "request_id", "n/a"), "data": data, "error": None}
+
+
+@router.delete('/teacher/classrooms/{classroom_id}/students/{student_id}')
+def remove_teacher_student(request: Request, classroom_id: int, student_id: int, db: Session = Depends(get_db), teacher: User = Depends(require_teacher)):
+    _ensure_teacher_classroom(db, int(classroom_id), int(teacher.id))
+    row = db.query(ClassroomStudent).filter(ClassroomStudent.classroom_id == int(classroom_id), ClassroomStudent.student_id == int(student_id)).first()
+    if not row:
+        raise HTTPException(status_code=404, detail='Student not in classroom')
+    db.delete(row)
+    db.commit()
+    return {"request_id": getattr(request.state, "request_id", "n/a"), "data": {"removed": True}, "error": None}
+
+
+@router.post("/classrooms/join")
+def join_classroom_legacy(
+    request: Request,
+    payload: ClassroomJoinRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    return join_classroom(request=request, payload=payload, db=db, user=user)
+
+
+@router.get("/classrooms")
+def list_my_classrooms_legacy(
+    request: Request,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    return list_my_classrooms(request=request, page=page, page_size=page_size, db=db, user=user)

@@ -9,6 +9,11 @@ const PORT = Number(process.env.PORT || 3000);
 
 app.use(express.json());
 
+app.use((_req, res, next) => {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  next();
+});
+
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });

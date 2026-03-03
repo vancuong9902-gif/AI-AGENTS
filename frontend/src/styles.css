@@ -477,3 +477,194 @@ ul.task-list li.done { opacity: 0.6; text-decoration: line-through; }
 .heat-2 { background: #86efac; }
 .heat-3 { background: #4ade80; }
 .heat-4 { background: #16a34a; }
+
+.hidden-input {
+  display: none;
+}
+
+.upload-file-name {
+  margin-top: 8px;
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.gap-sm {
+  gap: 8px;
+}
+
+.empty-state.compact {
+  padding: 16px;
+}
+
+.topic-editor-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.chip-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip {
+  background: var(--gray-100);
+  color: var(--gray-700);
+  border: 1px solid var(--gray-200);
+}
+
+.chip.active {
+  background: var(--primary-light);
+  color: var(--primary);
+  border-color: var(--primary);
+}
+
+.sample-question {
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  background: var(--gray-50);
+}
+
+.sample-question ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.nested-tabs {
+  background: var(--gray-50);
+  border-radius: var(--radius-sm);
+  padding: 4px;
+}
+.stepper-wrap {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.stepper-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--gray-200);
+  background: #fff;
+  color: var(--gray-700);
+  justify-content: flex-start;
+}
+
+.stepper-step.current {
+  border-color: var(--primary);
+  background: var(--primary-light);
+}
+
+.stepper-step.done {
+  border-color: var(--success);
+  background: var(--success-light);
+  color: #065f46;
+}
+
+.stepper-step.locked {
+  background: var(--gray-100);
+  color: var(--gray-400);
+}
+
+.stepper-icon {
+  width: 24px;
+  text-align: center;
+  font-weight: 700;
+}
+
+.stepper-label {
+  font-size: 12px;
+  text-align: left;
+}
+
+.assessment-timer {
+  font-size: 22px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  border: 2px solid var(--gray-200);
+  border-radius: var(--radius);
+  padding: 8px 14px;
+}
+
+.assessment-timer.warning {
+  color: #92400e;
+  border-color: var(--warning);
+  background: var(--warning-light);
+  animation: shake 0.8s infinite;
+}
+
+.assessment-timer.critical {
+  color: #991b1b;
+  border-color: var(--danger);
+  background: var(--danger-light);
+  animation: pulse 1s infinite;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-2px); }
+  75% { transform: translateX(2px); }
+}
+
+.option-row.correct {
+  border-color: var(--success);
+  background: var(--success-light);
+}
+
+.option-row.wrong {
+  border-color: var(--danger);
+  background: var(--danger-light);
+}
+
+.result-score {
+  font-size: 56px;
+  font-weight: 800;
+}
+
+.result-score.pass { color: var(--success); }
+.result-score.fail { color: var(--danger); }
+
+.result-question {
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+}
+
+.result-question.ok { border-left: 4px solid var(--success); }
+.result-question.bad { border-left: 4px solid var(--danger); }
+.result-explanation { color: var(--gray-600); }
+
+.confetti {
+  text-align: center;
+  font-size: 28px;
+}
+
+.class-card {
+  width: 100%;
+  text-align: left;
+  background: #fff;
+  color: var(--gray-700);
+}
+
+.class-card:hover {
+  background: var(--primary-light);
+}
+
+.topic-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  gap: 10px;
+}
+.modal-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,.35); display: flex; align-items: center; justify-content: center; z-index: 30; }
+.modal-card { width: 100%; max-width: 420px; background: #fff; border-radius: 12px; padding: 16px; border: 1px solid var(--gray-200); }
+.invite-code-box { font-size: 20px; font-weight: 700; letter-spacing: 2px; color: var(--primary); }
+.table { width: 100%; border-collapse: collapse; }
+.table th, .table td { border-bottom: 1px solid var(--gray-200); padding: 8px; text-align: left; }
+.student-class-meta { margin-bottom: 10px; }

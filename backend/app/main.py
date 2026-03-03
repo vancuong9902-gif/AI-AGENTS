@@ -49,6 +49,7 @@ from app.api.routes.auth import router as auth_router
 from app.api.routes.session import router as session_router
 from app.api.routes.ai_smart_lms import router as ai_smart_lms_router
 from app.api.routes.mvp import router as mvp_router
+from app.api.exam_export import router as exam_export_router
 from app.learning_engine.presentation.router import router as teacher_ai_router
 from app.db.session import SessionLocal
 from app.models.user import User
@@ -154,6 +155,7 @@ def _include_api_routers(fastapi_app: FastAPI, auth_enabled: bool) -> None:
     fastapi_app.include_router(session_router, prefix="/api")
     fastapi_app.include_router(ai_smart_lms_router, prefix="/api")
     fastapi_app.include_router(mvp_router, prefix="/api")
+    fastapi_app.include_router(exam_export_router, prefix="/api")
 
 
 def _log_registered_routes(fastapi_app: FastAPI) -> None:
@@ -416,6 +418,9 @@ async def request_id_middleware(request: Request, call_next):
         )
     latency_ms = round((time.perf_counter() - start) * 1000, 2)
     response.headers["X-Request-ID"] = req_id
+    content_type = (response.headers.get("content-type") or "").lower()
+    if content_type.startswith("application/json") and "charset=" not in content_type:
+        response.headers["Content-Type"] = "application/json; charset=utf-8"
     if request.method == "GET" and response.status_code == 200:
         response.headers.setdefault("Cache-Control", "public, max-age=30")
     logger.info(

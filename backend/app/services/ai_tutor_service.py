@@ -10,6 +10,35 @@ from app.schemas.tutor import TutorChatRequest
 from app.services.tutor_service import tutor_chat
 
 
+def _to_relevance_contract(raw: dict[str, Any], payload: TutorChatRequest) -> dict[str, Any]:
+    suggestions = [
+        str(x).strip()
+        for x in (raw.get("suggested_questions") or raw.get("follow_up_questions") or [])
+        if str(x).strip()
+    ][:3]
+    refs: list[str] = []
+    for item in (raw.get("suggested_topics") or []):
+        val = str(item).strip()
+        if val and val not in refs:
+            refs.append(val)
+    for item in (raw.get("sources_used") or []):
+        val = str(item).strip()
+        if val and val not in refs:
+            refs.append(val)
+    if payload.topic and payload.topic.strip() and payload.topic.strip() not in refs:
+        refs.insert(0, payload.topic.strip())
+
+    is_off_topic = bool(raw.get("is_off_topic"))
+    answer = str(raw.get("answer_md") or raw.get("answer") or "").strip()
+    return {
+        **raw,
+        "is_relevant": not is_off_topic,
+        "response": answer,
+        "suggested_questions": suggestions,
+        "references": refs[:5],
+    }
+
+
 def _cache_key(payload: TutorChatRequest) -> str:
     raw = "|".join(
         [
@@ -28,7 +57,7 @@ def run_tutor_chat(db: Session, payload: TutorChatRequest) -> dict[str, Any]:
     key = _cache_key(payload)
     cached = get_json(key)
     if cached is not None:
-        return {"cached": True, **cached}
+        return {"cached": True, **_to_relevance_contract(cached, payload)}
 
     response = tutor_chat(
         db=db,
@@ -44,4 +73,4 @@ def run_tutor_chat(db: Session, payload: TutorChatRequest) -> dict[str, Any]:
         timed_test=payload.timed_test,
     )
     set_json(key, response, ttl_seconds=180)
-    return {"cached": False, **response}
+    return {"cached": False, **_to_relevance_contract(response, payload)}
