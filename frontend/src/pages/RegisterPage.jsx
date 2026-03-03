@@ -42,16 +42,35 @@ export default function RegisterPage({ navigate }) {
     setError('');
     setLoading(true);
     try {
-      const res = await authApi.register(payload);
-      const data = res.data?.data || res.data;
-      const token = data?.token?.access_token || data?.token;
-      if (!data?.user) {
-        throw new Error('Server trả về dữ liệu không hợp lệ.');
+      const registerRes = await authApi.register(payload);
+      const registerData = registerRes.data?.data || registerRes.data;
+
+      let token = registerData?.token?.access_token || registerData?.token;
+      let user = registerData?.user;
+
+      if (!token || !user) {
+        const loginRes = await authApi.login({ email: payload.email, password: payload.password });
+        const loginData = loginRes.data?.data || loginRes.data;
+        token = token || loginData?.token?.access_token || loginData?.access_token || loginData?.token;
+        user = user || loginData?.user;
+
+        if (!user) {
+          const meRes = await authApi.me();
+          user = meRes.data?.data || meRes.data;
+        }
       }
 
-      await login(token, data.user);
-      navigate(String(data.user.role).toLowerCase() === 'teacher' ? '/teacher' : '/student');
+      if (!token || !user) {
+        throw new Error('Không thể tự động đăng nhập sau khi đăng ký.');
+      }
+
+      await login(token, user);
+      navigate(String(user.role).toLowerCase() === 'teacher' ? '/teacher' : '/student');
     } catch (err) {
+      if (err.response?.status === 409) {
+        setError('Email đã tồn tại, vui lòng dùng email khác.');
+        return;
+      }
       setError(getErrorMessage(err));
     } finally {
       setLoading(false);
