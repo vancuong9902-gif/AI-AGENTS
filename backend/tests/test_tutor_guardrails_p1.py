@@ -24,5 +24,5 @@ def test_tutor_rejects_offtopic_without_llm(monkeypatch):
     )
 
     assert out["is_off_topic"] is True
-    assert "không liên quan" in out["answer_md"].lower()
-    assert out["retrieval"]["guardrail"] == "lexical_only"
+    assert "chỉ có thể hỗ trợ" in out["answer_md"].lower()
+    assert out["retrieval"]["guardrail"] == "keyword_set"
