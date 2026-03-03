@@ -478,6 +478,65 @@ ul.task-list li.done { opacity: 0.6; text-decoration: line-through; }
 .heat-3 { background: #4ade80; }
 .heat-4 { background: #16a34a; }
 
+.hidden-input {
+  display: none;
+}
+
+.upload-file-name {
+  margin-top: 8px;
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.gap-sm {
+  gap: 8px;
+}
+
+.empty-state.compact {
+  padding: 16px;
+}
+
+.topic-editor-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.chip-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip {
+  background: var(--gray-100);
+  color: var(--gray-700);
+  border: 1px solid var(--gray-200);
+}
+
+.chip.active {
+  background: var(--primary-light);
+  color: var(--primary);
+  border-color: var(--primary);
+}
+
+.sample-question {
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  background: var(--gray-50);
+}
+
+.sample-question ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.nested-tabs {
+  background: var(--gray-50);
+  border-radius: var(--radius-sm);
+  padding: 4px;
+}
 .stepper-wrap {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

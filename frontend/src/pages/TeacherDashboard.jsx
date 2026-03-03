@@ -1,8 +1,11 @@
 import React from 'react';
 import Alert from '../components/Alert';
-import LoadingSpinner from '../components/LoadingSpinner';
-import { mvpApi, downloadBlob, getErrorMessage } from '../api';
 import { useAuth } from '../auth';
+import TeacherUpload from '../components/teacher/TeacherUpload';
+import TeacherClassSetup from '../components/teacher/TeacherClassSetup';
+import TeacherAssessments from '../components/teacher/TeacherAssessments';
+import TeacherMonitor from '../components/teacher/TeacherMonitor';
+import TeacherReports from '../components/teacher/TeacherReports';
 import ExamExportModal from '../components/ExamExportModal';
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis,
@@ -676,50 +679,78 @@ function TabExamGen({ setAlert }) {
 }
 
 const TABS = [
-  { key: 'upload', label: '📄 Tải tài liệu', icon: '📄' },
-  { key: 'classrooms', label: '🏫 Quản lý lớp', icon: '🏫' },
-  { key: 'results', label: '📋 Kết quả', icon: '📋' },
-  { key: 'analytics', label: '📊 Thống kê', icon: '📊' },
-  { key: 'examgen', label: '📝 Sinh đề Word', icon: '📝' },
+  { key: 'upload', label: 'B1 · Upload PDF' },
+  { key: 'class', label: 'B2 · Tạo lớp học' },
+  { key: 'assessments', label: 'B3 · Cấu hình bài kiểm tra' },
+  { key: 'monitor', label: 'B4 · Monitor & report' },
+  { key: 'reports', label: 'B5 · Xuất báo cáo' },
 ];
+
+const initialWorkflow = {
+  courseId: null,
+  uploadReady: false,
+  topicsDraft: [],
+  selectedTopicIds: [],
+  topicsPublished: false,
+  classroomId: null,
+  inviteCode: '',
+  assessmentActivated: false,
+  assessmentId: null,
+};
 
 export default function TeacherDashboard() {
   const { user } = useAuth();
   const [tab, setTab] = React.useState('upload');
   const [alert, setAlert] = React.useState({ type: 'info', message: '' });
+  const [workflow, setWorkflow] = React.useState(initialWorkflow);
 
-  const clearAlert = () => setAlert({ type: 'info', message: '' });
+  const gotoTab = (nextTab) => {
+    if (nextTab) setTab(nextTab);
+    setAlert({ type: 'info', message: '' });
+  };
 
   return (
     <div className="shell">
       <div className="page-header">
-        <div className="row-between">
-          <div>
-            <h1>👩‍🏫 Bảng điều khiển Giáo viên</h1>
-            <p>Xin chào, <strong>{user?.full_name || user?.email}</strong> · Quản lý lớp học và tài liệu</p>
-          </div>
-        </div>
+        <h1>👩‍🏫 Teacher Workflow</h1>
+        <p>Xin chào, <strong>{user?.full_name || user?.email}</strong> · Điều phối toàn bộ quy trình dạy học từ upload tài liệu đến xuất báo cáo.</p>
       </div>
 
-      {alert.message && (
-        <div style={{ marginBottom: 16 }}>
-          <Alert type={alert.type} message={alert.message} />
-        </div>
-      )}
+      {alert.message && <Alert type={alert.type} message={alert.message} />}
 
       <div className="tabs">
-        {TABS.map((t) => (
-          <button key={t.key} className={`tab ${tab === t.key ? 'active' : ''}`} onClick={() => { setTab(t.key); clearAlert(); }}>
-            {t.label}
+        {TABS.map((item) => (
+          <button key={item.key} className={`tab ${tab === item.key ? 'active' : ''}`} onClick={() => gotoTab(item.key)}>
+            {item.label}
           </button>
         ))}
       </div>
 
-      {tab === 'upload' && <TabUpload setAlert={setAlert} />}
-      {tab === 'classrooms' && <TabClassrooms setAlert={setAlert} />}
-      {tab === 'results' && <TabResults setAlert={setAlert} />}
-      {tab === 'analytics' && <TabAnalytics />}
-      {tab === 'examgen' && <TabExamGen setAlert={setAlert} />}
+      {tab === 'upload' && (
+        <TeacherUpload
+          setAlert={setAlert}
+          workflow={workflow}
+          setWorkflow={setWorkflow}
+          onContinue={gotoTab}
+        />
+      )}
+      {tab === 'class' && (
+        <TeacherClassSetup
+          setAlert={setAlert}
+          workflow={workflow}
+          setWorkflow={setWorkflow}
+          onContinue={gotoTab}
+        />
+      )}
+      {tab === 'assessments' && (
+        <TeacherAssessments
+          setAlert={setAlert}
+          workflow={workflow}
+          setWorkflow={setWorkflow}
+        />
+      )}
+      {tab === 'monitor' && <TeacherMonitor setAlert={setAlert} workflow={workflow} />}
+      {tab === 'reports' && <TeacherReports setAlert={setAlert} workflow={workflow} />}
     </div>
   );
 }
