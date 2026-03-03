@@ -30,6 +30,7 @@ def seed() -> None:
     db = SessionLocal()
     try:
         for acc in DEMO_ACCOUNTS:
+            # Check by BOTH email AND role — same email is allowed with different roles
             existing = (
                 db.query(User)
                 .filter(
@@ -51,8 +52,13 @@ def seed() -> None:
                 is_demo=bool(acc.get("is_demo", True)),
             )
             db.add(user)
-            print(f"✅ Seeded demo account: {acc['email']} ({acc['role']})")
-        db.commit()
+            # Commit individually so one failure does not roll back the rest
+            try:
+                db.commit()
+                print(f"✅ Seeded demo account: {acc['email']} ({acc['role']})")
+            except Exception as e:
+                db.rollback()
+                print(f"⚠️  Skipped {acc['email']} ({acc['role']}): {e}")
     finally:
         db.close()
 
