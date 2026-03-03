@@ -603,3 +603,9 @@ ul.task-list li.done { opacity: 0.6; text-decoration: line-through; }
   padding: 10px;
   gap: 10px;
 }
+.modal-backdrop { position: fixed; inset: 0; background: rgba(15,23,42,.35); display: flex; align-items: center; justify-content: center; z-index: 30; }
+.modal-card { width: 100%; max-width: 420px; background: #fff; border-radius: 12px; padding: 16px; border: 1px solid var(--gray-200); }
+.invite-code-box { font-size: 20px; font-weight: 700; letter-spacing: 2px; color: var(--primary); }
+.table { width: 100%; border-collapse: collapse; }
+.table th, .table td { border-bottom: 1px solid var(--gray-200); padding: 8px; text-align: left; }
+.student-class-meta { margin-bottom: 10px; }
