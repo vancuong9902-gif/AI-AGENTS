@@ -22,8 +22,8 @@ class ClassroomOut(BaseModel):
     course_id: Optional[int] = None
     is_active: bool = True
     student_count: int = 0
+    has_content: bool = False
     created_at: Optional[datetime] = None
-
 
 class ClassroomJoinRequest(BaseModel):
     invite_code: str = Field(min_length=8, max_length=8)

@@ -13,6 +13,8 @@ from pydantic import BaseModel, Field
 
 from app.api.deps import get_db, require_teacher, require_user
 from app.models.attempt import Attempt
+from app.models.classroom import Classroom, ClassroomMember
+from app.models.mvp import Course, Topic
 from app.models.classroom import Classroom, ClassroomStudent
 from app.models.class_report import ClassReport
 from app.models.classroom_assessment import ClassroomAssessment
@@ -48,7 +50,7 @@ def _mk_join_code(length: int = 8) -> str:
     return "".join(random.choice(alphabet) for _ in range(int(length)))
 
 
-def _classroom_out(db: Session, c: Classroom) -> ClassroomOut:
+def _classroom_out(db: Session, c: Classroom, has_content: bool = False) -> ClassroomOut:
     cnt = (
         db.query(func.count(ClassroomStudent.id))
         .filter(ClassroomStudent.classroom_id == int(c.id))
@@ -61,6 +63,7 @@ def _classroom_out(db: Session, c: Classroom) -> ClassroomOut:
         join_code=str(c.invite_code),
         teacher_id=int(c.teacher_id),
         student_count=int(cnt or 0),
+        has_content=bool(has_content),
     )
 
 
@@ -179,6 +182,28 @@ def list_my_classrooms(
     ids = db.query(ClassroomStudent.classroom_id).filter(ClassroomStudent.student_id == int(user.id)).all()
     cids = [int(x[0]) for x in ids if x and x[0] is not None]
     if not cids:
+        return {"request_id": request.state.request_id, "data": [], "error": None}
+    rows = db.query(Classroom).filter(Classroom.id.in_(cids)).order_by(Classroom.created_at.desc()).all()
+
+    has_course_attr = hasattr(Classroom, "course_id")
+    fallback_course = db.query(Course).order_by(Course.id.desc()).first()
+    fallback_has_content = bool(
+        fallback_course
+        and db.query(Topic).filter(Topic.course_id == int(fallback_course.id)).count() > 0
+    )
+
+    out = []
+    for c in rows:
+        class_has_content = False
+        if has_course_attr:
+            class_course_id = getattr(c, "course_id", None)
+            if class_course_id is not None:
+                class_has_content = db.query(Topic).filter(Topic.course_id == int(class_course_id)).count() > 0
+        else:
+            class_has_content = fallback_has_content
+        out.append(_classroom_out(db, c, has_content=class_has_content).model_dump())
+
+    return {"request_id": request.state.request_id, "data": out, "error": None}
         return {"request_id": getattr(request.state, "request_id", "n/a"), "data": {"items": [], "pagination": {"page": page, "page_size": page_size, "total": 0}}, "error": None}
     q = db.query(Classroom).filter(Classroom.id.in_(cids))
     total = q.count()
