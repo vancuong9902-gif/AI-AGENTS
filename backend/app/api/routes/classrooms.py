@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from io import BytesIO
 import string
 from typing import Dict, List, Optional, Tuple
 
@@ -30,9 +31,11 @@ from app.schemas.classrooms import (
     StudentProgressRow,
 )
 from app.services.assessment_service import generate_assessment
+from app.services.excel_report_service import generate_class_report_excel
 from app.services.learning_plan_service import build_teacher_learning_plan
 from app.services.learning_plan_storage_service import save_teacher_plan
 from app.services.lms_service import analyze_topic_weak_points, classify_student_level, generate_class_narrative, resolve_student_name, score_breakdown
+from app.services.pdf_report_service import generate_class_report_pdf
 from app.services.report_exporter import export_class_report_docx, export_class_report_pdf, make_export_path
 from app.services.user_service import ensure_user_exists
 
@@ -274,6 +277,7 @@ def _build_latest_report_data(db: Session, classroom_id: int) -> dict:
             improved_count += 1
         students.append(
             {
+                "student_id": int(uid),
                 "name": resolve_student_name(uid, db),
                 "entry_score": entry,
                 "final_score": final,
@@ -307,6 +311,78 @@ def _build_latest_report_data(db: Session, classroom_id: int) -> dict:
         "students": students,
         "improvement": {"avg_delta": avg_delta, "improved_count": improved_count},
     }
+
+
+def _build_export_students(db: Session, classroom_id: int) -> list[dict]:
+    report_data = _build_latest_report_data(db=db, classroom_id=int(classroom_id))
+    member_ids = [
+        int(row[0])
+        for row in db.query(ClassroomMember.user_id)
+        .filter(ClassroomMember.classroom_id == int(classroom_id))
+        .all()
+    ]
+    users = db.query(User).filter(User.id.in_(member_ids)).all() if member_ids else []
+    email_by_id = {int(u.id): str(u.email or "") for u in users}
+
+    students: list[dict] = []
+    for item in report_data.get("students") or []:
+        student_id = int(item.get("student_id") or 0)
+        students.append(
+            {
+                "name": str(item.get("name") or ""),
+                "email": email_by_id.get(student_id, ""),
+                "placement_score": float(item.get("entry_score") or 0.0),
+                "final_score": float(item.get("final_score") or 0.0),
+                "level": str(item.get("level") or "N/A"),
+                "study_hours": 0.0,
+                "ai_comment": "",
+            }
+        )
+    return students
+
+
+@router.get("/teacher/classrooms/{classroom_id}/report/pdf")
+def export_teacher_classroom_pdf(
+    classroom_id: int,
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    classroom = db.query(Classroom).filter(Classroom.id == int(classroom_id)).first()
+    if not classroom or int(classroom.teacher_id) != int(teacher.id):
+        raise HTTPException(status_code=404, detail="Classroom not found")
+
+    students_data = _build_export_students(db=db, classroom_id=int(classroom_id))
+    content = generate_class_report_pdf(
+        classroom_data={"id": int(classroom.id), "name": str(classroom.name or f"#{classroom_id}")},
+        students_data=students_data,
+    )
+    headers = {"Content-Disposition": f'attachment; filename="classroom_{classroom_id}_report.pdf"'}
+    return StreamingResponse(BytesIO(content), media_type="application/pdf", headers=headers)
+
+
+@router.get("/teacher/classrooms/{classroom_id}/report/excel")
+def export_teacher_classroom_excel(
+    classroom_id: int,
+    db: Session = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    classroom = db.query(Classroom).filter(Classroom.id == int(classroom_id)).first()
+    if not classroom or int(classroom.teacher_id) != int(teacher.id):
+        raise HTTPException(status_code=404, detail="Classroom not found")
+
+    students_data = _build_export_students(db=db, classroom_id=int(classroom_id))
+    content = generate_class_report_excel(
+        classroom_data={"id": int(classroom.id), "name": str(classroom.name or f"#{classroom_id}")},
+        students_data=students_data,
+    )
+    headers = {
+        "Content-Disposition": f'attachment; filename="classroom_{classroom_id}_report.xlsx"',
+    }
+    return StreamingResponse(
+        BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
 
 
 
