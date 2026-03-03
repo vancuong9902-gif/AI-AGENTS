@@ -7,6 +7,7 @@ Create Date: 2026-02-28
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
 
 revision = "9c7e1a2b3d4f"
@@ -16,10 +17,18 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "quiz_sets",
-        sa.Column("duration_seconds", sa.Integer(), server_default="1800", nullable=False),
-    )
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    if not inspector.has_table("quiz_sets"):
+        return
+
+    columns = {col["name"] for col in inspector.get_columns("quiz_sets")}
+    if "duration_seconds" not in columns:
+        op.add_column(
+            "quiz_sets",
+            sa.Column("duration_seconds", sa.Integer(), server_default="1800", nullable=False),
+        )
+
     op.execute(
         """
         UPDATE quiz_sets
@@ -30,4 +39,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("quiz_sets", "duration_seconds")
+    bind = op.get_bind()
+    inspector = inspect(bind)
+    if not inspector.has_table("quiz_sets"):
+        return
+
+    columns = {col["name"] for col in inspector.get_columns("quiz_sets")}
+    if "duration_seconds" in columns:
+        op.drop_column("quiz_sets", "duration_seconds")
